@@ -21,15 +21,17 @@ No audio or transcript is sent to a cloud service. ctrlSPEAK keeps a local trans
 - Apple Silicon Mac (M1 or newer; tested on M5)
 - A current macOS version
 - [Homebrew](https://brew.sh)
+- GitHub CLI: `brew install gh`
 - Xcode Command Line Tools: `xcode-select --install`
 - Roughly 3 GB of free space for the local model and dependencies
 
 ## Installation
 
-Clone this private repository on the other Mac and run:
+Authenticate the other Mac with GitHub, clone this private repository, and run:
 
 ```bash
-git clone git@github.com:Schereo/ctrlspeak-mac-local.git
+gh auth login
+gh repo clone Schereo/ctrlspeak-mac-local
 cd ctrlspeak-mac-local
 chmod +x install.sh scripts/*.sh
 ./install.sh
