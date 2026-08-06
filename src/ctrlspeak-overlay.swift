@@ -502,6 +502,15 @@ final class OverlayController: NSObject {
         visualEffect.material = .hudWindow
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
+
+        // With .behindWindow blending the material is composited by the window
+        // server, outside this view's Core Animation layer. A layer mask
+        // therefore does not clip it: the blur bleeds into the four corners
+        // and reads as white over light backgrounds. maskImage is the shape
+        // the window server itself honours.
+        visualEffect.maskImage = OverlayController.capsuleMask(size: panelSize)
+
+        // The rounded layer still clips the tint and draws the hairline border.
         visualEffect.wantsLayer = true
         visualEffect.layer?.cornerRadius = panelSize.height / 2
         visualEffect.layer?.masksToBounds = true
@@ -551,6 +560,25 @@ final class OverlayController: NSObject {
         }
     }
 
+    /// Capsule the window server can use to clip the blur material.
+    ///
+    /// Drawn at the exact panel size rather than as a resizable cap-inset
+    /// image: for a capsule the vertical caps already consume the full height,
+    /// which leaves nothing to stretch. The panel never resizes.
+    private static func capsuleMask(size: NSSize) -> NSImage {
+        let mask = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(
+                roundedRect: rect,
+                xRadius: rect.height / 2,
+                yRadius: rect.height / 2
+            ).fill()
+            return true
+        }
+        mask.capInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        return mask
+    }
+
     private func positionPanel(panelSize: NSSize) {
         guard let screen = NSScreen.main else { return }
         let visibleFrame = screen.visibleFrame
@@ -565,11 +593,15 @@ final class OverlayController: NSObject {
     private func showPanel() {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { context in
+        NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
-        }
+        }, completionHandler: { [weak self] in
+            // The shadow shape is derived from the rendered alpha and cached,
+            // so it has to be recomputed once the capsule is fully opaque.
+            self?.panel.invalidateShadow()
+        })
     }
 
     private func startReadingCommands() {
