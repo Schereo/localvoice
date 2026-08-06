@@ -1,6 +1,6 @@
 # Local Voice-to-Text for Apple Silicon Macs
 
-A private, fully local dictation setup built around [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), MLX Whisper Large V3 Turbo, and a custom native macOS recording pill.
+A fully local dictation setup built around [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), MLX Whisper Large V3 Turbo, and a custom native macOS recording pill.
 
 Triple-tap **Control** to start recording, speak, then triple-tap **Control** again. The transcript is generated locally and pasted into the active text field.
 
@@ -22,17 +22,15 @@ No audio or transcript is sent to a cloud service. ctrlSPEAK keeps a local trans
 - Apple Silicon Mac (M1 or newer; tested on M5)
 - A current macOS version
 - [Homebrew](https://brew.sh)
-- GitHub CLI: `brew install gh`
 - Xcode Command Line Tools: `xcode-select --install`
 - Roughly 3 GB of free space for the local model and dependencies
 
 ## Installation
 
-Authenticate the other Mac with GitHub, clone this private repository, and run:
+Clone this repository on the other Mac and run:
 
 ```bash
-gh auth login
-gh repo clone Schereo/ctrlspeak-mac-local
+git clone https://github.com/Schereo/ctrlspeak-mac-local.git
 cd ctrlspeak-mac-local
 chmod +x install.sh scripts/*.sh
 ./install.sh
