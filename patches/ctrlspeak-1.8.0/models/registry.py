@@ -32,9 +32,9 @@ def get_model_metadata(alias_or_repo_id: str) -> Optional[ModelMetadata]:
     alias_lower = alias_or_repo_id.lower()
     if alias_lower in MODEL_REGISTRY:
         return MODEL_REGISTRY[alias_lower]
-        
+
     for meta in MODEL_REGISTRY.values():
         if meta.repo_id.lower() == alias_lower:
             return meta
-            
+
     return None

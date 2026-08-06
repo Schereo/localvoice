@@ -291,34 +291,34 @@ def main():
         from models.registry import MODEL_REGISTRY
         console = Console()
         console.print("\n[bold]Supported Models:[/bold]")
-        
+
         # Check what dependencies are available
         nemo_available = False
         transformers_available = False
         mlx_available = False
-        
+
         try:
             import nemo.collections.asr as nemo_asr
             nemo_available = True
         except ImportError:
             pass
-            
+
         try:
             import transformers
             transformers_available = True
         except ImportError:
             pass
-            
+
         try:
             import mlx
             mlx_available = True
         except ImportError:
             pass
-        
+
         for alias, meta in MODEL_REGISTRY.items():
             status = ""
             note = ""
-            
+
             if "mlx" in meta.requires:
                 if mlx_available:
                     status = " [green]✓ Available[/green]"
@@ -354,18 +354,18 @@ def main():
                     note = " (install with: uv pip install -r requirements-cohere.txt)"
             else:
                 status = " [green]✓ Available[/green]"
-                
+
             console.print(f"  - [cyan]{alias}[/cyan]: {meta.repo_id}{note}{status}")
-        
+
         # Show installation recommendations
         if not nemo_available:
             console.print(f"\n[yellow]💡 Tip:[/yellow] Install NVIDIA model support with:")
             console.print(f"  [cyan]brew reinstall ctrlspeak --with-nvidia[/cyan]")
-        
+
         if not transformers_available:
             console.print(f"\n[yellow]💡 Tip:[/yellow] Install Whisper model support with:")
             console.print(f"  [cyan]uv pip install -r requirements-whisper.txt[/cyan]")
-            
+
         sys.exit(0)
 
     # Run the Textual UI application

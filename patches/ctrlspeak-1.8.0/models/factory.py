@@ -34,22 +34,22 @@ class ModelFactory:
         """Get a speech-to-text model based on the backend defined in registry."""
         model_type = model_type.lower()
         meta = get_model_metadata(model_type)
-        
+
         if not meta:
             logger.error(f"Unsupported model type: {model_type}")
             raise ValueError(f"Unsupported model type: {model_type}")
-            
+
         backend = meta.backend
-        
+
         # Configure logging
         if verbose:
             logger.setLevel(logging.DEBUG)
         else:
             logger.setLevel(logging.INFO)
-            
+
         logger.debug(f"Creating model of type: {meta.repo_id} using backend {backend}")
         kwargs['verbose'] = verbose
-        
+
         if backend == "mlx_parakeet":
             if sys.platform != "darwin" or platform.machine() != "arm64":
                 logger.error("MLX models are only supported on Apple Silicon (macOS arm64).")
@@ -73,7 +73,7 @@ class ModelFactory:
                 return WhisperMLXModel(model_name=meta.repo_id, **kwargs)
             except ImportError as e:
                 raise ImportError("MLX Whisper is missing. Install mlx-whisper in the ctrlSPEAK environment.") from e
-                                  
+
         elif backend == "nemo_nemotron":
             try:
                 import nemo.collections.asr as nemo_asr
@@ -81,7 +81,7 @@ class ModelFactory:
                 raise ImportError("Nemotron models require nemo-toolkit.")
             from models.nemotron import NemotronModel
             return NemotronModel(model_name=meta.repo_id, **kwargs)
-            
+
         elif backend == "nemo_canary":
             try:
                 import nemo.collections.asr as nemo_asr
@@ -89,7 +89,7 @@ class ModelFactory:
                 raise ImportError("Canary models require nemo-toolkit.")
             from models.canary import CanaryModel
             return CanaryModel(model_name=meta.repo_id, **kwargs)
-            
+
         elif backend == "nemo_parakeet":
             try:
                 import nemo.collections.asr as nemo_asr
@@ -97,7 +97,7 @@ class ModelFactory:
                 raise ImportError("NVIDIA Parakeet models require nemo-toolkit.")
             from models.parakeet import ParakeetModel
             return ParakeetModel(model_name=meta.repo_id, **kwargs)
-            
+
         elif backend == "transformers_whisper":
             if importlib.util.find_spec("transformers") is None:
                 raise ImportError("Whisper models require transformers.")
@@ -106,7 +106,7 @@ class ModelFactory:
                 return WhisperModel(model_name=meta.repo_id, **kwargs)
             except ImportError as e:
                 raise ImportError("Failed to import Whisper model.") from e
-                
+
         elif backend == "transformers_cohere":
             if importlib.util.find_spec("transformers") is None:
                 raise ImportError("Cohere models require transformers.")
@@ -115,7 +115,7 @@ class ModelFactory:
                 return CohereModel(model_name=meta.repo_id, **kwargs)
             except ImportError as e:
                 raise ImportError("Failed to import Cohere model.") from e
-                
+
         elif backend == "mlx_cohere":
             if sys.platform != "darwin" or platform.machine() != "arm64":
                 logger.error("MLX models are only supported on Apple Silicon (macOS arm64).")
@@ -125,7 +125,7 @@ class ModelFactory:
                 return CohereMLXModel(model_name=meta.repo_id, **kwargs)
             except ImportError as e:
                 raise ImportError("Failed to import Cohere MLX model.") from e
-                
+
         else:
             logger.error(f"Unsupported backend: {backend}")
             raise ValueError(f"Unsupported backend: {backend}")
