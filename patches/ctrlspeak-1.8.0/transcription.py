@@ -22,15 +22,14 @@ def transcription_worker(model, work_queue, results_list, source_lang, target_la
     """
     logger.debug("Transcription worker thread started.")
 
-    # MLX 0.32 streams are thread-local. ctrlSPEAK loads Parakeet on the main
-    # thread but performs inference here, which otherwise fails with
-    # "There is no Stream(...) in current thread." Recreate the lightweight
-    # model wrapper in this worker so its MLX graph and stream share a thread.
-    if model.__class__.__name__ == "ParakeetMLXModel":
-        logger.info("Initializing Parakeet MLX in the transcription worker thread...")
+    # MLX 0.32 streams are thread-local. Inference happens here, so model
+    # weights are loaded in this worker to keep the MLX graph and stream on
+    # the same thread.
+    if model.__class__.__name__ in {"ParakeetMLXModel", "WhisperMLXModel"}:
+        logger.info("Initializing MLX model in the transcription worker thread...")
         model.load_model()
         state.model_loaded = True
-        logger.info("Parakeet MLX worker-thread initialization complete. Ready to record.")
+        logger.info("MLX worker-thread initialization complete. Ready to record.")
 
     while True:
         audio_data = None
@@ -73,7 +72,14 @@ def transcription_worker(model, work_queue, results_list, source_lang, target_la
             logger.debug(f"Worker calling model.transcribe() for {temp_file_path}...")
             transcription_start_time = time.time()
             try:
-                 results = model.transcribe_batch([temp_file_path], source_lang=source_lang, target_lang=target_lang)
+                 active_source_lang = state.source_lang
+                 active_target_lang = state.target_lang
+                 logger.info(f"Transcribing with forced language: {active_source_lang}")
+                 results = model.transcribe_batch(
+                     [temp_file_path],
+                     source_lang=active_source_lang,
+                     target_lang=active_target_lang,
+                 )
                  if results and isinstance(results, list):
                       text = results[0]
                  else:

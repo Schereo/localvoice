@@ -13,6 +13,7 @@ import queue
 import subprocess
 import threading
 import time
+from pathlib import Path
 import state
 from utils.clipboard import copy_to_clipboard, paste_from_clipboard
 from utils.player import play_start_beep, play_stop_beep
@@ -28,6 +29,12 @@ _OVERLAY_PATH = os.environ.get(
     "CTRLSPEAK_OVERLAY_PATH",
     "/opt/homebrew/bin/ctrlspeak-overlay",
 )
+_LANGUAGE_FILE = Path(
+    os.environ.get(
+        "CTRLSPEAK_LANGUAGE_FILE",
+        str(Path.home() / ".config" / "ctrlspeak" / "language"),
+    )
+)
 _overlay_session = None
 _overlay_session_lock = threading.Lock()
 
@@ -35,7 +42,8 @@ _overlay_session_lock = threading.Lock()
 class _OverlaySession:
     """Own a persistent recorder HUD and feed it microphone levels."""
 
-    def __init__(self):
+    def __init__(self, language):
+        self.language = language
         self.commands = queue.Queue()
         self.thread = threading.Thread(
             target=self._run,
@@ -71,7 +79,7 @@ class _OverlaySession:
 
         try:
             process = subprocess.Popen(
-                [_OVERLAY_PATH, "recording"],
+                [_OVERLAY_PATH, "recording", self.language],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -127,7 +135,7 @@ def _start_recording_overlay():
         if _overlay_session is not None:
             _overlay_session.close()
 
-        _overlay_session = _OverlaySession()
+        _overlay_session = _OverlaySession(state.source_lang)
         _overlay_session.start()
 
 
@@ -136,6 +144,55 @@ def _set_overlay_state(overlay_state):
     with _overlay_session_lock:
         if _overlay_session is not None:
             _overlay_session.set_state(overlay_state)
+
+
+def _show_language_overlay(language):
+    """Show the selected language without taking focus from the active app."""
+    try:
+        subprocess.Popen(
+            [_OVERLAY_PATH, "language", language],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        logger.warning(f"Could not show language overlay: {exc}")
+
+
+def _save_language(language):
+    """Persist the language atomically for the next service launch."""
+    _LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = _LANGUAGE_FILE.with_suffix(".tmp")
+    temporary_file.write_text(language + "\n", encoding="utf-8")
+    os.replace(temporary_file, _LANGUAGE_FILE)
+
+
+def toggle_language():
+    """Toggle forced Whisper decoding between German and English."""
+    if state.audio_manager and state.audio_manager.is_collecting:
+        logger.warning("Language cannot be changed while recording")
+        return
+
+    if getattr(state.transcription_queue, "unfinished_tasks", 0):
+        logger.warning("Language cannot be changed while transcribing")
+        return
+
+    language = "en" if state.source_lang == "de" else "de"
+    state.source_lang = language
+    state.target_lang = language
+
+    if hasattr(state, "app_state_ref") and state.app_state_ref:
+        state.app_state_ref.source_lang = language
+        state.app_state_ref.target_lang = language
+
+    try:
+        _save_language(language)
+    except OSError as exc:
+        logger.warning(f"Could not persist language preference: {exc}")
+
+    logger.info(f"Forced transcription language changed to: {language}")
+    state.console.print(f"[cyan]Language: {language.upper()}[/cyan]")
+    _show_language_overlay(language)
 
 
 def _start_queue_recording():

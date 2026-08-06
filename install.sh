@@ -20,6 +20,10 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   fail "Apple Silicon is required."
 fi
 
+if [[ "$SOURCE_LANGUAGE" != "de" && "$SOURCE_LANGUAGE" != "en" ]]; then
+  fail "CTRLSPEAK_LANGUAGE must be 'de' or 'en'."
+fi
+
 command -v brew >/dev/null 2>&1 || fail "Homebrew is missing. Install it from https://brew.sh and run this script again."
 command -v xcrun >/dev/null 2>&1 || fail "Xcode Command Line Tools are missing. Run: xcode-select --install"
 
@@ -49,6 +53,9 @@ CTRLSPEAK_PYTHON="$BREW_PREFIX/var/ctrlspeak/venv/bin/python3.11"
 [[ -x "$CTRLSPEAK_PYTHON" ]] || fail "ctrlSPEAK's Python environment was not created correctly."
 [[ -d "$PATCH_DIR" ]] || fail "Patch directory not found: $PATCH_DIR"
 
+echo "Installing the verified MLX Whisper runtime..."
+"$CTRLSPEAK_PYTHON" -m pip install "mlx-whisper==0.4.3"
+
 echo "Building the native recording pill..."
 xcrun swiftc \
   -module-cache-path "$BUILD_DIR/module-cache" \
@@ -63,7 +70,7 @@ backup_and_install() {
   local mode="$3"
   local backup_file="$target_file.local-voice-backup"
 
-  if [[ ! -e "$backup_file" ]]; then
+  if [[ -e "$target_file" && ! -e "$backup_file" ]]; then
     cp -p "$target_file" "$backup_file"
   fi
 
@@ -74,12 +81,22 @@ echo "Applying the verified ctrlSPEAK 1.8.0 compatibility patches..."
 backup_and_install "$PATCH_DIR/hotkeys.py" "$CTRLSPEAK_LIBEXEC/hotkeys.py" 644
 backup_and_install "$PATCH_DIR/model_loader.py" "$CTRLSPEAK_LIBEXEC/model_loader.py" 644
 backup_and_install "$PATCH_DIR/transcription.py" "$CTRLSPEAK_LIBEXEC/transcription.py" 644
+backup_and_install "$PATCH_DIR/ctrlspeak.py" "$CTRLSPEAK_LIBEXEC/ctrlspeak.py" 644
+backup_and_install "$PATCH_DIR/state.py" "$CTRLSPEAK_LIBEXEC/state.py" 644
+backup_and_install "$PATCH_DIR/models/factory.py" "$CTRLSPEAK_LIBEXEC/models/factory.py" 644
+backup_and_install "$PATCH_DIR/models/registry.py" "$CTRLSPEAK_LIBEXEC/models/registry.py" 644
+backup_and_install "$PATCH_DIR/models/whisper_mlx.py" "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" 644
 backup_and_install "$PATCH_DIR/utils/clipboard.py" "$CTRLSPEAK_LIBEXEC/utils/clipboard.py" 644
 
 "$CTRLSPEAK_PYTHON" -m py_compile \
   "$CTRLSPEAK_LIBEXEC/hotkeys.py" \
   "$CTRLSPEAK_LIBEXEC/model_loader.py" \
   "$CTRLSPEAK_LIBEXEC/transcription.py" \
+  "$CTRLSPEAK_LIBEXEC/ctrlspeak.py" \
+  "$CTRLSPEAK_LIBEXEC/state.py" \
+  "$CTRLSPEAK_LIBEXEC/models/factory.py" \
+  "$CTRLSPEAK_LIBEXEC/models/registry.py" \
+  "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" \
   "$CTRLSPEAK_LIBEXEC/utils/clipboard.py"
 
 WRAPPER_PATH="$BREW_PREFIX/bin/ctrlspeak-local"
@@ -89,10 +106,20 @@ cat > "$BUILD_DIR/ctrlspeak-local" <<EOF
 export PATH="$BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export CTRLSPEAK_OVERLAY_PATH="$BREW_PREFIX/bin/ctrlspeak-overlay"
 
+LANGUAGE_FILE="\$HOME/.config/ctrlspeak/language"
+LANGUAGE="$SOURCE_LANGUAGE"
+
+if [[ -f "\$LANGUAGE_FILE" ]]; then
+  read -r SAVED_LANGUAGE < "\$LANGUAGE_FILE"
+  if [[ "\$SAVED_LANGUAGE" == "de" || "\$SAVED_LANGUAGE" == "en" ]]; then
+    LANGUAGE="\$SAVED_LANGUAGE"
+  fi
+fi
+
 exec "$BREW_PREFIX/bin/ctrlspeak" \\
-  --model parakeet \\
-  --source-lang "$SOURCE_LANGUAGE" \\
-  --target-lang "$SOURCE_LANGUAGE" \\
+  --model whisper-mlx \\
+  --source-lang "\$LANGUAGE" \\
+  --target-lang "\$LANGUAGE" \\
   "\$@"
 EOF
 install -m 755 "$BUILD_DIR/ctrlspeak-local" "$WRAPPER_PATH"
@@ -162,4 +189,5 @@ echo "In the file picker, press Command-Shift-G and paste the path above."
 echo "Then run: $PROJECT_DIR/scripts/restart.sh"
 echo
 echo "Usage: triple-tap Control to start, then triple-tap Control to stop."
-echo "The local Parakeet MLX model downloads on first launch."
+echo "Toggle German/English with Control-Option-L."
+echo "The local Whisper Large V3 Turbo MLX model downloads on first launch."

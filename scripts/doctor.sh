@@ -25,7 +25,15 @@ check_file "$BREW_PREFIX/bin/ctrlspeak-local"
 check_file "$BREW_PREFIX/bin/ctrlspeak-overlay"
 check_file "$BREW_PREFIX/var/ctrlspeak/venv/bin/python3.11"
 check_file "$CTRLSPEAK_PREFIX/libexec/hotkeys.py"
+check_file "$CTRLSPEAK_PREFIX/libexec/models/whisper_mlx.py"
 check_file "$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
+
+if "$BREW_PREFIX/var/ctrlspeak/venv/bin/python3.11" -c "import mlx_whisper" >/dev/null 2>&1; then
+  echo "✓ MLX Whisper runtime is installed"
+else
+  echo "✗ MLX Whisper runtime is missing"
+  exit 1
+fi
 
 if launchctl print "gui/$CURRENT_UID/$SERVICE_LABEL" >/dev/null 2>&1; then
   echo "✓ Background service is loaded"

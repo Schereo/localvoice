@@ -43,11 +43,11 @@ def get_model():
                 traceback.print_exc()
             raise ModelLoadError(error_msg)
 
-        # MLX 0.32 streams are thread-local. Parakeet inference happens in
-        # ctrlSPEAK's transcription worker, so its weights must be loaded in
-        # that same worker rather than here on the main thread.
-        if state.stt_model.__class__.__name__ == "ParakeetMLXModel":
-            logger.info("Deferring Parakeet MLX weight loading to the transcription worker thread.")
+        # MLX 0.32 streams are thread-local. MLX inference happens in
+        # ctrlSPEAK's transcription worker, so weights must be loaded in that
+        # same worker rather than here on the main thread.
+        if state.stt_model.__class__.__name__ in {"ParakeetMLXModel", "WhisperMLXModel"}:
+            logger.info("Deferring MLX weight loading to the transcription worker thread.")
             state.model_loaded = False
             return state.stt_model
 

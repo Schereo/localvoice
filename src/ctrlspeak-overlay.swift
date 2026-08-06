@@ -5,6 +5,7 @@ enum OverlayMode: String {
     case processing
     case success
     case empty
+    case language
 }
 
 final class RecorderHUDView: NSView {
@@ -14,6 +15,7 @@ final class RecorderHUDView: NSView {
     private var phase: CGFloat = 0
     private var recordingStartedAt = Date()
     private var animationTimer: Timer?
+    private var languageCode = "DE"
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -44,6 +46,11 @@ final class RecorderHUDView: NSView {
         targetLevel = CGFloat(max(0, min(1, newLevel)))
     }
 
+    func setLanguage(_ language: String) {
+        languageCode = language.uppercased() == "EN" ? "EN" : "DE"
+        needsDisplay = true
+    }
+
     @objc private func tick() {
         phase += 0.13
         displayedLevel += (targetLevel - displayedLevel) * 0.24
@@ -71,6 +78,8 @@ final class RecorderHUDView: NSView {
                 color: NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.28, alpha: 1),
                 symbol: "exclamationmark"
             )
+        case .language:
+            drawLanguageSelection()
         }
     }
 
@@ -108,13 +117,7 @@ final class RecorderHUDView: NSView {
             alignment: .right
         )
 
-        drawText(
-            "⌃×3",
-            in: NSRect(x: 307, y: centerY - 8, width: 34, height: 16),
-            font: .systemFont(ofSize: 11, weight: .medium),
-            color: NSColor.white.withAlphaComponent(0.34),
-            alignment: .center
-        )
+        drawLanguageBadge(in: NSRect(x: 305, y: centerY - 10, width: 38, height: 20))
     }
 
     private func drawWaveform(in rect: NSRect) {
@@ -210,6 +213,53 @@ final class RecorderHUDView: NSView {
         )
     }
 
+    private func drawLanguageSelection() {
+        let centerY = bounds.midY
+        let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1)
+
+        accent.withAlphaComponent(0.18).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
+
+        accent.setStroke()
+        let globe = NSBezierPath(ovalIn: NSRect(x: 21, y: centerY - 6, width: 12, height: 12))
+        globe.lineWidth = 1.3
+        globe.stroke()
+
+        let meridian = NSBezierPath()
+        meridian.move(to: NSPoint(x: 27, y: centerY - 6))
+        meridian.curve(
+            to: NSPoint(x: 27, y: centerY + 6),
+            controlPoint1: NSPoint(x: 23.5, y: centerY - 2),
+            controlPoint2: NSPoint(x: 23.5, y: centerY + 2)
+        )
+        meridian.stroke()
+
+        let languageName = languageCode == "EN" ? "English" : "German"
+        drawText(
+            "Language: \(languageName)",
+            in: NSRect(x: 50, y: centerY - 11, width: 215, height: 22),
+            font: .systemFont(ofSize: 14, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.90),
+            alignment: .left
+        )
+
+        drawLanguageBadge(in: NSRect(x: 299, y: centerY - 10, width: 42, height: 20))
+    }
+
+    private func drawLanguageBadge(in rect: NSRect) {
+        NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.16).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+
+        drawText(
+            languageCode,
+            in: NSRect(x: rect.minX, y: rect.midY - 7, width: rect.width, height: 15),
+            font: .systemFont(ofSize: 10.5, weight: .bold),
+            color: NSColor(calibratedRed: 0.64, green: 0.80, blue: 1, alpha: 0.96),
+            alignment: .center,
+            kern: 0.5
+        )
+    }
+
     private func drawText(
         _ text: String,
         in rect: NSRect,
@@ -240,7 +290,7 @@ final class OverlayController: NSObject {
     private var isClosing = false
     private var previewTimer: Timer?
 
-    init(application: NSApplication, preview: Bool) {
+    init(application: NSApplication, launchMode: String, language: String) {
         self.application = application
 
         let panelSize = NSSize(width: 358, height: 56)
@@ -263,6 +313,7 @@ final class OverlayController: NSObject {
         visualEffect.layer?.borderWidth = 0.7
 
         hudView = RecorderHUDView(frame: visualEffect.bounds)
+        hudView.setLanguage(language)
         hudView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hudView)
 
@@ -280,8 +331,11 @@ final class OverlayController: NSObject {
         positionPanel(panelSize: panelSize)
         showPanel()
 
-        if preview {
+        if launchMode == "preview" {
             startPreview()
+        } else if launchMode == "language" {
+            hudView.setMode(.language)
+            close(after: 1.5)
         } else {
             startReadingCommands()
         }
@@ -411,8 +465,14 @@ let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 application.finishLaunching()
 
-let preview = CommandLine.arguments.dropFirst().first == "preview"
-let controller = OverlayController(application: application, preview: preview)
+let arguments = Array(CommandLine.arguments.dropFirst())
+let launchMode = arguments.first ?? "recording"
+let language = arguments.count > 1 ? arguments[1] : "de"
+let controller = OverlayController(
+    application: application,
+    launchMode: launchMode,
+    language: language
+)
 withExtendedLifetime(controller) {
     application.run()
 }

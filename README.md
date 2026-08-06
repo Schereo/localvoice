@@ -1,12 +1,13 @@
 # Local Voice-to-Text for Apple Silicon Macs
 
-A private, fully local dictation setup built around [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), an MLX-optimized Parakeet speech model, and a custom native macOS recording pill.
+A private, fully local dictation setup built around [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), MLX Whisper Large V3 Turbo, and a custom native macOS recording pill.
 
 Triple-tap **Control** to start recording, speak, then triple-tap **Control** again. The transcript is generated locally and pasted into the active text field.
 
 ## What this setup adds
 
-- Fully local German speech-to-text after the initial model download
+- Fully local German and English speech-to-text after the initial model download
+- Forced DE/EN decoding with a persistent language toggle
 - Global triple-Control shortcut
 - A persistent English recording pill with a real, microphone-responsive waveform
 - Animated `Transcribing`, `Text inserted`, and `No speech detected` states
@@ -41,11 +42,11 @@ The installer:
 
 1. Installs ctrlSPEAK 1.8.0 and FFmpeg through Homebrew.
 2. Builds the native ARM64 recording pill from Swift source.
-3. Applies the verified MLX thread and clipboard compatibility patches.
-4. Configures German Parakeet transcription.
+3. Installs MLX Whisper 0.4.3 and the verified thread/clipboard compatibility patches.
+4. Configures Whisper Large V3 Turbo with German as the initial language.
 5. Installs and starts a per-user LaunchAgent.
 
-The first launch downloads `mlx-community/parakeet-tdt-0.6b-v3`. Later launches work offline.
+The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` model. Later launches work offline.
 
 ## Required macOS permissions
 
@@ -78,6 +79,8 @@ After granting the permissions, restart the service:
 5. The pill changes to `Transcribing`, then `Text inserted`.
 6. The result is pasted wherever the cursor was positioned.
 
+Press **Control–Option–L** between recordings to toggle forced transcription between German and English. The pill confirms `Language: German` or `Language: English`, and its badge shows `DE` or `EN`. The selection is retained after restarts.
+
 Preview the UI without recording:
 
 ```bash
@@ -92,7 +95,13 @@ Check the installation:
 
 ## Language
 
-German is the default. To install with English transcription instead:
+German is the default. Toggle at any time between recordings with:
+
+```text
+Control–Option–L
+```
+
+To make English the initial language on a fresh installation:
 
 ```bash
 CTRLSPEAK_LANGUAGE=en ./install.sh

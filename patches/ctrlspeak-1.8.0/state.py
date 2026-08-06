@@ -1,0 +1,62 @@
+
+import queue
+from rich.console import Console
+
+# Global variables
+startup_time = 0
+console = Console()
+print = console.print
+
+DEBUG_MODE = False
+
+# Model identifiers - source of truth for all model references in the codebase
+MLX_PARAKEET_V3 = "mlx-community/parakeet-tdt-0.6b-v3"
+MLX_PARAKEET_V2 = "mlx-community/parakeet-tdt-0.6b-v2"
+MLX_WHISPER_LARGE_V3_TURBO = "mlx-community/whisper-large-v3-turbo"
+NVIDIA_PARAKEET_V3 = "nvidia/parakeet-tdt-0.6b-v3"
+NVIDIA_PARAKEET_V2 = "nvidia/parakeet-tdt-0.6b-v2"
+NVIDIA_CANARY_1B_FLASH = "nvidia/canary-1b-flash"
+NVIDIA_CANARY_180M = "nvidia/canary-180m-flash"
+NVIDIA_CANARY_V2 = "nvidia/canary-1b-v2"
+NVIDIA_NEMOTRON_STREAMING = "nvidia/nemotron-speech-streaming-en-0.6b"
+OPENAI_WHISPER_V3 = "openai/whisper-large-v3"
+COHERE_TRANSCRIBE = "CohereLabs/cohere-transcribe-03-2026"
+
+# Set of all known/supported models
+KNOWN_MODELS = {
+    MLX_PARAKEET_V3,
+    MLX_PARAKEET_V2,
+    MLX_WHISPER_LARGE_V3_TURBO,
+    NVIDIA_PARAKEET_V3,
+    NVIDIA_PARAKEET_V2,
+    NVIDIA_CANARY_1B_FLASH,
+    NVIDIA_CANARY_180M,
+    NVIDIA_CANARY_V2,
+    NVIDIA_NEMOTRON_STREAMING,
+    OPENAI_WHISPER_V3,
+    COHERE_TRANSCRIBE,
+}
+
+audio_manager = None
+stt_model = None
+model_type = "parakeet"
+model_loaded = False
+
+transcribed_chunks = []
+transcription_queue = queue.Queue()
+transcription_worker_thread = None
+main_loop_active = True
+
+keyboard_manager = None
+
+device = None
+
+source_lang = "en"
+target_lang = "en"
+
+# Recording timing
+recording_start_time = None
+
+# History configuration
+history_enabled = True
+history_db_path = None
