@@ -176,7 +176,8 @@ def run_app(args):
         # doing both GPU/audio initialization at once can abort on macOS.
         if not state.model_loaded:
             logger.info("Waiting for the transcription worker to finish MLX initialization...")
-            model_ready_deadline = time.time() + 90.0
+            # A fresh 1.61-GB model download can take several minutes.
+            model_ready_deadline = time.time() + 1800.0
             while (
                 not state.model_loaded
                 and state.transcription_worker_thread.is_alive()

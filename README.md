@@ -46,7 +46,7 @@ The installer:
 4. Configures Whisper Large V3 Turbo with German as the initial language.
 5. Installs and starts a per-user LaunchAgent.
 
-The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` model. Later launches work offline.
+The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` model and can take a few minutes. Later launches work offline.
 
 ## Required macOS permissions
 
