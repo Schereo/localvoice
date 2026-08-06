@@ -26,6 +26,9 @@ check_file "$BREW_PREFIX/bin/ctrlspeak-overlay"
 check_file "$BREW_PREFIX/var/ctrlspeak/venv/bin/python3.11"
 check_file "$CTRLSPEAK_PREFIX/libexec/hotkeys.py"
 check_file "$CTRLSPEAK_PREFIX/libexec/models/whisper_mlx.py"
+check_file "$CTRLSPEAK_PREFIX/libexec/overlay.py"
+check_file "$CTRLSPEAK_PREFIX/libexec/model_download.py"
+check_file "$CTRLSPEAK_PREFIX/libexec/permissions.py"
 check_file "$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
 
 if "$BREW_PREFIX/var/ctrlspeak/venv/bin/python3.11" -c "import mlx_whisper" >/dev/null 2>&1; then

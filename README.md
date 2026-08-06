@@ -11,6 +11,7 @@ Triple-tap **Control** to start recording, speak, then triple-tap **Control** ag
 - Global triple-Control shortcut
 - A persistent English recording pill with a real, microphone-responsive waveform
 - Animated `Transcribing`, `Text inserted`, and `No speech detected` states
+- Startup status in the same pill: missing macOS permissions and first-run model download progress
 - Automatic clipboard insertion without changing the active app
 - LaunchAgent autostart after login
 - Apple Silicon and M-series optimization through MLX
@@ -44,7 +45,7 @@ The installer:
 4. Configures Whisper Large V3 Turbo with German as the initial language.
 5. Installs and starts a per-user LaunchAgent.
 
-The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` model and can take a few minutes. Later launches work offline.
+The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` model and can take a few minutes. The pill shows a `Downloading model` progress bar while this runs, so a slow first start is visibly distinguishable from a hang. Later launches work offline and show no pill at startup.
 
 ## Required macOS permissions
 
@@ -68,6 +69,10 @@ After granting the permissions, restart the service:
 ./scripts/restart.sh
 ```
 
+This restart is required. Permissions are read once at startup, so a service that was launched before you granted them keeps running with the old, failing state.
+
+If a permission is still missing, ctrlSPEAK shows a `Permissions required` pill naming what it could not get, then exits. Because the service runs as a LaunchAgent with no window, that pill is the only on-screen sign of the failure; the details are in the log.
+
 ## Usage
 
 1. Triple-tap **Control**.
@@ -82,7 +87,7 @@ Click the language badge in the recording pill to switch between forced German (
 Preview the UI without recording:
 
 ```bash
-./scripts/preview-overlay.sh
+./scripts/preview-overlay.sh [preview|permission|download|language]
 ```
 
 Check the installation:
@@ -126,5 +131,9 @@ A future `brew upgrade ctrlspeak` can replace the patched Python files. Re-run `
 ## Technical notes
 
 The waveform does not open a second microphone stream. ctrlSPEAK already calculates RMS audio levels; a small controller thread sends those values to the native AppKit pill over a pipe. The window is nonactivating, ignores mouse events, stays across Spaces, and does not take focus from the current text field.
+
+The pill is driven by a line protocol on stdin: `state <mode>`, `level <0..1>`, `progress <0..1>` (negative means indeterminate), `detail <text>`, and `quit`. The recording session in `hotkeys.py` owns its own pill because it streams levels; the startup states go through `StatusOverlay` in `overlay.py`.
+
+Download progress is measured from the Hugging Face blob directory rather than from hub internals. Partial files carry an `.incomplete` suffix and are counted, so the bar reflects bytes actually written to disk. If the repository size cannot be fetched, the bar falls back to an indeterminate sweep instead of reporting a wrong percentage.
 
 Modified ctrlSPEAK files remain under the upstream project's MIT license. See [NOTICE.md](NOTICE.md).

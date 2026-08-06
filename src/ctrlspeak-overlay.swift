@@ -6,6 +6,8 @@ enum OverlayMode: String {
     case success
     case empty
     case language
+    case permission
+    case download
 }
 
 final class RecorderHUDView: NSView {
@@ -18,6 +20,11 @@ final class RecorderHUDView: NSView {
     private var recordingStartedAt = Date()
     private var animationTimer: Timer?
     private var languageCode = "DE"
+
+    // Progress is nil while the total download size is still unknown, which
+    // makes the bar fall back to an indeterminate sweep.
+    private var progressFraction: CGFloat?
+    private var detailText = ""
 
     private var languageBadgeRect: NSRect {
         NSRect(x: 289, y: bounds.midY - 11, width: 58, height: 22)
@@ -54,6 +61,20 @@ final class RecorderHUDView: NSView {
 
     func setLanguage(_ language: String) {
         languageCode = language.uppercased() == "EN" ? "EN" : "DE"
+        needsDisplay = true
+    }
+
+    func setProgress(_ newProgress: Double?) {
+        if let newProgress, newProgress >= 0 {
+            progressFraction = CGFloat(max(0, min(1, newProgress)))
+        } else {
+            progressFraction = nil
+        }
+        needsDisplay = true
+    }
+
+    func setDetail(_ text: String) {
+        detailText = text
         needsDisplay = true
     }
 
@@ -107,6 +128,10 @@ final class RecorderHUDView: NSView {
             )
         case .language:
             drawLanguageSelection()
+        case .permission:
+            drawPermission()
+        case .download:
+            drawDownload()
         }
     }
 
@@ -273,6 +298,151 @@ final class RecorderHUDView: NSView {
         drawLanguageBadge(in: NSRect(x: 299, y: centerY - 10, width: 42, height: 20))
     }
 
+    private func drawPermission() {
+        let centerY = bounds.midY
+        let amber = NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.28, alpha: 1)
+
+        amber.withAlphaComponent(0.18).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
+
+        // A soft breathing halo keeps the pill readable as a "needs you" state.
+        let pulse = (sin(phase * 0.9) + 1) / 2
+        amber.withAlphaComponent(0.10 + pulse * 0.12).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 12, y: centerY - 15, width: 30, height: 30)).fill()
+
+        amber.setStroke()
+        let mark = NSBezierPath()
+        mark.lineWidth = 2
+        mark.lineCapStyle = .round
+        mark.move(to: NSPoint(x: 27, y: centerY + 6))
+        mark.line(to: NSPoint(x: 27, y: centerY - 1))
+        mark.move(to: NSPoint(x: 27, y: centerY - 5))
+        mark.line(to: NSPoint(x: 27, y: centerY - 5.2))
+        mark.stroke()
+
+        drawText(
+            "Permissions required",
+            in: NSRect(x: 50, y: 30, width: 292, height: 16),
+            font: .systemFont(ofSize: 13, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.90),
+            alignment: .left
+        )
+
+        drawText(
+            detailText.isEmpty ? "Open System Settings to grant access" : detailText,
+            in: NSRect(x: 50, y: 10, width: 292, height: 15),
+            font: .systemFont(ofSize: 10.5, weight: .medium),
+            color: amber.withAlphaComponent(0.80),
+            alignment: .left
+        )
+    }
+
+    private func drawDownload() {
+        let centerY = bounds.midY
+        let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1)
+
+        accent.withAlphaComponent(0.18).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
+
+        // Downward arrow, nudged by a slow bob so the pill never looks frozen.
+        let bob = sin(phase * 1.15) * 1.2
+        accent.setStroke()
+        let arrow = NSBezierPath()
+        arrow.lineWidth = 1.8
+        arrow.lineCapStyle = .round
+        arrow.lineJoinStyle = .round
+        arrow.move(to: NSPoint(x: 27, y: centerY + 5 + bob))
+        arrow.line(to: NSPoint(x: 27, y: centerY - 3 + bob))
+        arrow.move(to: NSPoint(x: 23, y: centerY + 0.5 + bob))
+        arrow.line(to: NSPoint(x: 27, y: centerY - 3.5 + bob))
+        arrow.line(to: NSPoint(x: 31, y: centerY + 0.5 + bob))
+        arrow.stroke()
+
+        accent.withAlphaComponent(0.55).setStroke()
+        let tray = NSBezierPath()
+        tray.lineWidth = 1.8
+        tray.lineCapStyle = .round
+        tray.move(to: NSPoint(x: 22, y: centerY - 6))
+        tray.line(to: NSPoint(x: 32, y: centerY - 6))
+        tray.stroke()
+
+        drawText(
+            "Downloading model",
+            in: NSRect(x: 50, y: 32, width: 200, height: 16),
+            font: .systemFont(ofSize: 12.5, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.88),
+            alignment: .left
+        )
+
+        if let fraction = progressFraction {
+            drawText(
+                "\(Int((fraction * 100).rounded()))%",
+                in: NSRect(x: 252, y: 32, width: 90, height: 16),
+                font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
+                color: NSColor.white.withAlphaComponent(0.62),
+                alignment: .right
+            )
+        }
+
+        drawProgressBar(in: NSRect(x: 50, y: 24, width: 292, height: 5))
+
+        if !detailText.isEmpty {
+            drawText(
+                detailText,
+                in: NSRect(x: 50, y: 7, width: 292, height: 14),
+                font: .systemFont(ofSize: 10, weight: .regular),
+                color: NSColor.white.withAlphaComponent(0.52),
+                alignment: .left
+            )
+        }
+    }
+
+    private func drawProgressBar(in rect: NSRect) {
+        let radius = rect.height / 2
+        let track = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+
+        NSColor.white.withAlphaComponent(0.12).setFill()
+        track.fill()
+
+        NSGraphicsContext.saveGraphicsState()
+        track.addClip()
+
+        let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.95)
+
+        if let fraction = progressFraction {
+            accent.setFill()
+            NSBezierPath(rect: NSRect(
+                x: rect.minX,
+                y: rect.minY,
+                width: max(rect.height, rect.width * fraction),
+                height: rect.height
+            )).fill()
+
+            // Highlight riding the leading edge, so slow downloads still move.
+            let shimmer = (sin(phase * 1.6) + 1) / 2
+            accent.withAlphaComponent(0.35 + shimmer * 0.4).setFill()
+            NSBezierPath(rect: NSRect(
+                x: max(rect.minX, rect.minX + rect.width * fraction - 26),
+                y: rect.minY,
+                width: 26,
+                height: rect.height
+            )).fill()
+        } else {
+            let segmentWidth = rect.width * 0.32
+            let travel = rect.width + segmentWidth
+            let offset = CGFloat(fmod(Double(phase) * 26.0, Double(travel)))
+            accent.withAlphaComponent(0.85).setFill()
+            NSBezierPath(rect: NSRect(
+                x: rect.minX - segmentWidth + offset,
+                y: rect.minY,
+                width: segmentWidth,
+                height: rect.height
+            )).fill()
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
     private func drawLanguageBadge(in rect: NSRect) {
         NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.16).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
@@ -369,6 +539,14 @@ final class OverlayController: NSObject {
             hudView.setMode(.language)
             close(after: 1.5)
         } else {
+            // Status modes must paint immediately; waiting for the first
+            // command would flash the recording UI for a frame.
+            if let initialMode = OverlayMode(rawValue: launchMode) {
+                hudView.setMode(initialMode)
+                if initialMode == .download {
+                    hudView.setProgress(nil)
+                }
+            }
             startReadingCommands()
         }
     }
@@ -441,6 +619,11 @@ final class OverlayController: NSObject {
             } else if newMode == .empty {
                 close(after: 1.8)
             }
+        case "progress":
+            // "progress" without a value, or a negative one, means indeterminate.
+            hudView.setProgress(parts.count == 2 ? Double(parts[1]) : nil)
+        case "detail":
+            hudView.setDetail(parts.count == 2 ? parts[1] : "")
         case "quit":
             close()
         default:

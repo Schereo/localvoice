@@ -83,6 +83,9 @@ backup_and_install "$PATCH_DIR/model_loader.py" "$CTRLSPEAK_LIBEXEC/model_loader
 backup_and_install "$PATCH_DIR/transcription.py" "$CTRLSPEAK_LIBEXEC/transcription.py" 644
 backup_and_install "$PATCH_DIR/ctrlspeak.py" "$CTRLSPEAK_LIBEXEC/ctrlspeak.py" 644
 backup_and_install "$PATCH_DIR/state.py" "$CTRLSPEAK_LIBEXEC/state.py" 644
+backup_and_install "$PATCH_DIR/overlay.py" "$CTRLSPEAK_LIBEXEC/overlay.py" 644
+backup_and_install "$PATCH_DIR/model_download.py" "$CTRLSPEAK_LIBEXEC/model_download.py" 644
+backup_and_install "$PATCH_DIR/permissions.py" "$CTRLSPEAK_LIBEXEC/permissions.py" 644
 backup_and_install "$PATCH_DIR/models/factory.py" "$CTRLSPEAK_LIBEXEC/models/factory.py" 644
 backup_and_install "$PATCH_DIR/models/registry.py" "$CTRLSPEAK_LIBEXEC/models/registry.py" 644
 backup_and_install "$PATCH_DIR/models/whisper_mlx.py" "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" 644
@@ -94,6 +97,9 @@ backup_and_install "$PATCH_DIR/utils/clipboard.py" "$CTRLSPEAK_LIBEXEC/utils/cli
   "$CTRLSPEAK_LIBEXEC/transcription.py" \
   "$CTRLSPEAK_LIBEXEC/ctrlspeak.py" \
   "$CTRLSPEAK_LIBEXEC/state.py" \
+  "$CTRLSPEAK_LIBEXEC/overlay.py" \
+  "$CTRLSPEAK_LIBEXEC/model_download.py" \
+  "$CTRLSPEAK_LIBEXEC/permissions.py" \
   "$CTRLSPEAK_LIBEXEC/models/factory.py" \
   "$CTRLSPEAK_LIBEXEC/models/registry.py" \
   "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" \

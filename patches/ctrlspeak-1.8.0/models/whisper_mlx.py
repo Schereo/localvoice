@@ -31,8 +31,14 @@ class WhisperMLXModel(BaseSTTModel):
         import mlx.core as mx
         from mlx_whisper.transcribe import ModelHolder
 
+        import state
+        from model_download import download_progress
+
         logger.info(f"Loading {self.model_name}...")
-        self.model = ModelHolder.get_model(self.model_name, mx.float16)
+        # On a cold cache this call blocks for a 1.6-GB download, so the pill
+        # reports progress instead of leaving the user with a silent startup.
+        with download_progress(self.model_name, getattr(state, "source_lang", "de")):
+            self.model = ModelHolder.get_model(self.model_name, mx.float16)
         logger.info("MLX Whisper model loaded successfully.")
         return self.model
 
