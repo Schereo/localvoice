@@ -1,0 +1,418 @@
+import AppKit
+
+enum OverlayMode: String {
+    case recording
+    case processing
+    case success
+    case empty
+}
+
+final class RecorderHUDView: NSView {
+    private(set) var mode: OverlayMode = .recording
+    private var targetLevel: CGFloat = 0
+    private var displayedLevel: CGFloat = 0
+    private var phase: CGFloat = 0
+    private var recordingStartedAt = Date()
+    private var animationTimer: Timer?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+
+        let timer = Timer(timeInterval: 1.0 / 30.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        animationTimer?.invalidate()
+    }
+
+    func setMode(_ newMode: OverlayMode) {
+        mode = newMode
+        if newMode == .recording {
+            recordingStartedAt = Date()
+        }
+        needsDisplay = true
+    }
+
+    func setLevel(_ newLevel: Double) {
+        targetLevel = CGFloat(max(0, min(1, newLevel)))
+    }
+
+    @objc private func tick() {
+        phase += 0.13
+        displayedLevel += (targetLevel - displayedLevel) * 0.24
+        targetLevel *= 0.94
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        switch mode {
+        case .recording:
+            drawRecording()
+        case .processing:
+            drawProcessing()
+        case .success:
+            drawResult(
+                title: "Text inserted",
+                color: NSColor(calibratedRed: 0.30, green: 0.88, blue: 0.57, alpha: 1),
+                symbol: "checkmark"
+            )
+        case .empty:
+            drawResult(
+                title: "No speech detected",
+                color: NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.28, alpha: 1),
+                symbol: "exclamationmark"
+            )
+        }
+    }
+
+    private func drawRecording() {
+        let centerY = bounds.midY
+
+        // Soft pulse plus crisp live dot.
+        let pulse = (sin(phase * 0.72) + 1) / 2
+        let haloRadius = 5.5 + pulse * 2.5
+        let haloRect = NSRect(x: 21 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
+        NSColor(calibratedRed: 1, green: 0.25, blue: 0.30, alpha: 0.10 + pulse * 0.10).setFill()
+        NSBezierPath(ovalIn: haloRect).fill()
+
+        NSColor(calibratedRed: 1, green: 0.27, blue: 0.31, alpha: 1).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 18, y: centerY - 3, width: 6, height: 6)).fill()
+
+        drawText(
+            "RECORDING",
+            in: NSRect(x: 34, y: centerY - 8, width: 76, height: 16),
+            font: .systemFont(ofSize: 10.5, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.72),
+            alignment: .left,
+            kern: 0.8
+        )
+
+        drawWaveform(in: NSRect(x: 111, y: 10, width: 128, height: 36))
+
+        let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
+        let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
+        drawText(
+            elapsed,
+            in: NSRect(x: 251, y: centerY - 8, width: 48, height: 16),
+            font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
+            color: NSColor.white.withAlphaComponent(0.58),
+            alignment: .right
+        )
+
+        drawText(
+            "⌃×3",
+            in: NSRect(x: 307, y: centerY - 8, width: 34, height: 16),
+            font: .systemFont(ofSize: 11, weight: .medium),
+            color: NSColor.white.withAlphaComponent(0.34),
+            alignment: .center
+        )
+    }
+
+    private func drawWaveform(in rect: NSRect) {
+        let barCount = 19
+        let barWidth: CGFloat = 3
+        let gap = (rect.width - CGFloat(barCount) * barWidth) / CGFloat(barCount - 1)
+        let energy = max(0.07, min(1, displayedLevel))
+
+        for index in 0..<barCount {
+            let normalizedIndex = CGFloat(index) / CGFloat(barCount - 1)
+            let centerEnvelope = 0.52 + 0.48 * sin(normalizedIndex * .pi)
+            let motion = 0.44 + 0.56 * abs(sin(phase * 1.28 + CGFloat(index) * 0.71))
+            let secondaryMotion = 0.72 + 0.28 * abs(cos(phase * 0.83 - CGFloat(index) * 0.39))
+            let height = max(3, 3 + (rect.height - 3) * energy * centerEnvelope * motion * secondaryMotion)
+            let x = rect.minX + CGFloat(index) * (barWidth + gap)
+            let y = rect.midY - height / 2
+
+            let accent = 0.56 + 0.38 * energy
+            NSColor(calibratedRed: accent, green: 0.74 + energy * 0.16, blue: 1, alpha: 0.82).setFill()
+            NSBezierPath(
+                roundedRect: NSRect(x: x, y: y, width: barWidth, height: height),
+                xRadius: barWidth / 2,
+                yRadius: barWidth / 2
+            ).fill()
+        }
+    }
+
+    private func drawProcessing() {
+        let centerY = bounds.midY
+        drawSpinner(center: NSPoint(x: 27, y: centerY))
+
+        drawText(
+            "Transcribing",
+            in: NSRect(x: 46, y: centerY - 10, width: 142, height: 20),
+            font: .systemFont(ofSize: 13.5, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.88),
+            alignment: .left
+        )
+
+        let startX: CGFloat = 223
+        for index in 0..<5 {
+            let wave = (sin(phase * 1.45 - CGFloat(index) * 0.72) + 1) / 2
+            let radius: CGFloat = 2.2 + wave * 1.35
+            let x = startX + CGFloat(index) * 15
+            NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.32 + wave * 0.60).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x - radius, y: centerY - radius, width: radius * 2, height: radius * 2)).fill()
+        }
+    }
+
+    private func drawSpinner(center: NSPoint) {
+        let segmentCount = 9
+        for index in 0..<segmentCount {
+            let angle = (CGFloat(index) / CGFloat(segmentCount)) * .pi * 2
+            let animatedHead = Int(phase * 2.3) % segmentCount
+            let distance = (index - animatedHead + segmentCount) % segmentCount
+            let alpha = max(0.16, 1 - CGFloat(distance) / CGFloat(segmentCount))
+            let radius: CGFloat = 7
+            let point = NSPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+            NSColor(calibratedRed: 0.47, green: 0.71, blue: 1, alpha: alpha).setFill()
+            NSBezierPath(ovalIn: NSRect(x: point.x - 1.4, y: point.y - 1.4, width: 2.8, height: 2.8)).fill()
+        }
+    }
+
+    private func drawResult(title: String, color: NSColor, symbol: String) {
+        let centerY = bounds.midY
+        color.withAlphaComponent(0.18).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
+
+        color.setStroke()
+        let mark = NSBezierPath()
+        mark.lineWidth = 2
+        mark.lineCapStyle = .round
+        mark.lineJoinStyle = .round
+
+        if symbol == "checkmark" {
+            mark.move(to: NSPoint(x: 22, y: centerY))
+            mark.line(to: NSPoint(x: 26, y: centerY - 4))
+            mark.line(to: NSPoint(x: 33, y: centerY + 5))
+        } else {
+            mark.move(to: NSPoint(x: 27, y: centerY + 5))
+            mark.line(to: NSPoint(x: 27, y: centerY - 2))
+            mark.move(to: NSPoint(x: 27, y: centerY - 6))
+            mark.line(to: NSPoint(x: 27, y: centerY - 6.2))
+        }
+        mark.stroke()
+
+        drawText(
+            title,
+            in: NSRect(x: 50, y: centerY - 11, width: 260, height: 22),
+            font: .systemFont(ofSize: 14, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.90),
+            alignment: .left
+        )
+    }
+
+    private func drawText(
+        _ text: String,
+        in rect: NSRect,
+        font: NSFont,
+        color: NSColor,
+        alignment: NSTextAlignment,
+        kern: CGFloat = 0
+    ) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        paragraph.lineBreakMode = .byTruncatingTail
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+            .kern: kern,
+        ]
+        NSAttributedString(string: text, attributes: attributes).draw(in: rect)
+    }
+}
+
+final class OverlayController: NSObject {
+    private let application: NSApplication
+    private let panel: NSPanel
+    private let hudView: RecorderHUDView
+    private var inputBuffer = Data()
+    private var isClosing = false
+    private var previewTimer: Timer?
+
+    init(application: NSApplication, preview: Bool) {
+        self.application = application
+
+        let panelSize = NSSize(width: 358, height: 56)
+        panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: panelSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        let visualEffect = NSVisualEffectView(frame: NSRect(origin: .zero, size: panelSize))
+        visualEffect.material = .hudWindow
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        visualEffect.wantsLayer = true
+        visualEffect.layer?.cornerRadius = panelSize.height / 2
+        visualEffect.layer?.masksToBounds = true
+        visualEffect.layer?.backgroundColor = NSColor(calibratedWhite: 0.035, alpha: 0.74).cgColor
+        visualEffect.layer?.borderColor = NSColor.white.withAlphaComponent(0.11).cgColor
+        visualEffect.layer?.borderWidth = 0.7
+
+        hudView = RecorderHUDView(frame: visualEffect.bounds)
+        hudView.autoresizingMask = [.width, .height]
+        visualEffect.addSubview(hudView)
+
+        super.init()
+
+        panel.level = .statusBar
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.contentView = visualEffect
+
+        positionPanel(panelSize: panelSize)
+        showPanel()
+
+        if preview {
+            startPreview()
+        } else {
+            startReadingCommands()
+        }
+    }
+
+    private func positionPanel(panelSize: NSSize) {
+        guard let screen = NSScreen.main else { return }
+        let visibleFrame = screen.visibleFrame
+        panel.setFrameOrigin(
+            NSPoint(
+                x: visibleFrame.midX - panelSize.width / 2,
+                y: visibleFrame.minY + 24
+            )
+        )
+    }
+
+    private func showPanel() {
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    private func startReadingCommands() {
+        let input = FileHandle.standardInput
+        input.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                DispatchQueue.main.async {
+                    self?.close()
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self?.consume(data)
+            }
+        }
+    }
+
+    private func consume(_ data: Data) {
+        inputBuffer.append(data)
+
+        while let newline = inputBuffer.firstIndex(of: 0x0A) {
+            let lineData = inputBuffer[..<newline]
+            inputBuffer.removeSubrange(...newline)
+
+            guard let line = String(data: lineData, encoding: .utf8) else { continue }
+            handle(line.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    private func handle(_ command: String) {
+        let parts = command.split(separator: " ", maxSplits: 1).map(String.init)
+        guard let action = parts.first else { return }
+
+        switch action {
+        case "level" where parts.count == 2:
+            if let value = Double(parts[1]) {
+                hudView.setLevel(value)
+            }
+        case "state" where parts.count == 2:
+            guard let newMode = OverlayMode(rawValue: parts[1]) else { return }
+            hudView.setMode(newMode)
+
+            if newMode == .success {
+                close(after: 1.35)
+            } else if newMode == .empty {
+                close(after: 1.8)
+            }
+        case "quit":
+            close()
+        default:
+            break
+        }
+    }
+
+    private func startPreview() {
+        let startedAt = Date()
+        previewTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 24.0, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+
+            let elapsed = Date().timeIntervalSince(startedAt)
+            let simulated = 0.18 + 0.68 * abs(sin(elapsed * 3.1)) * (0.65 + 0.35 * abs(cos(elapsed * 1.7)))
+            self.hudView.setLevel(simulated)
+
+            if elapsed > 3.5 {
+                timer.invalidate()
+                self.hudView.setMode(.processing)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                    self.hudView.setMode(.success)
+                    self.close(after: 1.35)
+                }
+            }
+        }
+    }
+
+    private func close(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.close()
+        }
+    }
+
+    private func close() {
+        guard !isClosing else { return }
+        isClosing = true
+        FileHandle.standardInput.readabilityHandler = nil
+        previewTimer?.invalidate()
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.20
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.application.terminate(nil)
+        })
+    }
+}
+
+let application = NSApplication.shared
+application.setActivationPolicy(.accessory)
+application.finishLaunching()
+
+let preview = CommandLine.arguments.dropFirst().first == "preview"
+let controller = OverlayController(application: application, preview: preview)
+withExtendedLifetime(controller) {
+    application.run()
+}
