@@ -37,6 +37,7 @@ _LANGUAGE_FILE = Path(
 )
 _overlay_session = None
 _overlay_session_lock = threading.Lock()
+_language_lock = threading.Lock()
 
 
 class _OverlaySession:
@@ -72,6 +73,17 @@ class _OverlaySession:
         process.stdin.write(command + "\n")
         process.stdin.flush()
 
+    @staticmethod
+    def _read_events(process):
+        """Apply interaction events emitted by the native recorder HUD."""
+        try:
+            for line in process.stdout:
+                parts = line.strip().split()
+                if len(parts) == 2 and parts[0] == "language":
+                    _apply_language(parts[1])
+        except OSError as exc:
+            logger.warning(f"Could not read recorder overlay events: {exc}")
+
     def _run(self):
         process = None
         mode = "recording"
@@ -81,11 +93,17 @@ class _OverlaySession:
             process = subprocess.Popen(
                 [_OVERLAY_PATH, "recording", self.language],
                 stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
             )
+            threading.Thread(
+                target=self._read_events,
+                args=(process,),
+                name="ctrlspeak-overlay-events",
+                daemon=True,
+            ).start()
             logger.info("Animated recorder overlay started")
 
             while process.poll() is None:
@@ -146,19 +164,6 @@ def _set_overlay_state(overlay_state):
             _overlay_session.set_state(overlay_state)
 
 
-def _show_language_overlay(language):
-    """Show the selected language without taking focus from the active app."""
-    try:
-        subprocess.Popen(
-            [_OVERLAY_PATH, "language", language],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        logger.warning(f"Could not show language overlay: {exc}")
-
-
 def _save_language(language):
     """Persist the language atomically for the next service launch."""
     _LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -167,32 +172,27 @@ def _save_language(language):
     os.replace(temporary_file, _LANGUAGE_FILE)
 
 
-def toggle_language():
-    """Toggle forced Whisper decoding between German and English."""
-    if state.audio_manager and state.audio_manager.is_collecting:
-        logger.warning("Language cannot be changed while recording")
+def _apply_language(language):
+    """Apply and persist a language selected in the recorder HUD."""
+    language = language.lower()
+    if language not in {"de", "en"}:
+        logger.warning(f"Ignoring unsupported language from recorder overlay: {language}")
         return
 
-    if getattr(state.transcription_queue, "unfinished_tasks", 0):
-        logger.warning("Language cannot be changed while transcribing")
-        return
+    with _language_lock:
+        state.source_lang = language
+        state.target_lang = language
 
-    language = "en" if state.source_lang == "de" else "de"
-    state.source_lang = language
-    state.target_lang = language
+        if hasattr(state, "app_state_ref") and state.app_state_ref:
+            state.app_state_ref.source_lang = language
+            state.app_state_ref.target_lang = language
 
-    if hasattr(state, "app_state_ref") and state.app_state_ref:
-        state.app_state_ref.source_lang = language
-        state.app_state_ref.target_lang = language
-
-    try:
-        _save_language(language)
-    except OSError as exc:
-        logger.warning(f"Could not persist language preference: {exc}")
+        try:
+            _save_language(language)
+        except OSError as exc:
+            logger.warning(f"Could not persist language preference: {exc}")
 
     logger.info(f"Forced transcription language changed to: {language}")
-    state.console.print(f"[cyan]Language: {language.upper()}[/cyan]")
-    _show_language_overlay(language)
 
 
 def _start_queue_recording():

@@ -64,7 +64,7 @@ def run_app(args):
     from utils.audio import AudioManager
     from model_loader import get_model
     from transcription import transcription_worker
-    from hotkeys import on_activate, toggle_language
+    from hotkeys import on_activate
     from ui import CtrlSpeakApp, AppState
 
     state.startup_time = time.time()
@@ -141,7 +141,6 @@ def run_app(args):
 
         state.keyboard_manager = KeyboardShortcutManager()
         state.keyboard_manager.register_triple_ctrl_tap(on_activate)
-        state.keyboard_manager.register_shortcut('<ctrl>+<alt>+l', toggle_language)
         state.keyboard_manager.register_shortcut('<alt>+<esc>', exit_app)
 
         restore_environment_variables(saved_env_vars)

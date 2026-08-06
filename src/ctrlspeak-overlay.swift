@@ -9,6 +9,8 @@ enum OverlayMode: String {
 }
 
 final class RecorderHUDView: NSView {
+    var onLanguageToggle: ((String) -> Void)?
+
     private(set) var mode: OverlayMode = .recording
     private var targetLevel: CGFloat = 0
     private var displayedLevel: CGFloat = 0
@@ -16,6 +18,10 @@ final class RecorderHUDView: NSView {
     private var recordingStartedAt = Date()
     private var animationTimer: Timer?
     private var languageCode = "DE"
+
+    private var languageBadgeRect: NSRect {
+        NSRect(x: 289, y: bounds.midY - 11, width: 58, height: 22)
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -49,6 +55,27 @@ final class RecorderHUDView: NSView {
     func setLanguage(_ language: String) {
         languageCode = language.uppercased() == "EN" ? "EN" : "DE"
         needsDisplay = true
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if mode == .recording {
+            addCursorRect(languageBadgeRect, cursor: .pointingHand)
+        }
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard mode == .recording else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard languageBadgeRect.contains(point) else { return }
+
+        let newLanguage = languageCode == "DE" ? "EN" : "DE"
+        setLanguage(newLanguage)
+        onLanguageToggle?(newLanguage.lowercased())
     }
 
     @objc private func tick() {
@@ -105,19 +132,19 @@ final class RecorderHUDView: NSView {
             kern: 0.8
         )
 
-        drawWaveform(in: NSRect(x: 111, y: 10, width: 128, height: 36))
+        drawWaveform(in: NSRect(x: 108, y: 10, width: 119, height: 36))
 
         let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
         drawText(
             elapsed,
-            in: NSRect(x: 251, y: centerY - 8, width: 48, height: 16),
+            in: NSRect(x: 235, y: centerY - 8, width: 47, height: 16),
             font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
             color: NSColor.white.withAlphaComponent(0.58),
             alignment: .right
         )
 
-        drawLanguageBadge(in: NSRect(x: 305, y: centerY - 10, width: 38, height: 20))
+        drawLanguageBadge(in: languageBadgeRect)
     }
 
     private func drawWaveform(in rect: NSRect) {
@@ -251,12 +278,12 @@ final class RecorderHUDView: NSView {
         NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
 
         drawText(
-            languageCode,
+            languageCode == "EN" ? "🇬🇧  EN" : "🇩🇪  DE",
             in: NSRect(x: rect.minX, y: rect.midY - 7, width: rect.width, height: 15),
-            font: .systemFont(ofSize: 10.5, weight: .bold),
+            font: .systemFont(ofSize: 10, weight: .bold),
             color: NSColor(calibratedRed: 0.64, green: 0.80, blue: 1, alpha: 0.96),
             alignment: .center,
-            kern: 0.5
+            kern: 0
         )
     }
 
@@ -319,11 +346,16 @@ final class OverlayController: NSObject {
 
         super.init()
 
+        hudView.onLanguageToggle = { language in
+            FileHandle.standardOutput.write(Data("language \(language)\n".utf8))
+        }
+
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
+        panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.contentView = visualEffect

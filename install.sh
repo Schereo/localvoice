@@ -189,5 +189,5 @@ echo "In the file picker, press Command-Shift-G and paste the path above."
 echo "Then run: $PROJECT_DIR/scripts/restart.sh"
 echo
 echo "Usage: triple-tap Control to start, then triple-tap Control to stop."
-echo "Toggle German/English with Control-Option-L."
+echo "Click the flag badge in the recording pill to switch German/English."
 echo "The local Whisper Large V3 Turbo MLX model downloads on first launch."

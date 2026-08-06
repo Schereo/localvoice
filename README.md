@@ -77,7 +77,7 @@ After granting the permissions, restart the service:
 5. The pill changes to `Transcribing`, then `Text inserted`.
 6. The result is pasted wherever the cursor was positioned.
 
-Press **Control–Option–L** between recordings to toggle forced transcription between German and English. The pill confirms `Language: German` or `Language: English`, and its badge shows `DE` or `EN`. The selection is retained after restarts.
+Click the language badge in the recording pill to switch between forced German (`🇩🇪 DE`) and English (`🇬🇧 EN`) transcription. The change applies to the current recording and is retained after restarts. The pill remains non-activating, so the cursor stays in the app where the text will be inserted.
 
 Preview the UI without recording:
 
@@ -93,11 +93,7 @@ Check the installation:
 
 ## Language
 
-German is the default. Toggle at any time between recordings with:
-
-```text
-Control–Option–L
-```
+German is the default. While recording, click `🇩🇪 DE` or `🇬🇧 EN` in the pill to switch languages. No separate global language shortcut is registered, avoiding conflicts with foreground applications.
 
 To make English the initial language on a fresh installation:
 
