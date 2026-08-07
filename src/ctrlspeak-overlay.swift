@@ -284,16 +284,6 @@ final class RecorderHUDView: NSView {
             return path
         }
 
-        // In light mode the white glints sit on light frost, so a soft dark
-        // hairline supplies the definition the highlights cannot.
-        if !isDarkAppearance {
-            NSGraphicsContext.saveGraphicsState()
-            ring(0.5, 1.5).addClip()
-            NSColor.black.withAlphaComponent(0.13).setFill()
-            bounds.fill()
-            NSGraphicsContext.restoreGraphicsState()
-        }
-
         // Wide, soft glow: the apparent thickness of the glass edge.
         NSGraphicsContext.saveGraphicsState()
         ring(0.5, 4.0).addClip()
@@ -669,10 +659,27 @@ final class RecorderHUDView: NSView {
     }
 }
 
+/// Full-window container that leaves room for the drop shadow but only
+/// accepts clicks on the capsule itself, so the transparent margin never
+/// swallows clicks meant for windows beneath.
+final class ShadowContainerView: NSView {
+    var interactiveFrame = NSRect.zero
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        return interactiveFrame.contains(local) ? super.hitTest(point) : nil
+    }
+}
+
 final class OverlayController: NSObject {
+    // Transparent margin around the capsule reserved for the shadow blur.
+    private static let shadowMargin: CGFloat = 28
+
     private let application: NSApplication
     private let panel: NSPanel
     private let hudView: RecorderHUDView
+    private let effectView: NSVisualEffectView
+    private let containerView: ShadowContainerView
     private var inputBuffer = Data()
     private var isClosing = false
     private var previewTimer: Timer?
@@ -684,9 +691,14 @@ final class OverlayController: NSObject {
         // sit in the flatter capsule; status modes keep the taller panel
         // their two text lines need.
         let compact = launchMode == "recording" || launchMode == "preview"
-        let panelSize = compact
+        let capsuleSize = compact
             ? NSSize(width: 300, height: 44)
             : NSSize(width: 358, height: launchMode == "language" ? 44 : 56)
+        let margin = OverlayController.shadowMargin
+        let panelSize = NSSize(
+            width: capsuleSize.width + margin * 2,
+            height: capsuleSize.height + margin * 2
+        )
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -694,7 +706,12 @@ final class OverlayController: NSObject {
             defer: false
         )
 
-        let visualEffect = NSVisualEffectView(frame: NSRect(origin: .zero, size: panelSize))
+        containerView = ShadowContainerView(frame: NSRect(origin: .zero, size: panelSize))
+        containerView.wantsLayer = true
+
+        let visualEffect = NSVisualEffectView(
+            frame: NSRect(x: margin, y: margin, width: capsuleSize.width, height: capsuleSize.height)
+        )
         visualEffect.material = .hudWindow
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
@@ -704,16 +721,17 @@ final class OverlayController: NSObject {
         // therefore does not clip it: the blur bleeds into the four corners
         // and reads as white over light backgrounds. maskImage is the shape
         // the window server itself honours.
-        visualEffect.maskImage = OverlayController.capsuleMask(size: panelSize)
+        visualEffect.maskImage = OverlayController.capsuleMask(size: capsuleSize)
 
         // The frosted look comes from the material itself: a faint white lift
         // instead of the old near-black tint, so the backdrop shows through
         // the blur the way the native dictation HUD lets it. The rim is drawn
         // by the HUD view as a lit glass edge instead of a flat layer border.
         visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = panelSize.height / 2
+        visualEffect.layer?.cornerRadius = capsuleSize.height / 2
         visualEffect.layer?.masksToBounds = true
         visualEffect.layer?.backgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.07).cgColor
+        effectView = visualEffect
 
         hudView = RecorderHUDView(frame: visualEffect.bounds)
         hudView.setLanguage(language)
@@ -722,6 +740,24 @@ final class OverlayController: NSObject {
 
         super.init()
 
+        containerView.addSubview(visualEffect)
+        containerView.interactiveFrame = visualEffect.frame
+
+        // The separation the old outline used to provide now comes from a
+        // soft drop shadow. The system window shadow is disabled in favour
+        // of this one, whose path always matches the capsule.
+        containerView.layer?.masksToBounds = false
+        containerView.layer?.shadowColor = NSColor.black.cgColor
+        containerView.layer?.shadowOpacity = 0.32
+        containerView.layer?.shadowRadius = 15
+        containerView.layer?.shadowOffset = CGSize(width: 0, height: -5)
+        containerView.layer?.shadowPath = CGPath(
+            roundedRect: visualEffect.frame,
+            cornerWidth: capsuleSize.height / 2,
+            cornerHeight: capsuleSize.height / 2,
+            transform: nil
+        )
+
         hudView.onLanguageToggle = { language in
             FileHandle.standardOutput.write(Data("language \(language)\n".utf8))
         }
@@ -729,12 +765,12 @@ final class OverlayController: NSObject {
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.ignoresMouseEvents = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.contentView = visualEffect
+        panel.contentView = containerView
 
         positionPanel(panelSize: panelSize)
         showPanel()
@@ -783,36 +819,48 @@ final class OverlayController: NSObject {
         return mask
     }
 
-    /// Morph the panel to the size the current state wants, keeping it
-    /// horizontally centred and anchored to the bottom edge.
+    /// Morph the panel to the capsule size the current state wants, keeping
+    /// it horizontally centred and anchored to the bottom edge.
     private func syncPanelSize() {
         guard let wanted = hudView.desiredSize() else { return }
 
-        var frame = panel.frame
-        guard abs(frame.width - wanted.width) > 1 || abs(frame.height - wanted.height) > 1 else {
+        let current = effectView.frame.size
+        guard abs(current.width - wanted.width) > 1 || abs(current.height - wanted.height) > 1 else {
             return
         }
 
-        if abs(frame.height - wanted.height) > 1,
-           let visualEffect = panel.contentView as? NSVisualEffectView {
-            visualEffect.maskImage = OverlayController.capsuleMask(size: wanted)
-            visualEffect.layer?.cornerRadius = wanted.height / 2
+        if abs(current.height - wanted.height) > 1 {
+            effectView.maskImage = OverlayController.capsuleMask(size: wanted)
+            effectView.layer?.cornerRadius = wanted.height / 2
         }
 
-        frame.origin.x += (frame.width - wanted.width) / 2
-        frame.size.width = wanted.width
-        frame.size.height = wanted.height
+        let margin = OverlayController.shadowMargin
+        var frame = panel.frame
+        frame.origin.x += (frame.width - (wanted.width + margin * 2)) / 2
+        frame.size.width = wanted.width + margin * 2
+        frame.size.height = wanted.height + margin * 2
+
+        effectView.frame = NSRect(x: margin, y: margin, width: wanted.width, height: wanted.height)
+        containerView.interactiveFrame = effectView.frame
+        containerView.layer?.shadowPath = CGPath(
+            roundedRect: effectView.frame,
+            cornerWidth: wanted.height / 2,
+            cornerHeight: wanted.height / 2,
+            transform: nil
+        )
+
         panel.setFrame(frame, display: true, animate: true)
-        panel.invalidateShadow()
     }
 
     private func positionPanel(panelSize: NSSize) {
         guard let screen = NSScreen.main else { return }
         let visibleFrame = screen.visibleFrame
+        // The window carries a transparent shadow margin; subtract it so the
+        // visible capsule, not the window, floats 24 pt above the bottom.
         panel.setFrameOrigin(
             NSPoint(
                 x: visibleFrame.midX - panelSize.width / 2,
-                y: visibleFrame.minY + 24
+                y: visibleFrame.minY + 24 - OverlayController.shadowMargin
             )
         )
     }
@@ -820,15 +868,11 @@ final class OverlayController: NSObject {
     private func showPanel() {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup({ context in
+        NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
-        }, completionHandler: { [weak self] in
-            // The shadow shape is derived from the rendered alpha and cached,
-            // so it has to be recomputed once the capsule is fully opaque.
-            self?.panel.invalidateShadow()
-        })
+        }
     }
 
     private func startReadingCommands() {
