@@ -247,9 +247,9 @@ final class RecorderHUDView: NSView {
             height: bounds.height - 16
         ))
 
-        drawText(
+        drawCenteredText(
             elapsed,
-            in: NSRect(x: timerX, y: centerY - 8, width: timerWidth, height: 16),
+            centeredIn: NSRect(x: timerX, y: centerY - 8, width: timerWidth, height: 16),
             font: timerFont,
             color: ink.withAlphaComponent(0.58),
             alignment: .right
@@ -641,13 +641,36 @@ final class RecorderHUDView: NSView {
         chip.setFill()
         NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
 
-        drawText(
+        drawCenteredText(
             languageCode,
-            in: NSRect(x: rect.minX, y: rect.midY - 7, width: rect.width, height: 15),
+            centeredIn: rect,
             font: .systemFont(ofSize: 10, weight: .bold),
             color: NSColor.white.withAlphaComponent(0.98),
-            alignment: .center,
             kern: 0.5
+        )
+    }
+
+    /// Draw one line with its cap-height block optically centred on the
+    /// rect's vertical middle. draw(in:) lays text out from the box top, so
+    /// naive boxes leave caps-only labels (DE, AUTO, digits) sitting high.
+    private func drawCenteredText(
+        _ text: String,
+        centeredIn rect: NSRect,
+        font: NSFont,
+        color: NSColor,
+        alignment: NSTextAlignment = .center,
+        kern: CGFloat = 0
+    ) {
+        let baseline = rect.midY - font.capHeight / 2
+        let boxTop = baseline + font.ascender
+        let boxHeight = ceil(font.ascender - font.descender) + 2
+        drawText(
+            text,
+            in: NSRect(x: rect.minX, y: boxTop - boxHeight, width: rect.width, height: boxHeight),
+            font: font,
+            color: color,
+            alignment: alignment,
+            kern: kern
         )
     }
 
