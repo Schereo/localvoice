@@ -62,6 +62,14 @@ To run the wizard again later (after skipping it, or when a grant broke):
 
 Manual fallback: open **System Settings → Privacy & Security**, add `~/Applications/ctrlSPEAK.app` under all three sections with **+**, then run `./scripts/restart.sh`.
 
+**Granted, but the wizard does not notice?** The pane is showing a stale row. Under ad-hoc signing every rebuild gives the launcher a new identity; a "ctrlSPEAK" row left over from an older build looks identical but grants to the old binary, so flipping it does nothing. Fix:
+
+```bash
+./scripts/setup-permissions.sh --reset
+```
+
+This clears ctrlSPEAK's privacy-pane rows and re-runs the wizard, whose prompts then create fresh rows that match the installed binary. The installer does this reset itself before the wizard (only when signing ad-hoc — Developer ID rows survive rebuilds by design), so this mainly concerns grants made outside the install flow.
+
 If you installed an earlier version, remove the leftover `python3.11` and `bash` entries from those lists. They are no longer used.
 
 <details>

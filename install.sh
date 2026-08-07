@@ -322,6 +322,16 @@ install -m 644 "$BUILD_DIR/$SERVICE_LABEL.plist" "$LAUNCH_AGENT_PATH"
 SETUP_STATUS_FILE="$HOME/.config/ctrlspeak/setup-status"
 rm -f "$SETUP_STATUS_FILE"
 
+# Under ad-hoc signing, a rebuild changes the launcher's identity, so
+# privacy-pane rows from an earlier build no longer match it. Left in place,
+# they are a trap: the pane shows a "ctrlSPEAK" row, the user flips it, and
+# nothing happens because the grant belongs to the old binary. Reset our own
+# rows so the wizard's prompts create fresh, matching ones. With a Developer
+# ID identity the rows survive rebuilds by design — keep them.
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true
+fi
+
 echo
 echo "Opening the guided permission setup..."
 echo "macOS will now ask for Microphone, Accessibility and Input Monitoring."

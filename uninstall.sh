@@ -25,9 +25,7 @@ Options:
   --yes            Do not ask for confirmation.
   --help           Show this message.
 
-macOS permissions are not removed; they cannot be revoked from a script.
-Remove the "ctrlSPEAK" entries under System Settings > Privacy & Security
-yourself if you want a completely clean state.
+ctrlSPEAK's own privacy-pane entries are cleared via tccutil.
 USAGE
 }
 
@@ -120,6 +118,9 @@ fi
 echo "Removing the language preference..."
 rm -f "$HOME/.config/ctrlspeak/language"
 
+echo "Removing ctrlSPEAK's privacy-pane entries..."
+tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true
+
 if [[ "$REMOVE_MODEL" -eq 1 ]]; then
   MODEL_DIR="${HF_HOME:-$HOME/.cache/huggingface}/hub/$MODEL_REPO"
   if [[ -d "$MODEL_DIR" ]]; then
@@ -138,11 +139,7 @@ fi
 echo
 echo "Uninstall complete."
 echo
-echo "Two things this script cannot do for you:"
-echo "  - Revoke macOS permissions. Remove \"ctrlSPEAK\" from Microphone,"
-echo "    Accessibility and Input Monitoring under System Settings >"
-echo "    Privacy & Security."
-echo "  - Delete the logs, in case you still want them:"
-echo "    ~/Library/Logs/ctrlspeak.log, ~/Library/Logs/ctrlspeak.error.log"
+echo "Kept, in case you still want them:"
+echo "  ~/Library/Logs/ctrlspeak.log, ~/Library/Logs/ctrlspeak.error.log"
 [[ "$REMOVE_MODEL" -eq 0 ]] && echo "  The cached model was kept; pass --remove-model to delete it."
 echo

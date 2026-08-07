@@ -4,6 +4,11 @@
 #
 # Useful when the wizard was skipped during install, or when a macOS update
 # or a re-signed bundle invalidated the grants.
+#
+# --reset first clears every privacy-pane row belonging to ctrlSPEAK. Use it
+# when a pane shows the app as enabled but it still is not detected — the
+# signature row is stale (typically from an older build) and flipping it
+# grants to the wrong binary.
 
 set -euo pipefail
 
@@ -16,6 +21,11 @@ SETUP_STATUS_FILE="$HOME/.config/ctrlspeak/setup-status"
   echo "ctrlSPEAK.app not found. Run ./install.sh first." >&2
   exit 1
 }
+
+if [[ "${1:-}" == "--reset" ]]; then
+  echo "Clearing ctrlSPEAK's existing permission entries..."
+  tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true
+fi
 
 # "open" passes --setup only to a fresh instance; a running service would just
 # be activated instead, so stop it for the duration of the wizard.
