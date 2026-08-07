@@ -47,6 +47,7 @@ Uninstall cleanly with `./uninstall.sh`.
 - **[docs/setup.md](docs/setup.md)** — installer steps, permissions wizard, code signing, health checks, uninstall
 - **[docs/usage.md](docs/usage.md)** — keys, hotkey config, language modes, insertion behaviour
 - **[docs/how-it-works.md](docs/how-it-works.md)** — architecture: app identity, pill protocol, download pipeline, onset buffer
+- **[docs/adding-a-language.md](docs/adding-a-language.md)** — how to add a third language beyond DE/EN
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — project layout and how to hack on it
 
 ## Credits & license

@@ -32,3 +32,5 @@ German is the default; pick the initial mode at install time with `CTRLSPEAK_LAN
 `AUTO` asks Whisper to detect the language per recording, deliberately restricted to the German/English pair — the full 99-language ranking readily mistakes German for Dutch, which then decodes as nonsense. After insertion the pill names what was detected (`Detected DE`). Detection costs one extra pass over the first 30 seconds of audio, so fixing the language stays marginally faster.
 
 The badge choice applies to the current recording and survives restarts. No separate global language shortcut is registered, avoiding conflicts with foreground applications.
+
+Want a third language? See [adding-a-language.md](adding-a-language.md).
