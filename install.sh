@@ -8,6 +8,7 @@ SERVICE_LABEL="com.localvoice.app"
 LEGACY_LABEL="com.localvoice.ctrlspeak"
 SOURCE_LANGUAGE="${CTRLSPEAK_LANGUAGE:-de}"
 HOTKEY="${CTRLSPEAK_HOTKEY:-}"
+MIC_STANDBY="${CTRLSPEAK_MIC_STANDBY:-}"
 SUPPORTED_CTRLSPEAK_VERSION="1.8.0"
 
 fail() {
@@ -29,6 +30,10 @@ fi
 
 if [[ -n "$HOTKEY" && ! "$HOTKEY" =~ ^(ctrl|cmd|alt|shift),[234]$ ]]; then
   fail "CTRLSPEAK_HOTKEY must look like 'cmd,2' (modifier: ctrl/cmd/alt/shift, taps: 2-4)."
+fi
+
+if [[ -n "$MIC_STANDBY" && "$MIC_STANDBY" != "on" && "$MIC_STANDBY" != "off" ]]; then
+  fail "CTRLSPEAK_MIC_STANDBY must be 'on' or 'off'."
 fi
 
 command -v brew >/dev/null 2>&1 || fail "Homebrew is missing. Install it from https://brew.sh and run this script again."
@@ -368,6 +373,11 @@ install -m 644 "$BUILD_DIR/$SERVICE_LABEL.plist" "$LAUNCH_AGENT_PATH"
 if [[ -n "$HOTKEY" ]]; then
   mkdir -p "$HOME/.config/ctrlspeak"
   printf '%s\n' "$HOTKEY" > "$HOME/.config/ctrlspeak/hotkey"
+fi
+
+if [[ -n "$MIC_STANDBY" ]]; then
+  mkdir -p "$HOME/.config/ctrlspeak"
+  printf '%s\n' "$MIC_STANDBY" > "$HOME/.config/ctrlspeak/mic-standby"
 fi
 
 # Guided permission setup. The app requests all three permissions itself, so

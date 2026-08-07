@@ -295,6 +295,16 @@ def on_activate():
             state.console.print("[bold yellow]Model is still loading. Please wait...[/bold yellow]")
             return
 
+        # On-demand microphone: open the stream for this session only, so
+        # the macOS mic indicator lights up during recordings, not always.
+        if not state.mic_standby:
+            try:
+                state.audio_manager.open_input_stream()
+            except Exception as exc:
+                logger.error(f"Could not open the microphone stream: {exc}")
+                state.console.print("[bold red]Could not open the microphone.[/bold red]")
+                return
+
         # Track recording start time for history (stored in state for thread safety)
         state.recording_start_time = time.time()
 
@@ -327,6 +337,9 @@ def on_activate():
             final_text = streaming.stop_streaming()
         else:
             final_text = _stop_queue_recording()
+
+        if not state.mic_standby:
+            state.audio_manager.close_input_stream()
 
         if _session_cancelled:
             # The pill already shows "cancelled"; the transcript is discarded.

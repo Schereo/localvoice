@@ -38,7 +38,7 @@ Needs an Apple Silicon Mac, [Homebrew](https://brew.sh), Xcode Command Line Tool
 | **Enter** / **Esc** while recording | Insert / discard |
 | Badge click (`DE` / `EN` / `AUTO`) | Cycle the language mode |
 
-Change the hotkey: `echo "cmd,2" > ~/.config/ctrlspeak/hotkey && ./scripts/restart.sh`. If nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
+Change the hotkey: `echo "cmd,2" > ~/.config/ctrlspeak/hotkey && ./scripts/restart.sh`. The mic opens only while you record (the indicator stays honest); optional standby mode gives instant starts. If nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
 
 Uninstall cleanly with `./uninstall.sh`.
 

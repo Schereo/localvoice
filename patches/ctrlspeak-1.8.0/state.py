@@ -54,6 +54,12 @@ device = None
 source_lang = "en"
 target_lang = "en"
 
+# Whether the microphone stream stays open while idle. Off by default: the
+# always-lit macOS mic indicator reads as "this thing listens to everything",
+# even though idle audio is discarded. Standby buys instant starts and the
+# pre-tap part of the onset roll for those who opt in.
+mic_standby = False
+
 # Language the model actually decoded with. Differs from source_lang only in
 # automatic mode, where the pill reports it back after transcription.
 last_detected_language = None

@@ -558,6 +558,36 @@ class AudioManager:
         """Check if currently in streaming mode."""
         return self._streaming_mode and self.is_collecting
 
+    def open_input_stream(self):
+        """Open and start the input stream if it is not already running."""
+        if self.current_stream is not None:
+            return
+        stream = self.start_input_stream()
+        stream.start()
+
+    def close_input_stream(self):
+        """Stop and close the input stream, releasing the microphone.
+
+        Releasing it is what turns the macOS microphone indicator off, so
+        the on-demand mode calls this after every recording session.
+        """
+        stream = self.current_stream
+        self.current_stream = None
+        if stream is None:
+            return
+
+        # Stale pre-roll from the session that just ended must not leak into
+        # the next one.
+        self._onset_buffer.clear()
+        self._onset_samples = 0
+
+        try:
+            stream.stop()
+            stream.close()
+            logger.info("AudioManager: Input stream closed; microphone released.")
+        except Exception as exc:
+            logger.warning(f"Could not close the input stream cleanly: {exc}")
+
     def start_input_stream(self):
         """Start the audio input stream using the instance method as callback"""
         logger.info("AudioManager: Starting audio input stream...")

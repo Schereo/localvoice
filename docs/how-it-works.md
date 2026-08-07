@@ -20,6 +20,10 @@ On a cold model cache the service wrapper opens the download pill immediately �
 
 Download progress is measured from the Hugging Face blob directory. Xet, the hub's storage backend, materialises files in large chunk batches, so the pill shows a modelled counter: it advances at the estimated rate (a 20-second window with an EMA on top), is gently pulled toward each measurement, never runs backward, and never gets more than a few seconds ahead of the evidence.
 
+## The microphone indicator
+
+macOS lights the mic indicator whenever any process holds an open input stream — it cannot distinguish "listening and discarding" from "recording". LocalVoice therefore opens the stream per recording session by default, so the indicator reflects actual recordings. Standby mode (see [usage](usage.md#microphone-standby)) keeps the stream open for instant starts; idle audio then exists only as the rolling 0.45 s onset buffer in memory.
+
 ## Why the first word is not swallowed
 
 Two mechanisms used to eat word onsets: audio arriving before the recording flag flips was discarded, and within a recording, chunks only entered the segment buffer once Silero VAD classified them as speech — soft first phonemes were dropped as silence. A rolling ~0.45 s onset buffer bridges both gaps: the callback keeps recent chunks while idle and during unclassified silence, and the moment VAD first flips to speech the roll is prepended to the segment. The start beep plays after recording starts, so it marks "already capturing".

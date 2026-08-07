@@ -54,6 +54,19 @@ def find_cached_models():
     return cached
 
 
+def _load_mic_standby():
+    """Read the standby preference; absent file means on-demand (off)."""
+    from pathlib import Path
+
+    try:
+        raw = (Path.home() / ".config" / "ctrlspeak" / "mic-standby").read_text(
+            encoding="utf-8"
+        ).strip().lower()
+        return raw in {"on", "true", "1", "yes"}
+    except OSError:
+        return False
+
+
 def _hide_from_dock():
     """Register this process as a background app before AppKit is touched.
 
@@ -220,8 +233,15 @@ def run_app(args):
 
         state.keyboard_manager.start_listening()
 
-        # Start audio stream
-        with state.audio_manager.start_input_stream():
+        # Microphone strategy: standby keeps the stream (and the macOS mic
+        # indicator) always on for instant starts; the default opens it per
+        # recording session in hotkeys.py.
+        state.mic_standby = _load_mic_standby()
+        logger.info(f"Microphone standby: {'on' if state.mic_standby else 'off (on-demand)'}")
+        if state.mic_standby:
+            state.audio_manager.open_input_stream()
+
+        try:
             logger.info("Starting Textual UI...")
 
             # Sync loaded device state after stream starts
@@ -243,6 +263,8 @@ def run_app(args):
             app.run()
 
             logger.info("Textual UI exited, cleaning up...")
+        finally:
+            state.audio_manager.close_input_stream()
 
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Ctrl+C detected. Shutting down...[/bold yellow]")

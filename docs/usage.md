@@ -25,6 +25,18 @@ echo "cmd,2" > ~/.config/ctrlspeak/hotkey && ./scripts/restart.sh
 
 Any other key pressed between taps voids the sequence, so `Cmd+C` quickly followed by `Cmd+V` never triggers a double-tap. If your gesture collides with a system shortcut (macOS binds *press Cmd twice* to Siri, for example), change either side — Siri's binding lives in System Settings → Apple Intelligence & Siri.
 
+## Microphone standby
+
+By default the microphone stream is opened when a recording starts and released when it ends — the macOS mic indicator lights up during recordings only. The trade-off is a moment of extra latency at the start of each recording and no pre-tap audio in the onset buffer (the in-recording protection against swallowed first syllables remains).
+
+If you prefer instant starts, enable standby — the stream then stays open while the service runs, and the indicator with it. Idle audio is held only as a rolling 0.45 s in memory and never stored or sent anywhere:
+
+```bash
+echo "on" > ~/.config/ctrlspeak/mic-standby && ./scripts/restart.sh
+```
+
+`off` (or deleting the file) returns to on-demand. At install time: `CTRLSPEAK_MIC_STANDBY=on ./install.sh`.
+
 ## Language modes
 
 German is the default; pick the initial mode at install time with `CTRLSPEAK_LANGUAGE=de|en|auto`.
