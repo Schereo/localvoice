@@ -65,6 +65,10 @@ class KeyboardShortcutManager:
         self.recording_cancel_callback = None
         self.recording_finish_callback = None
 
+        # Alt+Esc exit, folded into the single listener (see register_shortcut).
+        self._alt_down = False
+        self.exit_callback = None
+
     @property
     def hotkey_description(self):
         """Human-readable activation gesture, e.g. "double-tap Cmd"."""
@@ -90,6 +94,15 @@ class KeyboardShortcutManager:
             key_combination (str): Key combination in pynput format (e.g., '<alt>+`')
             callback (function): Function to call when shortcut is pressed
         """
+        # The exit shortcut is handled inside the one key listener instead of
+        # a second GlobalHotKeys listener. Two pynput listeners initialise
+        # macOS Text Input Services concurrently from their own threads,
+        # which modern macOS answers with abort() — the service then dies in
+        # a crash loop right after startup.
+        if key_combination == '<alt>+<esc>':
+            self.exit_callback = callback
+            return
+
         self.shortcuts[key_combination] = callback
     
     def register_triple_ctrl_tap(self, callback):
@@ -112,6 +125,13 @@ class KeyboardShortcutManager:
                 recording = bool(self.recording_active_check())
             except Exception:
                 recording = False
+
+        if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
+            self._alt_down = True
+
+        if key == keyboard.Key.esc and self._alt_down and self.exit_callback:
+            self.ctrl_tap_count = 0
+            return self.exit_callback()
 
         # pynput cannot swallow events, so Esc and Enter also reach the
         # frontmost app; they are only interpreted here during a recording.
@@ -150,7 +170,8 @@ class KeyboardShortcutManager:
         """
         Internal handler for key release events
         """
-        # Just continue listening
+        if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
+            self._alt_down = False
         return True
     
     def start_listening(self):
