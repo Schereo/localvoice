@@ -15,6 +15,22 @@ enum OverlayMode: String {
 final class RecorderHUDView: NSView {
     var onLanguageToggle: ((String) -> Void)?
 
+    // The native dictation HUD is light frost with dark ink in light mode and
+    // the inverse in dark mode. All chrome colors derive from these two.
+    private var isDarkAppearance: Bool {
+        effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) != .aqua
+    }
+
+    private var ink: NSColor {
+        isDarkAppearance ? .white : NSColor(calibratedWhite: 0.16, alpha: 1)
+    }
+
+    private var accent: NSColor {
+        isDarkAppearance
+            ? NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1)
+            : NSColor(calibratedRed: 0.09, green: 0.36, blue: 0.87, alpha: 1)
+    }
+
     private(set) var mode: OverlayMode = .recording
     private var targetLevel: CGFloat = 0
     private var displayedLevel: CGFloat = 0
@@ -75,6 +91,42 @@ final class RecorderHUDView: NSView {
         needsDisplay = true
     }
 
+    static func resultTitle(_ mode: OverlayMode) -> String? {
+        switch mode {
+        case .success: return "Text inserted"
+        case .empty: return "No speech detected"
+        case .cancelled: return "Recording discarded"
+        case .clipboard: return "Copied to clipboard"
+        default: return nil
+        }
+    }
+
+    /// The panel size this state wants: single-line states sit in a flatter
+    /// capsule, result states shrink to their text instead of trailing a
+    /// stretch of empty pill. nil keeps whatever the panel currently has.
+    func desiredSize() -> NSSize? {
+        switch mode {
+        case .recording, .processing:
+            return NSSize(width: 300, height: 44)
+        case .permission, .download:
+            return NSSize(width: 358, height: 56)
+        case .language:
+            return nil
+        default:
+            guard let title = RecorderHUDView.resultTitle(mode) else { return nil }
+            let twoLines = !detailText.isEmpty
+            let titleFont = NSFont.systemFont(ofSize: twoLines ? 13 : 14, weight: .semibold)
+            let titleWidth = (title as NSString).size(withAttributes: [.font: titleFont]).width
+            let detailWidth = twoLines
+                ? (detailText as NSString).size(
+                    withAttributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium)]
+                ).width
+                : 0
+            let width = max(200, 50 + ceil(max(titleWidth, detailWidth)) + 20)
+            return NSSize(width: width, height: twoLines ? 56 : 44)
+        }
+    }
+
     func setProgress(_ newProgress: Double?) {
         if let newProgress, newProgress >= 0 {
             progressFraction = CGFloat(max(0, min(1, newProgress)))
@@ -133,28 +185,24 @@ final class RecorderHUDView: NSView {
             drawProcessing()
         case .success:
             drawResult(
-                title: "Text inserted",
-                color: NSColor(calibratedRed: 0.30, green: 0.88, blue: 0.57, alpha: 1),
+                title: RecorderHUDView.resultTitle(mode)!,
+                color: NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1),
                 symbol: "checkmark"
             )
         case .empty:
             drawResult(
-                title: "No speech detected",
-                color: NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.28, alpha: 1),
+                title: RecorderHUDView.resultTitle(mode)!,
+                color: NSColor(calibratedRed: 0.95, green: 0.62, blue: 0.15, alpha: 1),
                 symbol: "exclamationmark"
             )
         case .cancelled:
             drawResult(
-                title: "Recording discarded",
-                color: NSColor(calibratedRed: 1.00, green: 0.55, blue: 0.40, alpha: 1),
+                title: RecorderHUDView.resultTitle(mode)!,
+                color: NSColor(calibratedRed: 0.94, green: 0.42, blue: 0.30, alpha: 1),
                 symbol: "xmark"
             )
         case .clipboard:
-            drawResult(
-                title: "Copied to clipboard",
-                color: NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1),
-                symbol: "checkmark"
-            )
+            drawResult(title: RecorderHUDView.resultTitle(mode)!, color: accent, symbol: "checkmark")
         case .language:
             drawLanguageSelection()
         case .permission:
@@ -179,46 +227,106 @@ final class RecorderHUDView: NSView {
         NSColor(calibratedRed: 1, green: 0.27, blue: 0.31, alpha: 1).setFill()
         NSBezierPath(ovalIn: NSRect(x: 21, y: centerY - 3, width: 6, height: 6)).fill()
 
+        // One shared gap between every neighbour pair — measured to the
+        // timer's glyphs, not its layout box, or the right-aligned digits
+        // would sit visually farther from the waveform than the dot does.
+        let gap: CGFloat = 16
+        let dotRightEdge: CGFloat = 27
         let badge = languageBadgeRect
-        let timerWidth: CGFloat = 50
-        let timerX = badge.minX - 12 - timerWidth
-        drawWaveform(in: NSRect(x: 44, y: 10, width: timerX - 44 - 10, height: 36))
 
         let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
+        let timerFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+        let timerWidth = ceil((elapsed as NSString).size(withAttributes: [.font: timerFont]).width)
+        let timerX = badge.minX - gap - timerWidth
+
+        drawWaveform(in: NSRect(
+            x: dotRightEdge + gap,
+            y: 8,
+            width: timerX - gap - (dotRightEdge + gap),
+            height: bounds.height - 16
+        ))
+
         drawText(
             elapsed,
             in: NSRect(x: timerX, y: centerY - 8, width: timerWidth, height: 16),
-            font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
-            color: NSColor.white.withAlphaComponent(0.58),
+            font: timerFont,
+            color: ink.withAlphaComponent(0.58),
             alignment: .right
         )
 
         drawLanguageBadge(in: badge)
     }
 
-    // A glass rim instead of a flat outline: a hairline ring lit from above,
-    // bright along the top edge and fading to almost nothing at the bottom.
+    // Apple's glass edge is not a uniform outline. The rim reads as the edge
+    // of a curved lens: bright where it catches the light along the top,
+    // nearly vanishing at the sides, with a fainter counter-glint along the
+    // bottom. Layered here as a wide soft glow for thickness, a crisp
+    // hairline carrying that dual-glint gradient, and a faint sheen across
+    // the upper face of the capsule.
     private func drawGlassRim() {
-        let outer = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-            xRadius: bounds.height / 2 - 0.5,
-            yRadius: bounds.height / 2 - 0.5
-        )
-        let innerRect = bounds.insetBy(dx: 1.8, dy: 1.8)
-        let ring = outer.copy() as! NSBezierPath
-        ring.append(NSBezierPath(
-            roundedRect: innerRect,
-            xRadius: innerRect.height / 2,
-            yRadius: innerRect.height / 2
-        ))
-        ring.windingRule = .evenOdd
+        let radius = bounds.height / 2
 
+        func ring(_ outerInset: CGFloat, _ innerInset: CGFloat) -> NSBezierPath {
+            let outerRect = bounds.insetBy(dx: outerInset, dy: outerInset)
+            let innerRect = bounds.insetBy(dx: innerInset, dy: innerInset)
+            let path = NSBezierPath(
+                roundedRect: outerRect,
+                xRadius: radius - outerInset,
+                yRadius: radius - outerInset
+            )
+            path.append(NSBezierPath(
+                roundedRect: innerRect,
+                xRadius: radius - innerInset,
+                yRadius: radius - innerInset
+            ))
+            path.windingRule = .evenOdd
+            return path
+        }
+
+        // In light mode the white glints sit on light frost, so a soft dark
+        // hairline supplies the definition the highlights cannot.
+        if !isDarkAppearance {
+            NSGraphicsContext.saveGraphicsState()
+            ring(0.5, 1.5).addClip()
+            NSColor.black.withAlphaComponent(0.13).setFill()
+            bounds.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        // Wide, soft glow: the apparent thickness of the glass edge.
         NSGraphicsContext.saveGraphicsState()
-        ring.addClip()
-        NSGradient(
-            starting: NSColor.white.withAlphaComponent(0.42),
-            ending: NSColor.white.withAlphaComponent(0.03)
+        ring(0.5, 4.0).addClip()
+        NSGradient(colorsAndLocations:
+            (NSColor.white.withAlphaComponent(0.15), 0.0),
+            (NSColor.white.withAlphaComponent(0.02), 0.45),
+            (NSColor.white.withAlphaComponent(0.08), 1.0)
+        )?.draw(in: bounds, angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+
+        // Crisp hairline: bright top arc, near-invisible sides, faint
+        // counter-glint at the bottom.
+        NSGraphicsContext.saveGraphicsState()
+        ring(0.5, 1.8).addClip()
+        NSGradient(colorsAndLocations:
+            (NSColor.white.withAlphaComponent(0.62), 0.0),
+            (NSColor.white.withAlphaComponent(0.11), 0.38),
+            (NSColor.white.withAlphaComponent(0.05), 0.66),
+            (NSColor.white.withAlphaComponent(0.30), 1.0)
+        )?.draw(in: bounds, angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+
+        // Faint sheen on the upper half sells the convex surface.
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5),
+            xRadius: radius - 1.5,
+            yRadius: radius - 1.5
+        ).addClip()
+        NSGradient(colorsAndLocations:
+            (NSColor.white.withAlphaComponent(0.08), 0.0),
+            (NSColor.white.withAlphaComponent(0.02), 0.35),
+            (NSColor.white.withAlphaComponent(0.0), 0.55)
         )?.draw(in: bounds, angle: -90)
         NSGraphicsContext.restoreGraphicsState()
     }
@@ -238,8 +346,7 @@ final class RecorderHUDView: NSView {
             let x = rect.minX + CGFloat(index) * (barWidth + gap)
             let y = rect.midY - height / 2
 
-            let accent = 0.56 + 0.38 * energy
-            NSColor(calibratedRed: accent, green: 0.74 + energy * 0.16, blue: 1, alpha: 0.82).setFill()
+            ink.withAlphaComponent(0.30 + 0.55 * energy).setFill()
             NSBezierPath(
                 roundedRect: NSRect(x: x, y: y, width: barWidth, height: height),
                 xRadius: barWidth / 2,
@@ -256,7 +363,7 @@ final class RecorderHUDView: NSView {
             "Transcribing",
             in: NSRect(x: 46, y: centerY - 10, width: 142, height: 20),
             font: .systemFont(ofSize: 13.5, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.88),
+            color: ink.withAlphaComponent(0.88),
             alignment: .left
         )
 
@@ -267,7 +374,7 @@ final class RecorderHUDView: NSView {
             let wave = (sin(phase * 1.45 - CGFloat(index) * 0.72) + 1) / 2
             let radius: CGFloat = 2.2 + wave * 1.35
             let x = startX + CGFloat(index) * step
-            NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.32 + wave * 0.60).setFill()
+            accent.withAlphaComponent(0.32 + wave * 0.60).setFill()
             NSBezierPath(ovalIn: NSRect(x: x - radius, y: centerY - radius, width: radius * 2, height: radius * 2)).fill()
         }
     }
@@ -281,7 +388,7 @@ final class RecorderHUDView: NSView {
             let alpha = max(0.16, 1 - CGFloat(distance) / CGFloat(segmentCount))
             let radius: CGFloat = 7
             let point = NSPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
-            NSColor(calibratedRed: 0.47, green: 0.71, blue: 1, alpha: alpha).setFill()
+            accent.withAlphaComponent(alpha).setFill()
             NSBezierPath(ovalIn: NSRect(x: point.x - 1.4, y: point.y - 1.4, width: 2.8, height: 2.8)).fill()
         }
     }
@@ -323,7 +430,7 @@ final class RecorderHUDView: NSView {
                 title,
                 in: NSRect(x: 50, y: centerY - 11, width: textWidth, height: 22),
                 font: .systemFont(ofSize: 14, weight: .semibold),
-                color: NSColor.white.withAlphaComponent(0.90),
+                color: ink.withAlphaComponent(0.92),
                 alignment: .left
             )
             return
@@ -333,7 +440,7 @@ final class RecorderHUDView: NSView {
             title,
             in: NSRect(x: 50, y: 30, width: textWidth, height: 18),
             font: .systemFont(ofSize: 13, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.90),
+            color: ink.withAlphaComponent(0.92),
             alignment: .left
         )
 
@@ -348,8 +455,6 @@ final class RecorderHUDView: NSView {
 
     private func drawLanguageSelection() {
         let centerY = bounds.midY
-        let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1)
-
         accent.withAlphaComponent(0.18).setFill()
         NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
 
@@ -377,11 +482,11 @@ final class RecorderHUDView: NSView {
             "Language: \(languageName)",
             in: NSRect(x: 50, y: centerY - 11, width: 215, height: 22),
             font: .systemFont(ofSize: 14, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.90),
+            color: ink.withAlphaComponent(0.92),
             alignment: .left
         )
 
-        drawLanguageBadge(in: NSRect(x: 290, y: centerY - 11, width: 50, height: 22))
+        drawLanguageBadge(in: NSRect(x: bounds.width - 68, y: centerY - 11, width: 50, height: 22))
     }
 
     private func drawPermission() {
@@ -410,7 +515,7 @@ final class RecorderHUDView: NSView {
             "Permissions required",
             in: NSRect(x: 50, y: 30, width: 292, height: 16),
             font: .systemFont(ofSize: 13, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.90),
+            color: ink.withAlphaComponent(0.92),
             alignment: .left
         )
 
@@ -425,8 +530,6 @@ final class RecorderHUDView: NSView {
 
     private func drawDownload() {
         let centerY = bounds.midY
-        let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1)
-
         accent.withAlphaComponent(0.18).setFill()
         NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
 
@@ -456,7 +559,7 @@ final class RecorderHUDView: NSView {
             "Downloading model",
             in: NSRect(x: 50, y: 32, width: 200, height: 16),
             font: .systemFont(ofSize: 12.5, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.88),
+            color: ink.withAlphaComponent(0.90),
             alignment: .left
         )
 
@@ -465,7 +568,7 @@ final class RecorderHUDView: NSView {
                 "\(Int((displayedProgress * 100).rounded()))%",
                 in: NSRect(x: 252, y: 32, width: 90, height: 16),
                 font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
-                color: NSColor.white.withAlphaComponent(0.62),
+                color: ink.withAlphaComponent(0.62),
                 alignment: .right
             )
         }
@@ -477,7 +580,7 @@ final class RecorderHUDView: NSView {
                 detailText,
                 in: NSRect(x: 50, y: 7, width: 292, height: 14),
                 font: .systemFont(ofSize: 10, weight: .regular),
-                color: NSColor.white.withAlphaComponent(0.52),
+                color: ink.withAlphaComponent(0.55),
                 alignment: .left
             )
         }
@@ -487,13 +590,13 @@ final class RecorderHUDView: NSView {
         let radius = rect.height / 2
         let track = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
 
-        NSColor.white.withAlphaComponent(0.12).setFill()
+        ink.withAlphaComponent(0.12).setFill()
         track.fill()
 
         NSGraphicsContext.saveGraphicsState()
         track.addClip()
 
-        let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.95)
+        let accent = self.accent.withAlphaComponent(0.95)
 
         if progressFraction != nil {
             let fraction = max(0, min(1, displayedProgress))
@@ -531,14 +634,14 @@ final class RecorderHUDView: NSView {
     }
 
     private func drawLanguageBadge(in rect: NSRect) {
-        NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.16).setFill()
+        accent.withAlphaComponent(isDarkAppearance ? 0.16 : 0.10).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
 
         drawText(
             languageCode,
             in: NSRect(x: rect.minX, y: rect.midY - 7, width: rect.width, height: 15),
             font: .systemFont(ofSize: 10, weight: .bold),
-            color: NSColor(calibratedRed: 0.64, green: 0.80, blue: 1, alpha: 0.96),
+            color: accent.withAlphaComponent(0.96),
             alignment: .center,
             kern: 0.5
         )
@@ -577,11 +680,13 @@ final class OverlayController: NSObject {
     init(application: NSApplication, launchMode: String, language: String) {
         self.application = application
 
-        // Recording sessions carry only dot, waveform, timer and badge since
-        // the RECORDING label was dropped; status modes keep the width their
-        // text needs.
+        // Recording sessions carry only dot, waveform, timer and badge and
+        // sit in the flatter capsule; status modes keep the taller panel
+        // their two text lines need.
         let compact = launchMode == "recording" || launchMode == "preview"
-        let panelSize = NSSize(width: compact ? 300 : 358, height: 56)
+        let panelSize = compact
+            ? NSSize(width: 300, height: 44)
+            : NSSize(width: 358, height: launchMode == "language" ? 44 : 56)
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -601,12 +706,14 @@ final class OverlayController: NSObject {
         // the window server itself honours.
         visualEffect.maskImage = OverlayController.capsuleMask(size: panelSize)
 
-        // The rounded layer clips the tint; the rim is drawn by the HUD view
-        // as a top-lit glass edge instead of a flat layer border.
+        // The frosted look comes from the material itself: a faint white lift
+        // instead of the old near-black tint, so the backdrop shows through
+        // the blur the way the native dictation HUD lets it. The rim is drawn
+        // by the HUD view as a lit glass edge instead of a flat layer border.
         visualEffect.wantsLayer = true
         visualEffect.layer?.cornerRadius = panelSize.height / 2
         visualEffect.layer?.masksToBounds = true
-        visualEffect.layer?.backgroundColor = NSColor(calibratedWhite: 0.035, alpha: 0.74).cgColor
+        visualEffect.layer?.backgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.07).cgColor
 
         hudView = RecorderHUDView(frame: visualEffect.bounds)
         hudView.setLanguage(language)
@@ -652,9 +759,10 @@ final class OverlayController: NSObject {
 
     /// Capsule the window server can use to clip the blur material.
     ///
-    /// Drawn at the exact panel size rather than as a resizable cap-inset
-    /// image: for a capsule the vertical caps already consume the full height,
-    /// which leaves nothing to stretch. The panel never resizes.
+    /// The cap insets preserve the rounded ends while the straight middle
+    /// stretches, so the same mask stays clean while the panel animates to a
+    /// different width. Height changes need a fresh mask (the radius is tied
+    /// to it), which resizePanel takes care of.
     private static func capsuleMask(size: NSSize) -> NSImage {
         let mask = NSImage(size: size, flipped: false) { rect in
             NSColor.black.setFill()
@@ -665,8 +773,37 @@ final class OverlayController: NSObject {
             ).fill()
             return true
         }
-        mask.capInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        mask.capInsets = NSEdgeInsets(
+            top: 0,
+            left: size.height / 2 + 1,
+            bottom: 0,
+            right: size.height / 2 + 1
+        )
+        mask.resizingMode = .stretch
         return mask
+    }
+
+    /// Morph the panel to the size the current state wants, keeping it
+    /// horizontally centred and anchored to the bottom edge.
+    private func syncPanelSize() {
+        guard let wanted = hudView.desiredSize() else { return }
+
+        var frame = panel.frame
+        guard abs(frame.width - wanted.width) > 1 || abs(frame.height - wanted.height) > 1 else {
+            return
+        }
+
+        if abs(frame.height - wanted.height) > 1,
+           let visualEffect = panel.contentView as? NSVisualEffectView {
+            visualEffect.maskImage = OverlayController.capsuleMask(size: wanted)
+            visualEffect.layer?.cornerRadius = wanted.height / 2
+        }
+
+        frame.origin.x += (frame.width - wanted.width) / 2
+        frame.size.width = wanted.width
+        frame.size.height = wanted.height
+        panel.setFrame(frame, display: true, animate: true)
+        panel.invalidateShadow()
     }
 
     private func positionPanel(panelSize: NSSize) {
@@ -735,6 +872,7 @@ final class OverlayController: NSObject {
         case "state" where parts.count == 2:
             guard let newMode = OverlayMode(rawValue: parts[1]) else { return }
             hudView.setMode(newMode)
+            syncPanelSize()
 
             switch newMode {
             case .success:
@@ -775,8 +913,10 @@ final class OverlayController: NSObject {
             if elapsed > 3.5 {
                 timer.invalidate()
                 self.hudView.setMode(.processing)
+                self.syncPanelSize()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
                     self.hudView.setMode(.success)
+                    self.syncPanelSize()
                     self.close(after: 1.35)
                 }
             }
