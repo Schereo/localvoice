@@ -314,26 +314,46 @@ EOF
 plutil -lint "$BUILD_DIR/$SERVICE_LABEL.plist" >/dev/null
 install -m 644 "$BUILD_DIR/$SERVICE_LABEL.plist" "$LAUNCH_AGENT_PATH"
 
-launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$CURRENT_UID" "$LAUNCH_AGENT_PATH"
+# Guided permission setup. The app requests all three permissions itself, so
+# macOS pre-lists it in the privacy panes: the user confirms a dialog or flips
+# a switch, instead of digging a hidden unix path out of a file picker. It has
+# to run through LaunchServices ("open") — started from this shell directly,
+# macOS would attribute the requests to the terminal instead of the app.
+SETUP_STATUS_FILE="$HOME/.config/ctrlspeak/setup-status"
+rm -f "$SETUP_STATUS_FILE"
 
 echo
-echo "Installation complete."
+echo "Opening the guided permission setup..."
+echo "macOS will now ask for Microphone, Accessibility and Input Monitoring."
+echo "Approve each dialog; for Accessibility and Input Monitoring, flip the"
+echo "\"ctrlSPEAK\" switch System Settings shows you. The recording pill at the"
+echo "bottom of the screen tracks what is still missing."
 echo
-echo "Grant these permissions to ctrlSPEAK in System Settings > Privacy & Security:"
-echo "  - Microphone"
-echo "  - Accessibility"
-echo "  - Input Monitoring"
+
+open -W "$APP_PATH" --args --setup || true
+
+if [[ "$(cat "$SETUP_STATUS_FILE" 2>/dev/null)" == "granted" ]]; then
+  launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$CURRENT_UID" "$LAUNCH_AGENT_PATH"
+
+  echo "Installation complete — all permissions granted, service started."
+  echo
+  echo "On this first launch the 1.6-GB Whisper model is downloaded; the pill"
+  echo "shows the progress. After that everything runs offline."
+  echo
+  echo "Usage: triple-tap Control to start, then triple-tap Control to stop."
+  echo "Click the badge in the recording pill to cycle German / English / Auto."
+else
+  echo "The permission setup did not finish. Grant these to ctrlSPEAK under"
+  echo "System Settings > Privacy & Security (the app is already listed in"
+  echo "each pane; add it with + and pick $APP_PATH if it is not):"
+  echo "  - Microphone"
+  echo "  - Accessibility"
+  echo "  - Input Monitoring"
+  echo
+  echo "Then run: $PROJECT_DIR/scripts/restart.sh"
+fi
+
 echo
-echo "Click + in each list and pick:"
-echo "  $APP_PATH"
-echo
-echo "It is a normal app now, so it appears as \"ctrlSPEAK\" with its own icon."
-echo "Nothing has to be granted to Python or bash any more; if entries for those"
-echo "are left over from an earlier install, remove them."
-echo
-echo "Then run: $PROJECT_DIR/scripts/restart.sh"
-echo
-echo "Usage: triple-tap Control to start, then triple-tap Control to stop."
-echo "Click the flag badge in the recording pill to switch German/English."
-echo "The local Whisper Large V3 Turbo MLX model downloads on first launch."
+echo "If entries for python3.11 or bash are left over from an earlier install,"
+echo "you can remove them from those lists; they are no longer used."

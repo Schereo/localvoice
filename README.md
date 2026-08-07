@@ -43,7 +43,8 @@ The installer:
 2. Builds the native ARM64 recording pill from Swift source.
 3. Installs MLX Whisper 0.4.3 and the verified thread/clipboard compatibility patches.
 4. Configures Whisper Large V3 Turbo with German as the initial language.
-5. Builds `~/Applications/ctrlSPEAK.app` and starts it from a per-user LaunchAgent.
+5. Builds `~/Applications/ctrlSPEAK.app`.
+6. Walks you through the three macOS permissions, then starts the service.
 
 Homebrew will not load a formula from a third-party tap until you trust it once. If the installer stops there, it prints the exact command to review and trust the formula, then run it again.
 
@@ -51,13 +52,15 @@ The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` mo
 
 ## Required macOS permissions
 
-Open **System Settings → Privacy & Security** and add **ctrlSPEAK** under all three sections:
+The installer ends in a guided setup: the app requests **Microphone**, **Accessibility**, and **Input Monitoring** itself, one after the other. Approve the microphone dialog directly; for the other two, macOS opens System Settings with **ctrlSPEAK already listed** — flip its switch and the wizard moves on. The recording pill at the bottom of the screen shows what is still missing, and once everything is granted the service starts by itself.
 
-- Microphone
-- Accessibility
-- Input Monitoring
+To run the wizard again later (after skipping it, or when a grant broke):
 
-Click **+** in each list and pick `~/Applications/ctrlSPEAK.app`. It is a normal app, so it appears by name with its own icon — no hidden paths to type.
+```bash
+./scripts/setup-permissions.sh
+```
+
+Manual fallback: open **System Settings → Privacy & Security**, add `~/Applications/ctrlSPEAK.app` under all three sections with **+**, then run `./scripts/restart.sh`.
 
 If you installed an earlier version, remove the leftover `python3.11` and `bash` entries from those lists. They are no longer used.
 
@@ -72,15 +75,9 @@ ctrlSPEAK now ships as a real app bundle whose launcher is the root of that tree
 
 </details>
 
-After granting the permissions, restart the service:
+Permissions are read once at startup, so after granting anything manually a restart (`./scripts/restart.sh`) is required — the wizard does this for you.
 
-```bash
-./scripts/restart.sh
-```
-
-This restart is required. Permissions are read once at startup, so a service that was launched before you granted them keeps running with the old, failing state.
-
-If a permission is still missing, ctrlSPEAK shows a `Permissions required` pill naming what it could not get, then exits. Because the service runs as a LaunchAgent with no window, that pill is the only on-screen sign of the failure; the details are in the log.
+If a permission is still missing at startup, ctrlSPEAK shows a `Permissions required` pill naming what it could not get, then exits. Because the service runs as a LaunchAgent with no window, that pill is the only on-screen sign of the failure; `./scripts/doctor.sh` asks the app for its permission status and names the fix.
 
 ## Usage
 

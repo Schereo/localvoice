@@ -73,11 +73,21 @@ if launchctl print "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null | grep -qE "sta
   echo "✓ Background service is running"
 else
   echo "! Background service is loaded but not running"
-  echo "  Usually a missing permission. Check the last lines of:"
-  echo "    ~/Library/Logs/ctrlspeak.log"
-  echo "  Grant Microphone, Accessibility and Input Monitoring to:"
-  echo "    $APP_PATH"
-  echo "  then run ./scripts/restart.sh"
+  echo "  Usually a missing permission. Asking the app for its status..."
+
+  # Must go through LaunchServices: launched from this shell directly, macOS
+  # would report the terminal's permissions instead of the app's. Only safe
+  # while the service is down — "open" cannot pass arguments to a running app.
+  PERMISSION_STATUS_FILE="$HOME/.config/ctrlspeak/permission-status"
+  rm -f "$PERMISSION_STATUS_FILE"
+  open -W "$APP_PATH" --args --setup-status 2>/dev/null || true
+  if [[ -f "$PERMISSION_STATUS_FILE" ]]; then
+    sed 's/^/    /' "$PERMISSION_STATUS_FILE"
+  else
+    echo "    (could not query permission status)"
+  fi
+
+  echo "  Fix with: ./scripts/setup-permissions.sh"
 fi
 
 echo
