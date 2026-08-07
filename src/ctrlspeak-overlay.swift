@@ -32,9 +32,10 @@ final class RecorderHUDView: NSView {
     private var displayedProgress: CGFloat = 0
     private var detailText = ""
 
-    // Right edge at 340 mirrors the 18 pt left margin of the recording dot.
+    // Right-aligned with the same 18 pt margin the recording dot gets on the
+    // left, independent of the panel width the launch mode chose.
     private var languageBadgeRect: NSRect {
-        NSRect(x: 290, y: bounds.midY - 11, width: 50, height: 22)
+        NSRect(x: bounds.width - 68, y: bounds.midY - 11, width: 50, height: 22)
     }
 
     override init(frame frameRect: NSRect) {
@@ -123,6 +124,8 @@ final class RecorderHUDView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
+        drawGlassRim()
+
         switch mode {
         case .recording:
             drawRecording()
@@ -161,43 +164,63 @@ final class RecorderHUDView: NSView {
         }
     }
 
+    // The pulsing red dot alone marks the live recording; a "RECORDING"
+    // label would say the same thing again and cost 90 pt of pill width.
     private func drawRecording() {
         let centerY = bounds.midY
 
         // Soft pulse plus crisp live dot.
         let pulse = (sin(phase * 0.72) + 1) / 2
         let haloRadius = 5.5 + pulse * 2.5
-        let haloRect = NSRect(x: 21 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
+        let haloRect = NSRect(x: 24 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
         NSColor(calibratedRed: 1, green: 0.25, blue: 0.30, alpha: 0.10 + pulse * 0.10).setFill()
         NSBezierPath(ovalIn: haloRect).fill()
 
         NSColor(calibratedRed: 1, green: 0.27, blue: 0.31, alpha: 1).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 18, y: centerY - 3, width: 6, height: 6)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 21, y: centerY - 3, width: 6, height: 6)).fill()
 
-        drawText(
-            "RECORDING",
-            in: NSRect(x: 34, y: centerY - 8, width: 76, height: 16),
-            font: .systemFont(ofSize: 10.5, weight: .semibold),
-            color: NSColor.white.withAlphaComponent(0.72),
-            alignment: .left,
-            kern: 0.8
-        )
-
-        // 8 pt of air after the label; the old layout started the waveform at
-        // 108 while the label ran to ~110, visually touching it.
-        drawWaveform(in: NSRect(x: 118, y: 10, width: 104, height: 36))
+        let badge = languageBadgeRect
+        let timerWidth: CGFloat = 50
+        let timerX = badge.minX - 12 - timerWidth
+        drawWaveform(in: NSRect(x: 44, y: 10, width: timerX - 44 - 10, height: 36))
 
         let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
         drawText(
             elapsed,
-            in: NSRect(x: 226, y: centerY - 8, width: 54, height: 16),
+            in: NSRect(x: timerX, y: centerY - 8, width: timerWidth, height: 16),
             font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
             color: NSColor.white.withAlphaComponent(0.58),
             alignment: .right
         )
 
-        drawLanguageBadge(in: languageBadgeRect)
+        drawLanguageBadge(in: badge)
+    }
+
+    // A glass rim instead of a flat outline: a hairline ring lit from above,
+    // bright along the top edge and fading to almost nothing at the bottom.
+    private func drawGlassRim() {
+        let outer = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: bounds.height / 2 - 0.5,
+            yRadius: bounds.height / 2 - 0.5
+        )
+        let innerRect = bounds.insetBy(dx: 1.8, dy: 1.8)
+        let ring = outer.copy() as! NSBezierPath
+        ring.append(NSBezierPath(
+            roundedRect: innerRect,
+            xRadius: innerRect.height / 2,
+            yRadius: innerRect.height / 2
+        ))
+        ring.windingRule = .evenOdd
+
+        NSGraphicsContext.saveGraphicsState()
+        ring.addClip()
+        NSGradient(
+            starting: NSColor.white.withAlphaComponent(0.42),
+            ending: NSColor.white.withAlphaComponent(0.03)
+        )?.draw(in: bounds, angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func drawWaveform(in rect: NSRect) {
@@ -237,11 +260,13 @@ final class RecorderHUDView: NSView {
             alignment: .left
         )
 
-        let startX: CGFloat = 223
+        // Anchored to the right edge so the row fits the compact panel too.
+        let step: CGFloat = 14
+        let startX = bounds.width - 24 - 4 * step
         for index in 0..<5 {
             let wave = (sin(phase * 1.45 - CGFloat(index) * 0.72) + 1) / 2
             let radius: CGFloat = 2.2 + wave * 1.35
-            let x = startX + CGFloat(index) * 15
+            let x = startX + CGFloat(index) * step
             NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.32 + wave * 0.60).setFill()
             NSBezierPath(ovalIn: NSRect(x: x - radius, y: centerY - radius, width: radius * 2, height: radius * 2)).fill()
         }
@@ -291,10 +316,12 @@ final class RecorderHUDView: NSView {
 
         // Automatic mode reports the language it picked, which needs a second
         // line; without it the title stays vertically centred as before.
+        let textWidth = bounds.width - 66
+
         guard !detailText.isEmpty else {
             drawText(
                 title,
-                in: NSRect(x: 50, y: centerY - 11, width: 260, height: 22),
+                in: NSRect(x: 50, y: centerY - 11, width: textWidth, height: 22),
                 font: .systemFont(ofSize: 14, weight: .semibold),
                 color: NSColor.white.withAlphaComponent(0.90),
                 alignment: .left
@@ -304,7 +331,7 @@ final class RecorderHUDView: NSView {
 
         drawText(
             title,
-            in: NSRect(x: 50, y: 30, width: 260, height: 18),
+            in: NSRect(x: 50, y: 30, width: textWidth, height: 18),
             font: .systemFont(ofSize: 13, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.90),
             alignment: .left
@@ -312,7 +339,7 @@ final class RecorderHUDView: NSView {
 
         drawText(
             detailText,
-            in: NSRect(x: 50, y: 11, width: 260, height: 15),
+            in: NSRect(x: 50, y: 11, width: textWidth, height: 15),
             font: .systemFont(ofSize: 10.5, weight: .medium),
             color: color.withAlphaComponent(0.80),
             alignment: .left
@@ -550,7 +577,11 @@ final class OverlayController: NSObject {
     init(application: NSApplication, launchMode: String, language: String) {
         self.application = application
 
-        let panelSize = NSSize(width: 358, height: 56)
+        // Recording sessions carry only dot, waveform, timer and badge since
+        // the RECORDING label was dropped; status modes keep the width their
+        // text needs.
+        let compact = launchMode == "recording" || launchMode == "preview"
+        let panelSize = NSSize(width: compact ? 300 : 358, height: 56)
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -570,13 +601,12 @@ final class OverlayController: NSObject {
         // the window server itself honours.
         visualEffect.maskImage = OverlayController.capsuleMask(size: panelSize)
 
-        // The rounded layer still clips the tint and draws the hairline border.
+        // The rounded layer clips the tint; the rim is drawn by the HUD view
+        // as a top-lit glass edge instead of a flat layer border.
         visualEffect.wantsLayer = true
         visualEffect.layer?.cornerRadius = panelSize.height / 2
         visualEffect.layer?.masksToBounds = true
         visualEffect.layer?.backgroundColor = NSColor(calibratedWhite: 0.035, alpha: 0.74).cgColor
-        visualEffect.layer?.borderColor = NSColor.white.withAlphaComponent(0.11).cgColor
-        visualEffect.layer?.borderWidth = 0.7
 
         hudView = RecorderHUDView(frame: visualEffect.bounds)
         hudView.setLanguage(language)
