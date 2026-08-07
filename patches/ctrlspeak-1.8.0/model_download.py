@@ -78,42 +78,66 @@ def _format_size(num_bytes):
 
 
 def _watch(repo_id, overlay, stop_event):
-    """Feed download progress to the pill until the download finishes."""
+    """Feed download progress to the pill until the download finishes.
+
+    The filesystem is a bursty witness: the Xet backend materialises the file
+    in chunk batches of tens of MB, so raw samples sit still and then leap.
+    What the pill shows is therefore a modelled counter — it advances every
+    tick at the estimated rate and is gently pulled toward the latest sample,
+    never backward and never more than a few seconds ahead of the evidence.
+    """
     blob_dir = _repo_cache_dir(repo_id)
-    baseline = _local_bytes(blob_dir)
 
     # Fetched here rather than by the caller so a slow or offline metadata
     # lookup never delays the download itself.
     total = _remote_total_bytes(repo_id)
     model_label = repo_id.split("/")[-1]
 
-    # Rate over a sliding window. The Xet backend lands data in large chunk
-    # batches, so an instantaneous rate would swing wildly; ~5 s of history
-    # averages the bursts out.
-    history = deque()
+    samples = deque()
+    first_raw = None
+    displayed = None
+    rate = 0.0
+    last_tick = None
 
     while not stop_event.is_set():
-        downloaded = _local_bytes(blob_dir)
+        raw = _local_bytes(blob_dir)
         now = time.monotonic()
 
-        history.append((now, downloaded))
-        while history and now - history[0][0] > 5.0:
-            history.popleft()
+        if first_raw is None:
+            first_raw = raw
+            displayed = float(raw)
 
-        rate_text = ""
-        if len(history) >= 2:
-            elapsed = now - history[0][0]
-            gained = downloaded - history[0][1]
-            if elapsed > 0.5 and gained > 0:
-                rate_text = f" · {gained / elapsed / 1_000_000:.1f} MB/s"
+        samples.append((now, raw))
+        while len(samples) > 2 and now - samples[0][0] > 20.0:
+            samples.popleft()
+
+        # Rate over the whole 20 s window, then an EMA on top: the window
+        # bridges the gaps between chunk batches, the EMA irons out the edge
+        # where a batch enters or leaves the window.
+        window_elapsed = now - samples[0][0]
+        if window_elapsed >= 1.0:
+            window_rate = max(0.0, (raw - samples[0][1]) / window_elapsed)
+            rate = window_rate if rate == 0.0 else rate * 0.85 + window_rate * 0.15
+
+        if last_tick is not None:
+            advanced = displayed + rate * (now - last_tick)
+            corrected = advanced + (raw - advanced) * 0.03
+            bounded = min(corrected, raw + rate * 4.0)
+            displayed = max(displayed, bounded)
+        last_tick = now
+
+        # Shown steadily rather than gated on recent movement — an EMA fades
+        # over seconds during a real stall instead of flickering per sample.
+        rate_text = f" · {rate / 1_000_000:.1f} MB/s" if rate >= 200_000 else ""
 
         if total:
-            overlay.set_progress(downloaded / total)
-            overlay.set_detail(f"{_format_size(downloaded)} of {_format_size(total)}{rate_text}")
+            displayed = min(displayed, float(total))
+            overlay.set_progress(displayed / total)
+            overlay.set_detail(f"{_format_size(int(displayed))} of {_format_size(total)}{rate_text}")
         else:
             overlay.set_progress(None)
-            gained_total = max(0, downloaded - baseline)
-            overlay.set_detail(f"{model_label} · {_format_size(gained_total)}{rate_text}")
+            gained = max(0, int(displayed) - first_raw)
+            overlay.set_detail(f"{model_label} · {_format_size(gained)}{rate_text}")
 
         stop_event.wait(POLL_SECONDS)
 
