@@ -40,32 +40,48 @@ trap cleanup EXIT
 echo "Installing ctrlSPEAK and its local MLX dependencies..."
 brew tap patelnav/ctrlspeak
 
-# Recent Homebrew refuses to load a formula from a third-party tap until it has
-# been trusted once. Left to itself that surfaces as a bare Homebrew error in
-# the middle of the install, so translate it into the actual next step.
+# Recent Homebrew refuses to load a formula from a third-party tap until it
+# has been trusted once. Explain, ask, and on a yes trust it and carry on in
+# the same run. The question is deliberately not skipped: the trust gate is
+# Homebrew's security model, so the decision has to stay with the user.
 BREW_LOG="$BUILD_DIR/brew-install.log"
-if ! brew install ctrlspeak ffmpeg 2>&1 | tee "$BREW_LOG"; then
-  if grep -q "untrusted tap" "$BREW_LOG"; then
-    cat >&2 <<'TRUST'
+brew_install_packages() {
+  brew install ctrlspeak ffmpeg 2>&1 | tee "$BREW_LOG"
+}
 
-Homebrew will not load formulae from a third-party tap until you trust it once.
-
-The formula builds ctrlSPEAK from its upstream repository
-(https://github.com/patelnav/ctrlspeak) with a pinned checksum. Review it if you
-like:
-
-  brew cat patelnav/ctrlspeak/ctrlspeak
-
-Then trust it and run this installer again:
-
-  brew trust --formula patelnav/ctrlspeak/ctrlspeak
-  ./install.sh
-
-TRUST
-    exit 1
+if ! brew_install_packages; then
+  if ! grep -q "untrusted tap" "$BREW_LOG"; then
+    fail "Homebrew could not install ctrlSPEAK and FFmpeg. See the output above."
   fi
 
-  fail "Homebrew could not install ctrlSPEAK and FFmpeg. See the output above."
+  cat <<'TRUST'
+
+Homebrew will not load formulae from a third-party tap until you trust it once.
+The formula builds ctrlSPEAK from its upstream repository
+(https://github.com/patelnav/ctrlspeak) with a pinned checksum. To review it
+first, answer no and run: brew cat patelnav/ctrlspeak/ctrlspeak
+
+TRUST
+
+  if [[ -t 0 ]]; then
+    read -r -p "Trust the formula now and continue? [y/N] " reply
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+      brew trust --formula patelnav/ctrlspeak/ctrlspeak
+      echo
+      if ! brew_install_packages; then
+        fail "Homebrew could not install ctrlSPEAK and FFmpeg. See the output above."
+      fi
+    else
+      echo "Not trusted. Run ./install.sh again when you are ready." >&2
+      exit 1
+    fi
+  else
+    # No terminal to ask on (CI, piped input) — leave the manual commands.
+    echo "Run these, then run this installer again:" >&2
+    echo "  brew trust --formula patelnav/ctrlspeak/ctrlspeak" >&2
+    echo "  ./install.sh" >&2
+    exit 1
+  fi
 fi
 
 INSTALLED_VERSION="$(brew list --versions ctrlspeak | awk 'NR == 1 { print $2 }')"

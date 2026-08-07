@@ -46,7 +46,7 @@ The installer:
 5. Builds `~/Applications/ctrlSPEAK.app`.
 6. Walks you through the three macOS permissions, then starts the service.
 
-Homebrew will not load a formula from a third-party tap until you trust it once. If the installer stops there, it prints the exact command to review and trust the formula, then run it again.
+Homebrew will not load a formula from a third-party tap until you trust it once. The installer explains this when it happens and asks whether to trust the formula — answer `y` and it continues in the same run. To inspect the formula before deciding, answer `n` and run `brew cat patelnav/ctrlspeak/ctrlspeak`.
 
 The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` model and can take a few minutes. The pill shows a `Downloading model` progress bar while this runs, so a slow first start is visibly distinguishable from a hang. Later launches work offline and show no pill at startup.
 
