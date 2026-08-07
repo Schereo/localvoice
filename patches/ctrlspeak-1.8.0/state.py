@@ -54,6 +54,10 @@ device = None
 source_lang = "en"
 target_lang = "en"
 
+# Language the model actually decoded with. Differs from source_lang only in
+# automatic mode, where the pill reports it back after transcription.
+last_detected_language = None
+
 # Recording timing
 recording_start_time = None
 

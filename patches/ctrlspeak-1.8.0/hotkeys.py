@@ -56,7 +56,11 @@ class _OverlaySession:
         self.thread.start()
 
     def set_state(self, overlay_state):
-        self.commands.put(overlay_state)
+        self.commands.put(f"state {overlay_state}")
+
+    def set_detail(self, text):
+        """Set the pill's secondary line. Newlines would desync the protocol."""
+        self.commands.put("detail " + " ".join(str(text).split()))
 
     def close(self):
         self.commands.put("quit")
@@ -113,14 +117,15 @@ class _OverlaySession:
                     command = None
 
                 if command:
-                    self._write(process, command if command == "quit" else f"state {command}")
+                    self._write(process, command)
 
                     if command == "quit":
                         break
 
-                    mode = command
-                    if command in {"success", "empty"}:
-                        terminal_deadline = time.monotonic() + 3.0
+                    if command.startswith("state "):
+                        mode = command.split(" ", 1)[1]
+                        if mode in {"success", "empty"}:
+                            terminal_deadline = time.monotonic() + 3.0
 
                 if mode == "recording":
                     self._write(process, f"level {self._normalized_level():.4f}")
@@ -164,6 +169,13 @@ def _set_overlay_state(overlay_state):
             _overlay_session.set_state(overlay_state)
 
 
+def _set_overlay_detail(text):
+    """Add a secondary line to the current overlay."""
+    with _overlay_session_lock:
+        if _overlay_session is not None:
+            _overlay_session.set_detail(text)
+
+
 def _save_language(language):
     """Persist the language atomically for the next service launch."""
     _LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +187,7 @@ def _save_language(language):
 def _apply_language(language):
     """Apply and persist a language selected in the recorder HUD."""
     language = language.lower()
-    if language not in {"de", "en"}:
+    if language not in {"de", "en", "auto"}:
         logger.warning(f"Ignoring unsupported language from recorder overlay: {language}")
         return
 
@@ -290,6 +302,12 @@ def on_activate():
             logger.info(f"Final text ({len(final_text)} chars): {final_text[:100]}...")
             copy_to_clipboard(final_text)
             paste_from_clipboard()
+
+            # In automatic mode the choice is the model's, so name it rather
+            # than leaving the user to infer it from the transcript.
+            if state.source_lang == "auto" and state.last_detected_language:
+                _set_overlay_detail(f"Detected {state.last_detected_language.upper()}")
+
             _set_overlay_state("success")
 
             state.console.print("\n[bold cyan]Transcription:[/bold cyan]")

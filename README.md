@@ -43,25 +43,34 @@ The installer:
 2. Builds the native ARM64 recording pill from Swift source.
 3. Installs MLX Whisper 0.4.3 and the verified thread/clipboard compatibility patches.
 4. Configures Whisper Large V3 Turbo with German as the initial language.
-5. Installs and starts a per-user LaunchAgent.
+5. Builds `~/Applications/ctrlSPEAK.app` and starts it from a per-user LaunchAgent.
+
+Homebrew will not load a formula from a third-party tap until you trust it once. If the installer stops there, it prints the exact command to review and trust the formula, then run it again.
 
 The first launch downloads the 1.61-GB `mlx-community/whisper-large-v3-turbo` model and can take a few minutes. The pill shows a `Downloading model` progress bar while this runs, so a slow first start is visibly distinguishable from a hang. Later launches work offline and show no pill at startup.
 
 ## Required macOS permissions
 
-Open **System Settings → Privacy & Security** and add the following executable under all three sections:
+Open **System Settings → Privacy & Security** and add **ctrlSPEAK** under all three sections:
 
 - Microphone
 - Accessibility
 - Input Monitoring
 
-The executable path is:
+Click **+** in each list and pick `~/Applications/ctrlSPEAK.app`. It is a normal app, so it appears by name with its own icon — no hidden paths to type.
 
-```text
-/opt/homebrew/var/ctrlspeak/venv/bin/python3.11
-```
+If you installed an earlier version, remove the leftover `python3.11` and `bash` entries from those lists. They are no longer used.
 
-When macOS opens only a Finder dialog, press **Command–Shift–G**, paste that complete path, and press Return.
+<details>
+<summary>Why the permissions used to be granted to Python</summary>
+
+macOS grants TCC permissions to the *responsible process*, which is the root of the process tree rather than whichever binary calls the API. Earlier versions launched a shell script from the LaunchAgent, so that root was `/bin/bash` — ctrlSPEAK's own error message even said to grant Accessibility "to bash, not Python".
+
+The alternative, granting them to `/opt/homebrew/var/ctrlspeak/venv/bin/python3.11`, has two problems. That path is a symlink into a versioned Cellar directory, so the grant breaks on every `brew upgrade python@3.11`. And Input Monitoring in particular will not reliably accept a loose executable at all, which is why it often could not be selected.
+
+ctrlSPEAK now ships as a real app bundle whose launcher is the root of that tree, so all three permissions attach to one stable identity.
+
+</details>
 
 After granting the permissions, restart the service:
 
@@ -98,15 +107,27 @@ Check the installation:
 
 ## Language
 
-German is the default. While recording, click `🇩🇪 DE` or `🇬🇧 EN` in the pill to switch languages. No separate global language shortcut is registered, avoiding conflicts with foreground applications.
+German is the default. Click the badge in the recording pill to cycle through three modes:
 
-To make English the initial language on a fresh installation:
+| Badge | Behaviour |
+|---|---|
+| `🇩🇪 DE` | Always decode as German |
+| `🇬🇧 EN` | Always decode as English |
+| `🌐 AUTO` | Detect German or English per recording |
+
+The choice applies to the current recording and survives restarts. No separate global language shortcut is registered, avoiding conflicts with foreground applications.
+
+In `AUTO` the pill names the language it picked once the text is inserted, so the decision is visible rather than guessed at. Detection is deliberately restricted to German and English: Whisper ranks all 99 languages it knows and readily returns Dutch or Afrikaans for German speech, which then decodes as nonsense. Comparing only these two probabilities keeps a wrong guess from leaving the pair.
+
+`AUTO` costs one extra pass over the first 30 seconds of audio before transcription. Fixing the language stays marginally faster, so it remains the default.
+
+To pick the initial mode on a fresh installation:
 
 ```bash
-CTRLSPEAK_LANGUAGE=en ./install.sh
+CTRLSPEAK_LANGUAGE=auto ./install.sh
 ```
 
-The recording pill itself is always in English.
+Accepts `de`, `en`, or `auto`. The recording pill itself is always in English.
 
 ## Service and logs
 
@@ -124,6 +145,28 @@ Logs are stored locally at:
 ~/.config/ctrlspeak/logs/ctrlspeak.log
 ```
 
+## Code signing
+
+The installer signs `ctrlSPEAK.app` ad-hoc by default. If a **Developer ID Application** certificate is in your keychain, it is picked up automatically instead — then the permissions attach to your team and bundle ID and survive any rebuild of the launcher.
+
+To install one (requires an Apple Developer account): Xcode → Settings → Accounts → your team → *Manage Certificates…* → **+** → *Developer ID Application*. Then re-run `./install.sh`. Because the signing identity changes, macOS treats the app as new — grant the three permissions once more afterwards.
+
+A specific identity can be forced with `CTRLSPEAK_SIGN_IDENTITY="Developer ID Application: …" ./install.sh`.
+
+## Uninstalling
+
+```bash
+./uninstall.sh
+```
+
+Removes the service, the app bundle, the pill, the wrapper, and the patches — restoring ctrlSPEAK's original files from the backups `install.sh` made. The model cache and the Homebrew formula are kept by default:
+
+```bash
+./uninstall.sh --remove-model --remove-brew
+```
+
+macOS permissions cannot be revoked from a script. Remove the `ctrlSPEAK` entries under System Settings → Privacy & Security yourself if you want a completely clean state.
+
 ## Homebrew upgrades
 
 A future `brew upgrade ctrlspeak` can replace the patched Python files. Re-run `./install.sh` afterward. The installer deliberately stops when the installed ctrlSPEAK version differs from the verified version, rather than applying incompatible patches silently.
@@ -133,6 +176,10 @@ A future `brew upgrade ctrlspeak` can replace the patched Python files. Re-run `
 The waveform does not open a second microphone stream. ctrlSPEAK already calculates RMS audio levels; a small controller thread sends those values to the native AppKit pill over a pipe. The window is nonactivating, ignores mouse events, stays across Spaces, and does not take focus from the current text field.
 
 The pill is driven by a line protocol on stdin: `state <mode>`, `level <0..1>`, `progress <0..1>` (negative means indeterminate), `detail <text>`, and `quit`. The recording session in `hotkeys.py` owns its own pill because it streams levels; the startup states go through `StatusOverlay` in `overlay.py`.
+
+`ctrlSPEAK.app` contains a small native launcher that spawns the wrapper as a child and waits, forwarding termination signals so `launchctl bootout` brings the whole tree down. It deliberately does not `exec`: that would replace its own image, and the responsible process would become the shell again. It holds no configuration either — paths come from `Contents/Resources/launch.conf`, so the binary stays byte-identical across machines.
+
+The bundle is signed ad-hoc, which is the identity TCC keys the permissions to. Reinstalling on the same Mac keeps the permissions you already granted, because the signature only changes when the launcher, the icon, or `launch.conf` does.
 
 Download progress is measured from the Hugging Face blob directory rather than from hub internals. Partial files carry an `.incomplete` suffix and are counted, so the bar reflects bytes actually written to disk. If the repository size cannot be fetched, the bar falls back to an indeterminate sweep instead of reporting a wrong percentage.
 

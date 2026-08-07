@@ -20,8 +20,8 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   fail "Apple Silicon is required."
 fi
 
-if [[ "$SOURCE_LANGUAGE" != "de" && "$SOURCE_LANGUAGE" != "en" ]]; then
-  fail "CTRLSPEAK_LANGUAGE must be 'de' or 'en'."
+if [[ "$SOURCE_LANGUAGE" != "de" && "$SOURCE_LANGUAGE" != "en" && "$SOURCE_LANGUAGE" != "auto" ]]; then
+  fail "CTRLSPEAK_LANGUAGE must be 'de', 'en' or 'auto'."
 fi
 
 command -v brew >/dev/null 2>&1 || fail "Homebrew is missing. Install it from https://brew.sh and run this script again."
@@ -39,7 +39,34 @@ trap cleanup EXIT
 
 echo "Installing ctrlSPEAK and its local MLX dependencies..."
 brew tap patelnav/ctrlspeak
-brew install ctrlspeak ffmpeg
+
+# Recent Homebrew refuses to load a formula from a third-party tap until it has
+# been trusted once. Left to itself that surfaces as a bare Homebrew error in
+# the middle of the install, so translate it into the actual next step.
+BREW_LOG="$BUILD_DIR/brew-install.log"
+if ! brew install ctrlspeak ffmpeg 2>&1 | tee "$BREW_LOG"; then
+  if grep -q "untrusted tap" "$BREW_LOG"; then
+    cat >&2 <<'TRUST'
+
+Homebrew will not load formulae from a third-party tap until you trust it once.
+
+The formula builds ctrlSPEAK from its upstream repository
+(https://github.com/patelnav/ctrlspeak) with a pinned checksum. Review it if you
+like:
+
+  brew cat patelnav/ctrlspeak/ctrlspeak
+
+Then trust it and run this installer again:
+
+  brew trust --formula patelnav/ctrlspeak/ctrlspeak
+  ./install.sh
+
+TRUST
+    exit 1
+  fi
+
+  fail "Homebrew could not install ctrlSPEAK and FFmpeg. See the output above."
+fi
 
 INSTALLED_VERSION="$(brew list --versions ctrlspeak | awk 'NR == 1 { print $2 }')"
 if [[ "$INSTALLED_VERSION" != "$SUPPORTED_CTRLSPEAK_VERSION" ]]; then
@@ -117,7 +144,7 @@ LANGUAGE="$SOURCE_LANGUAGE"
 
 if [[ -f "\$LANGUAGE_FILE" ]]; then
   read -r SAVED_LANGUAGE < "\$LANGUAGE_FILE"
-  if [[ "\$SAVED_LANGUAGE" == "de" || "\$SAVED_LANGUAGE" == "en" ]]; then
+  if [[ "\$SAVED_LANGUAGE" == "de" || "\$SAVED_LANGUAGE" == "en" || "\$SAVED_LANGUAGE" == "auto" ]]; then
     LANGUAGE="\$SAVED_LANGUAGE"
   fi
 fi
@@ -130,7 +157,117 @@ exec "$BREW_PREFIX/bin/ctrlspeak" \\
 EOF
 install -m 755 "$BUILD_DIR/ctrlspeak-local" "$WRAPPER_PATH"
 
-mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+# macOS keys TCC permissions to the responsible process — the root of the
+# process tree. Without this bundle that root is /bin/bash, which is why the
+# permissions used to be granted to bash or to the Homebrew Python symlink:
+# a versioned Cellar path that Input Monitoring refuses and that breaks on
+# every Python upgrade. A real app bundle gives the tree one stable identity
+# named "ctrlSPEAK".
+echo "Building the ctrlSPEAK app bundle..."
+xcrun swiftc \
+  -module-cache-path "$BUILD_DIR/module-cache" \
+  "$PROJECT_DIR/src/ctrlspeak-launcher.swift" \
+  -o "$BUILD_DIR/ctrlSPEAK-launcher"
+
+xcrun swiftc \
+  -module-cache-path "$BUILD_DIR/module-cache" \
+  "$PROJECT_DIR/src/ctrlspeak-icon.swift" \
+  -o "$BUILD_DIR/ctrlspeak-icon"
+
+mkdir -p "$BUILD_DIR/ctrlSPEAK.iconset"
+"$BUILD_DIR/ctrlspeak-icon" "$BUILD_DIR/ctrlSPEAK.iconset"
+iconutil -c icns "$BUILD_DIR/ctrlSPEAK.iconset" -o "$BUILD_DIR/ctrlSPEAK.icns"
+
+APP_STAGE="$BUILD_DIR/ctrlSPEAK.app"
+mkdir -p "$APP_STAGE/Contents/MacOS" "$APP_STAGE/Contents/Resources"
+install -m 755 "$BUILD_DIR/ctrlSPEAK-launcher" "$APP_STAGE/Contents/MacOS/ctrlSPEAK"
+install -m 644 "$BUILD_DIR/ctrlSPEAK.icns" "$APP_STAGE/Contents/Resources/ctrlSPEAK.icns"
+
+cat > "$APP_STAGE/Contents/Resources/launch.conf" <<EOF
+command=$WRAPPER_PATH
+overlay=$BREW_PREFIX/bin/ctrlspeak-overlay
+path=$BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin
+EOF
+
+cat > "$APP_STAGE/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>ctrlSPEAK</string>
+  <key>CFBundleDisplayName</key>
+  <string>ctrlSPEAK</string>
+  <key>CFBundleIdentifier</key>
+  <string>$SERVICE_LABEL</string>
+  <key>CFBundleExecutable</key>
+  <string>ctrlSPEAK</string>
+  <key>CFBundleIconFile</key>
+  <string>ctrlSPEAK</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$SUPPORTED_CTRLSPEAK_VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$SUPPORTED_CTRLSPEAK_VERSION</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>ctrlSPEAK records audio so it can transcribe your speech locally on this Mac.</string>
+</dict>
+</plist>
+EOF
+
+plutil -lint "$APP_STAGE/Contents/Info.plist" >/dev/null
+
+# The signature is what TCC keys the permissions to. A Developer ID identity
+# is preferred when one is in the keychain: permissions then attach to the
+# team + bundle ID and survive any rebuild of the launcher. Ad-hoc signing is
+# the fallback and only stays stable while the binaries do.
+SIGN_IDENTITY="${CTRLSPEAK_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null |
+    awk -F'"' '/Developer ID Application/ { print $2; exit }')"
+fi
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  # Hardened runtime plus the audio-input entitlement, so the signed tree may
+  # keep recording; both are also what notarization would later require.
+  cat > "$BUILD_DIR/entitlements.plist" <<'ENTITLEMENTS'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>
+ENTITLEMENTS
+
+  echo "Signing with: $SIGN_IDENTITY"
+  echo "(macOS may ask for keychain access; choose \"Always Allow\".)"
+  codesign --force --options runtime \
+    --entitlements "$BUILD_DIR/entitlements.plist" \
+    --sign "$SIGN_IDENTITY" "$APP_STAGE" ||
+    fail "Could not sign with '$SIGN_IDENTITY'. Unlock the login keychain and try again."
+else
+  codesign --force --sign - "$APP_STAGE" >/dev/null 2>&1 ||
+    fail "Could not sign the app bundle. Check that Xcode Command Line Tools are installed."
+fi
+
+APP_PATH="$HOME/Applications/ctrlSPEAK.app"
+mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+
+# Stop the service before replacing the bundle it is running from.
+launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
+
+rm -rf "$APP_PATH"
+ditto "$APP_STAGE" "$APP_PATH"
+
 LAUNCH_AGENT_PATH="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
 
 cat > "$BUILD_DIR/$SERVICE_LABEL.plist" <<EOF
@@ -142,7 +279,7 @@ cat > "$BUILD_DIR/$SERVICE_LABEL.plist" <<EOF
   <string>$SERVICE_LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$WRAPPER_PATH</string>
+    <string>$APP_PATH/Contents/MacOS/ctrlSPEAK</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -183,15 +320,18 @@ launchctl bootstrap "gui/$CURRENT_UID" "$LAUNCH_AGENT_PATH"
 echo
 echo "Installation complete."
 echo
-echo "Required macOS permissions:"
-echo "  System Settings > Privacy & Security > Microphone"
-echo "  System Settings > Privacy & Security > Accessibility"
-echo "  System Settings > Privacy & Security > Input Monitoring"
+echo "Grant these permissions to ctrlSPEAK in System Settings > Privacy & Security:"
+echo "  - Microphone"
+echo "  - Accessibility"
+echo "  - Input Monitoring"
 echo
-echo "Add this executable to all three sections:"
-echo "  $CTRLSPEAK_PYTHON"
+echo "Click + in each list and pick:"
+echo "  $APP_PATH"
 echo
-echo "In the file picker, press Command-Shift-G and paste the path above."
+echo "It is a normal app now, so it appears as \"ctrlSPEAK\" with its own icon."
+echo "Nothing has to be granted to Python or bash any more; if entries for those"
+echo "are left over from an earlier install, remove them."
+echo
 echo "Then run: $PROJECT_DIR/scripts/restart.sh"
 echo
 echo "Usage: triple-tap Control to start, then triple-tap Control to stop."

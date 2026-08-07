@@ -59,8 +59,11 @@ final class RecorderHUDView: NSView {
         targetLevel = CGFloat(max(0, min(1, newLevel)))
     }
 
+    static let languageCycle = ["DE", "EN", "AUTO"]
+
     func setLanguage(_ language: String) {
-        languageCode = language.uppercased() == "EN" ? "EN" : "DE"
+        let requested = language.uppercased()
+        languageCode = RecorderHUDView.languageCycle.contains(requested) ? requested : "DE"
         needsDisplay = true
     }
 
@@ -94,9 +97,10 @@ final class RecorderHUDView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         guard languageBadgeRect.contains(point) else { return }
 
-        let newLanguage = languageCode == "DE" ? "EN" : "DE"
-        setLanguage(newLanguage)
-        onLanguageToggle?(newLanguage.lowercased())
+        let cycle = RecorderHUDView.languageCycle
+        let next = cycle[((cycle.firstIndex(of: languageCode) ?? 0) + 1) % cycle.count]
+        setLanguage(next)
+        onLanguageToggle?(next.lowercased())
     }
 
     @objc private func tick() {
@@ -256,11 +260,32 @@ final class RecorderHUDView: NSView {
         }
         mark.stroke()
 
+        // Automatic mode reports the language it picked, which needs a second
+        // line; without it the title stays vertically centred as before.
+        guard !detailText.isEmpty else {
+            drawText(
+                title,
+                in: NSRect(x: 50, y: centerY - 11, width: 260, height: 22),
+                font: .systemFont(ofSize: 14, weight: .semibold),
+                color: NSColor.white.withAlphaComponent(0.90),
+                alignment: .left
+            )
+            return
+        }
+
         drawText(
             title,
-            in: NSRect(x: 50, y: centerY - 11, width: 260, height: 22),
-            font: .systemFont(ofSize: 14, weight: .semibold),
+            in: NSRect(x: 50, y: 30, width: 260, height: 18),
+            font: .systemFont(ofSize: 13, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.90),
+            alignment: .left
+        )
+
+        drawText(
+            detailText,
+            in: NSRect(x: 50, y: 11, width: 260, height: 15),
+            font: .systemFont(ofSize: 10.5, weight: .medium),
+            color: color.withAlphaComponent(0.80),
             alignment: .left
         )
     }
@@ -286,7 +311,12 @@ final class RecorderHUDView: NSView {
         )
         meridian.stroke()
 
-        let languageName = languageCode == "EN" ? "English" : "German"
+        let languageName: String
+        switch languageCode {
+        case "EN": languageName = "English"
+        case "AUTO": languageName = "Automatic"
+        default: languageName = "German"
+        }
         drawText(
             "Language: \(languageName)",
             in: NSRect(x: 50, y: centerY - 11, width: 215, height: 22),
@@ -295,7 +325,8 @@ final class RecorderHUDView: NSView {
             alignment: .left
         )
 
-        drawLanguageBadge(in: NSRect(x: 299, y: centerY - 10, width: 42, height: 20))
+        // Wide enough for the longest label; "AUTO" truncated at the old 42pt.
+        drawLanguageBadge(in: NSRect(x: 283, y: centerY - 11, width: 58, height: 22))
     }
 
     private func drawPermission() {
@@ -447,8 +478,15 @@ final class RecorderHUDView: NSView {
         NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.16).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
 
+        let label: String
+        switch languageCode {
+        case "EN": label = "🇬🇧  EN"
+        case "AUTO": label = "🌐 AUTO"
+        default: label = "🇩🇪  DE"
+        }
+
         drawText(
-            languageCode == "EN" ? "🇬🇧  EN" : "🇩🇪  DE",
+            label,
             in: NSRect(x: rect.minX, y: rect.midY - 7, width: rect.width, height: 15),
             font: .systemFont(ofSize: 10, weight: .bold),
             color: NSColor(calibratedRed: 0.64, green: 0.80, blue: 1, alpha: 0.96),
