@@ -54,10 +54,32 @@ def find_cached_models():
     return cached
 
 
+def _hide_from_dock():
+    """Register this process as a background app before AppKit is touched.
+
+    The service runs from Homebrew's Python.app, whose Info.plist does not
+    declare LSUIElement — so the first AppKit use (beeps, paste, the AX
+    focus check) registers it as a Foreground app and a "Python" icon
+    appears in the Dock for as long as the service lives. Creating the
+    shared NSApplication here, with the accessory policy, makes every later
+    AppKit consumer reuse it and keeps the process out of the Dock.
+    """
+    try:
+        from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+
+        NSApplication.sharedApplication().setActivationPolicy_(
+            NSApplicationActivationPolicyAccessory
+        )
+    except Exception as exc:
+        logger.debug(f"Could not set the accessory activation policy: {exc}")
+
+
 def run_app(args):
     """Run application with Textual UI"""
     import threading
     import torch
+
+    _hide_from_dock()
     from models.factory import ModelFactory
     from models.registry import get_model_metadata
     from utils.keyboard_shortcuts import KeyboardShortcutManager
