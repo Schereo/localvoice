@@ -383,9 +383,10 @@ final class RecorderHUDView: NSView {
         }
     }
 
-    private func drawResult(title: String, color: NSColor, symbol: String) {
+    private func drawResult(title: String, color rawColor: NSColor, symbol: String) {
         let centerY = bounds.midY
-        color.withAlphaComponent(0.18).setFill()
+        let color = emphasized(rawColor)
+        color.withAlphaComponent(0.20).setFill()
         NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
 
         color.setStroke()
@@ -418,7 +419,7 @@ final class RecorderHUDView: NSView {
         guard !detailText.isEmpty else {
             drawText(
                 title,
-                in: NSRect(x: 50, y: centerY - 11, width: textWidth, height: 22),
+                in: NSRect(x: 50, y: centerY - 8.5, width: textWidth, height: 17),
                 font: .systemFont(ofSize: 14, weight: .semibold),
                 color: ink.withAlphaComponent(0.92),
                 alignment: .left
@@ -437,10 +438,18 @@ final class RecorderHUDView: NSView {
         drawText(
             detailText,
             in: NSRect(x: 50, y: 11, width: textWidth, height: 15),
-            font: .systemFont(ofSize: 10.5, weight: .medium),
-            color: color.withAlphaComponent(0.80),
+            font: .systemFont(ofSize: 10.5, weight: .semibold),
+            color: emphasized(color),
             alignment: .left
         )
+    }
+
+    /// Semantic colors tuned per appearance: darkened on light frost, where
+    /// the pastel variants lose almost all contrast.
+    private func emphasized(_ color: NSColor) -> NSColor {
+        isDarkAppearance
+            ? color
+            : color.blended(withFraction: 0.38, of: .black) ?? color
     }
 
     private func drawLanguageSelection() {
@@ -470,7 +479,7 @@ final class RecorderHUDView: NSView {
         }
         drawText(
             "Language: \(languageName)",
-            in: NSRect(x: 50, y: centerY - 11, width: 215, height: 22),
+            in: NSRect(x: 50, y: centerY - 8.5, width: 215, height: 17),
             font: .systemFont(ofSize: 14, weight: .semibold),
             color: ink.withAlphaComponent(0.92),
             alignment: .left
@@ -623,15 +632,20 @@ final class RecorderHUDView: NSView {
         NSGraphicsContext.restoreGraphicsState()
     }
 
+    // A filled chip rather than a tinted wash: on the frosted material the
+    // faint accent-on-accent version all but disappeared.
     private func drawLanguageBadge(in rect: NSRect) {
-        accent.withAlphaComponent(isDarkAppearance ? 0.16 : 0.10).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+        let chip = isDarkAppearance
+            ? NSColor(calibratedRed: 0.30, green: 0.53, blue: 0.94, alpha: 0.92)
+            : NSColor(calibratedRed: 0.09, green: 0.36, blue: 0.87, alpha: 0.92)
+        chip.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
 
         drawText(
             languageCode,
             in: NSRect(x: rect.minX, y: rect.midY - 7, width: rect.width, height: 15),
             font: .systemFont(ofSize: 10, weight: .bold),
-            color: accent.withAlphaComponent(0.96),
+            color: NSColor.white.withAlphaComponent(0.98),
             alignment: .center,
             kern: 0.5
         )
@@ -712,7 +726,11 @@ final class OverlayController: NSObject {
         let visualEffect = NSVisualEffectView(
             frame: NSRect(x: margin, y: margin, width: capsuleSize.width, height: capsuleSize.height)
         )
-        visualEffect.material = .hudWindow
+        // .popover adapts to the system appearance (light frost in light
+        // mode, dark in dark mode) and is opaque enough that text contrast
+        // no longer depends on whatever happens to sit behind the pill —
+        // .hudWindow is dark-only and washed out over bright windows.
+        visualEffect.material = .popover
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
 
