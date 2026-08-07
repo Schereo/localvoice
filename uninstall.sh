@@ -116,7 +116,10 @@ if [[ -n "$CTRLSPEAK_LIBEXEC" && -d "$CTRLSPEAK_LIBEXEC" ]]; then
 fi
 
 echo "Removing the language preference..."
-rm -f "$HOME/.config/ctrlspeak/language"
+rm -f "$HOME/.config/ctrlspeak/language" \
+  "$HOME/.config/ctrlspeak/startup-pill.fifo" \
+  "$HOME/.config/ctrlspeak/setup-status" \
+  "$HOME/.config/ctrlspeak/permission-status"
 
 echo "Removing ctrlSPEAK's privacy-pane entries..."
 tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true

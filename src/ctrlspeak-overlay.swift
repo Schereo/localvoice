@@ -22,8 +22,12 @@ final class RecorderHUDView: NSView {
     private var languageCode = "DE"
 
     // Progress is nil while the total download size is still unknown, which
-    // makes the bar fall back to an indeterminate sweep.
+    // makes the bar fall back to an indeterminate sweep. The displayed value
+    // eases toward the target: Hugging Face's Xet backend materialises the
+    // file in large chunk batches, so raw measurements arrive as jumps that
+    // would make the bar stutter.
     private var progressFraction: CGFloat?
+    private var displayedProgress: CGFloat = 0
     private var detailText = ""
 
     private var languageBadgeRect: NSRect {
@@ -107,6 +111,9 @@ final class RecorderHUDView: NSView {
         phase += 0.13
         displayedLevel += (targetLevel - displayedLevel) * 0.24
         targetLevel *= 0.94
+        if let target = progressFraction {
+            displayedProgress += (target - displayedProgress) * 0.08
+        }
         needsDisplay = true
     }
 
@@ -405,9 +412,9 @@ final class RecorderHUDView: NSView {
             alignment: .left
         )
 
-        if let fraction = progressFraction {
+        if progressFraction != nil {
             drawText(
-                "\(Int((fraction * 100).rounded()))%",
+                "\(Int((displayedProgress * 100).rounded()))%",
                 in: NSRect(x: 252, y: 32, width: 90, height: 16),
                 font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
                 color: NSColor.white.withAlphaComponent(0.62),
@@ -440,7 +447,8 @@ final class RecorderHUDView: NSView {
 
         let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.95)
 
-        if let fraction = progressFraction {
+        if progressFraction != nil {
+            let fraction = max(0, min(1, displayedProgress))
             accent.setFill()
             NSBezierPath(rect: NSRect(
                 x: rect.minX,

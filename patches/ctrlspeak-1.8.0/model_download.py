@@ -11,14 +11,16 @@ counted too, so the bar tracks bytes actually on disk.
 
 import logging
 import threading
+import time
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from overlay import StatusOverlay
+from overlay import FifoStatusOverlay, StatusOverlay, close_startup_pill
 
 logger = logging.getLogger("ctrlspeak.model_download")
 
-POLL_SECONDS = 0.5
+POLL_SECONDS = 0.25
 
 
 def _repo_cache_dir(repo_id):
@@ -85,15 +87,33 @@ def _watch(repo_id, overlay, stop_event):
     total = _remote_total_bytes(repo_id)
     model_label = repo_id.split("/")[-1]
 
+    # Rate over a sliding window. The Xet backend lands data in large chunk
+    # batches, so an instantaneous rate would swing wildly; ~5 s of history
+    # averages the bursts out.
+    history = deque()
+
     while not stop_event.is_set():
         downloaded = _local_bytes(blob_dir)
+        now = time.monotonic()
+
+        history.append((now, downloaded))
+        while history and now - history[0][0] > 5.0:
+            history.popleft()
+
+        rate_text = ""
+        if len(history) >= 2:
+            elapsed = now - history[0][0]
+            gained = downloaded - history[0][1]
+            if elapsed > 0.5 and gained > 0:
+                rate_text = f" · {gained / elapsed / 1_000_000:.1f} MB/s"
 
         if total:
             overlay.set_progress(downloaded / total)
-            overlay.set_detail(f"{model_label} · {_format_size(downloaded)} of {_format_size(total)}")
+            overlay.set_detail(f"{_format_size(downloaded)} of {_format_size(total)}{rate_text}")
         else:
             overlay.set_progress(None)
-            overlay.set_detail(f"{model_label} · {_format_size(max(0, downloaded - baseline))} downloaded")
+            gained_total = max(0, downloaded - baseline)
+            overlay.set_detail(f"{model_label} · {_format_size(gained_total)}{rate_text}")
 
         stop_event.wait(POLL_SECONDS)
 
@@ -102,12 +122,17 @@ def _watch(repo_id, overlay, stop_event):
 def download_progress(repo_id, language="de"):
     """Show a download pill while the wrapped block fetches the model."""
     if is_cached(repo_id):
+        # The wrapper may have opened a startup pill on a stale cache check;
+        # nothing will feed it, so dismiss it.
+        close_startup_pill()
         yield
         return
 
     logger.info(f"{repo_id} is not cached; showing download progress")
 
-    overlay = StatusOverlay("download", language).start()
+    # Prefer the pill the service wrapper already has on screen; only spawn a
+    # fresh one when there is none (e.g. the model vanished mid-session).
+    overlay = FifoStatusOverlay().start() or StatusOverlay("download", language).start()
     stop_event = threading.Event()
     watcher = threading.Thread(
         target=_watch,

@@ -149,6 +149,24 @@ if [[ -f "\$LANGUAGE_FILE" ]]; then
   fi
 fi
 
+# On a cold model cache, put the download pill on screen immediately. The
+# Python service needs 20+ seconds of imports before it can report anything,
+# which used to read as a hang. The pill is fed through a FIFO that Python
+# adopts once it takes over; it inherits our write end, so if the service
+# dies the pill sees EOF and closes itself.
+MODEL_CACHE="\${HF_HOME:-\$HOME/.cache/huggingface}/hub/models--mlx-community--whisper-large-v3-turbo"
+STARTUP_PILL_FIFO="\$HOME/.config/ctrlspeak/startup-pill.fifo"
+
+if [[ ! -d "\$MODEL_CACHE/snapshots" ]]; then
+  mkdir -p "\$HOME/.config/ctrlspeak"
+  rm -f "\$STARTUP_PILL_FIFO"
+  if /usr/bin/mkfifo "\$STARTUP_PILL_FIFO" 2>/dev/null; then
+    "\$CTRLSPEAK_OVERLAY_PATH" download "\$LANGUAGE" < "\$STARTUP_PILL_FIFO" &
+    exec 9> "\$STARTUP_PILL_FIFO"
+    printf 'progress -1\ndetail Starting ctrlSPEAK...\n' >&9
+  fi
+fi
+
 exec "$BREW_PREFIX/bin/ctrlspeak" \\
   --model whisper-mlx \\
   --source-lang "\$LANGUAGE" \\

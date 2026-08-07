@@ -7,8 +7,10 @@ gate and the first-run model download — goes through StatusOverlay here.
 
 import logging
 import os
+import stat
 import subprocess
 import threading
+from pathlib import Path
 
 logger = logging.getLogger("ctrlspeak.overlay")
 
@@ -16,6 +18,11 @@ OVERLAY_PATH = os.environ.get(
     "CTRLSPEAK_OVERLAY_PATH",
     "/opt/homebrew/bin/ctrlspeak-overlay",
 )
+
+# On a cold cache the service wrapper opens a pill before Python even starts,
+# fed through this FIFO, so the user sees status during the slow imports.
+# Python later adopts that same pill instead of spawning a second one.
+STARTUP_PILL_FIFO = Path.home() / ".config" / "ctrlspeak" / "startup-pill.fifo"
 
 
 class StatusOverlay:
@@ -115,3 +122,87 @@ class StatusOverlay:
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
         return False
+
+
+class FifoStatusOverlay:
+    """Adopt the pill the service wrapper already opened, over its FIFO.
+
+    Same interface as StatusOverlay. start() returns None when there is no
+    adoptable pill (no FIFO, or no reader on it), so callers can fall back:
+
+        pill = FifoStatusOverlay().start() or StatusOverlay("download").start()
+    """
+
+    def __init__(self, path=STARTUP_PILL_FIFO):
+        self.path = str(path)
+        self._file = None
+        self._lock = threading.Lock()
+
+    def start(self):
+        try:
+            if not stat.S_ISFIFO(os.stat(self.path).st_mode):
+                return None
+            # Non-blocking: a plain open would hang forever if the pill died.
+            descriptor = os.open(self.path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            self._cleanup_stale()
+            return None
+
+        self._file = os.fdopen(descriptor, "w")
+        logger.info("Adopted the startup pill via FIFO")
+        return self
+
+    def _cleanup_stale(self):
+        try:
+            if stat.S_ISFIFO(os.stat(self.path).st_mode):
+                os.unlink(self.path)
+        except OSError:
+            pass
+
+    def _write(self, command):
+        with self._lock:
+            if self._file is None:
+                return
+            try:
+                self._file.write(command + "\n")
+                self._file.flush()
+            except OSError as exc:
+                logger.debug(f"Startup pill stopped accepting commands: {exc}")
+
+    def set_state(self, overlay_state):
+        self._write(f"state {overlay_state}")
+
+    def set_progress(self, fraction):
+        if fraction is None:
+            self._write("progress -1")
+        else:
+            self._write(f"progress {max(0.0, min(1.0, fraction)):.4f}")
+
+    def set_detail(self, text):
+        self._write("detail " + " ".join(str(text).split()))
+
+    def close(self):
+        with self._lock:
+            if self._file is not None:
+                try:
+                    self._file.write("quit\n")
+                    self._file.flush()
+                except OSError:
+                    pass
+                try:
+                    self._file.close()
+                except OSError:
+                    pass
+                self._file = None
+
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+def close_startup_pill():
+    """Dismiss the wrapper's startup pill when nothing will take it over."""
+    pill = FifoStatusOverlay().start()
+    if pill is not None:
+        pill.close()

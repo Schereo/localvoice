@@ -11,7 +11,7 @@ import subprocess
 import time
 from rich.panel import Panel
 import state
-from overlay import StatusOverlay
+from overlay import StatusOverlay, close_startup_pill
 from utils import permission_manager
 
 logger = logging.getLogger("ctrlspeak.permissions")
@@ -87,6 +87,10 @@ def check_permissions():
         return _run_permission_checks()
 
     logger.warning(f"Missing macOS permissions: {', '.join(missing)}")
+
+    # A cold-cache start may have a "Downloading model" startup pill waiting
+    # for a download that will never begin; replace it with the real problem.
+    close_startup_pill()
 
     overlay = StatusOverlay("permission", state.source_lang).start()
     overlay.set_detail(" · ".join(missing))
