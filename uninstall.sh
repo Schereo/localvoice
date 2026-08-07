@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-SERVICE_LABEL="com.localvoice.ctrlspeak"
+SERVICE_LABEL="com.localvoice.app"
+LEGACY_LABEL="com.localvoice.ctrlspeak"
 MODEL_REPO="models--mlx-community--whisper-large-v3-turbo"
 
 KEEP_BREW=1
@@ -13,7 +14,7 @@ usage() {
   cat <<'USAGE'
 Usage: ./uninstall.sh [options]
 
-Removes this local dictation setup: the LaunchAgent, the ctrlSPEAK app bundle,
+Removes this local dictation setup: the LaunchAgent, the LocalVoice app bundle,
 the recording pill, the wrapper, and the patches applied to ctrlSPEAK (the
 original files are restored from the backups install.sh made).
 
@@ -25,7 +26,7 @@ Options:
   --yes            Do not ask for confirmation.
   --help           Show this message.
 
-ctrlSPEAK's own privacy-pane entries are cleared via tccutil.
+LocalVoice's privacy-pane entries are cleared via tccutil.
 USAGE
 }
 
@@ -46,8 +47,9 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 CURRENT_UID="$(id -u)"
-APP_PATH="$HOME/Applications/ctrlSPEAK.app"
+APP_PATH="$HOME/Applications/LocalVoice.app"
 LAUNCH_AGENT_PATH="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
+LEGACY_AGENT_PATH="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
 
 BREW_PREFIX=""
 CTRLSPEAK_LIBEXEC=""
@@ -77,10 +79,11 @@ fi
 
 echo "Stopping the background service..."
 launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
-rm -f "$LAUNCH_AGENT_PATH"
+launchctl bootout "gui/$CURRENT_UID/$LEGACY_LABEL" 2>/dev/null || true
+rm -f "$LAUNCH_AGENT_PATH" "$LEGACY_AGENT_PATH"
 
 echo "Removing the app bundle..."
-rm -rf "$APP_PATH"
+rm -rf "$APP_PATH" "$HOME/Applications/ctrlSPEAK.app"
 
 if [[ -n "$BREW_PREFIX" ]]; then
   echo "Removing the pill and the wrapper..."
@@ -122,8 +125,9 @@ rm -f "$HOME/.config/ctrlspeak/language" \
   "$HOME/.config/ctrlspeak/setup-status" \
   "$HOME/.config/ctrlspeak/permission-status"
 
-echo "Removing ctrlSPEAK's privacy-pane entries..."
+echo "Removing LocalVoice's privacy-pane entries..."
 tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true
+tccutil reset All "$LEGACY_LABEL" >/dev/null 2>&1 || true
 
 if [[ "$REMOVE_MODEL" -eq 1 ]]; then
   MODEL_DIR="${HF_HOME:-$HOME/.cache/huggingface}/hub/$MODEL_REPO"

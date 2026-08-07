@@ -3,7 +3,7 @@ import ApplicationServices
 import Foundation
 import IOKit.hid
 
-// Native entry point for ctrlSPEAK.app.
+// Native entry point for LocalVoice.app.
 //
 // macOS attributes TCC permissions to the *responsible process*, which is the
 // root of the process tree rather than whichever binary happens to call the
@@ -13,7 +13,7 @@ import IOKit.hid
 // Monitoring will not accept and that breaks on every Python upgrade.
 //
 // This launcher is that root instead. It is a real Mach-O binary inside a
-// bundle, so the permission panes show "ctrlSPEAK", and every child it spawns
+// bundle, so the permission panes show "LocalVoice", and every child it spawns
 // inherits it as the responsible process.
 //
 // Modes:
@@ -31,7 +31,7 @@ import IOKit.hid
 // stable between installs.
 
 func fail(_ message: String, code: Int32) -> Never {
-    FileHandle.standardError.write(Data("ctrlSPEAK: \(message)\n".utf8))
+    FileHandle.standardError.write(Data("LocalVoice: \(message)\n".utf8))
     exit(code)
 }
 

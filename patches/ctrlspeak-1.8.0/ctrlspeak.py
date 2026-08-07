@@ -184,7 +184,7 @@ def run_app(args):
         hotkey_hint = state.keyboard_manager.hotkey_description
         console.print(
             Panel.fit(
-                f"[bold cyan]ctrlspeak[/bold cyan] - Ready to transcribe.\n"
+                f"[bold cyan]LocalVoice[/bold cyan] - Ready to transcribe.\n"
                 f"[bold]{hotkey_hint}[/bold] to start/stop recording.\n"
                 f"While recording: [bold]Enter[/bold] inserts, [bold]Esc[/bold] cancels.",
                 title="Welcome",

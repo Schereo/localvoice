@@ -3,7 +3,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_LABEL="com.localvoice.ctrlspeak"
+SERVICE_LABEL="com.localvoice.app"
+# Earlier releases used this identity; cleaned up on upgrade.
+LEGACY_LABEL="com.localvoice.ctrlspeak"
 SOURCE_LANGUAGE="${CTRLSPEAK_LANGUAGE:-de}"
 HOTKEY="${CTRLSPEAK_HOTKEY:-}"
 SUPPORTED_CTRLSPEAK_VERSION="1.8.0"
@@ -206,25 +208,25 @@ install -m 755 "$BUILD_DIR/ctrlspeak-local" "$WRAPPER_PATH"
 # a versioned Cellar path that Input Monitoring refuses and that breaks on
 # every Python upgrade. A real app bundle gives the tree one stable identity
 # named "ctrlSPEAK".
-echo "Building the ctrlSPEAK app bundle..."
+echo "Building the LocalVoice app bundle..."
 xcrun swiftc \
   -module-cache-path "$BUILD_DIR/module-cache" \
   "$PROJECT_DIR/src/ctrlspeak-launcher.swift" \
-  -o "$BUILD_DIR/ctrlSPEAK-launcher"
+  -o "$BUILD_DIR/LocalVoice-launcher"
 
 xcrun swiftc \
   -module-cache-path "$BUILD_DIR/module-cache" \
   "$PROJECT_DIR/src/ctrlspeak-icon.swift" \
   -o "$BUILD_DIR/ctrlspeak-icon"
 
-mkdir -p "$BUILD_DIR/ctrlSPEAK.iconset"
-"$BUILD_DIR/ctrlspeak-icon" "$BUILD_DIR/ctrlSPEAK.iconset"
-iconutil -c icns "$BUILD_DIR/ctrlSPEAK.iconset" -o "$BUILD_DIR/ctrlSPEAK.icns"
+mkdir -p "$BUILD_DIR/LocalVoice.iconset"
+"$BUILD_DIR/ctrlspeak-icon" "$BUILD_DIR/LocalVoice.iconset"
+iconutil -c icns "$BUILD_DIR/LocalVoice.iconset" -o "$BUILD_DIR/LocalVoice.icns"
 
-APP_STAGE="$BUILD_DIR/ctrlSPEAK.app"
+APP_STAGE="$BUILD_DIR/LocalVoice.app"
 mkdir -p "$APP_STAGE/Contents/MacOS" "$APP_STAGE/Contents/Resources"
-install -m 755 "$BUILD_DIR/ctrlSPEAK-launcher" "$APP_STAGE/Contents/MacOS/ctrlSPEAK"
-install -m 644 "$BUILD_DIR/ctrlSPEAK.icns" "$APP_STAGE/Contents/Resources/ctrlSPEAK.icns"
+install -m 755 "$BUILD_DIR/LocalVoice-launcher" "$APP_STAGE/Contents/MacOS/LocalVoice"
+install -m 644 "$BUILD_DIR/LocalVoice.icns" "$APP_STAGE/Contents/Resources/LocalVoice.icns"
 
 cat > "$APP_STAGE/Contents/Resources/launch.conf" <<EOF
 command=$WRAPPER_PATH
@@ -238,15 +240,15 @@ cat > "$APP_STAGE/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>ctrlSPEAK</string>
+  <string>LocalVoice</string>
   <key>CFBundleDisplayName</key>
-  <string>ctrlSPEAK</string>
+  <string>LocalVoice</string>
   <key>CFBundleIdentifier</key>
   <string>$SERVICE_LABEL</string>
   <key>CFBundleExecutable</key>
-  <string>ctrlSPEAK</string>
+  <string>LocalVoice</string>
   <key>CFBundleIconFile</key>
-  <string>ctrlSPEAK</string>
+  <string>LocalVoice</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -260,7 +262,7 @@ cat > "$APP_STAGE/Contents/Info.plist" <<EOF
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>ctrlSPEAK records audio so it can transcribe your speech locally on this Mac.</string>
+  <string>LocalVoice records audio so it can transcribe your speech locally on this Mac.</string>
 </dict>
 </plist>
 EOF
@@ -302,11 +304,17 @@ else
     fail "Could not sign the app bundle. Check that Xcode Command Line Tools are installed."
 fi
 
-APP_PATH="$HOME/Applications/ctrlSPEAK.app"
+APP_PATH="$HOME/Applications/LocalVoice.app"
 mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
-# Stop the service before replacing the bundle it is running from.
+# Stop the service before replacing the bundle it is running from, and clear
+# every trace of the pre-rename identity so upgrades do not leave a second
+# app, agent, or set of stale permission rows behind.
 launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
+launchctl bootout "gui/$CURRENT_UID/$LEGACY_LABEL" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
+rm -rf "$HOME/Applications/ctrlSPEAK.app"
+tccutil reset All "$LEGACY_LABEL" >/dev/null 2>&1 || true
 
 rm -rf "$APP_PATH"
 ditto "$APP_STAGE" "$APP_PATH"
@@ -322,7 +330,7 @@ cat > "$BUILD_DIR/$SERVICE_LABEL.plist" <<EOF
   <string>$SERVICE_LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$APP_PATH/Contents/MacOS/ctrlSPEAK</string>
+    <string>$APP_PATH/Contents/MacOS/LocalVoice</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -384,7 +392,7 @@ echo
 echo "Opening the guided permission setup..."
 echo "macOS will now ask for Microphone, Accessibility and Input Monitoring."
 echo "Approve each dialog; for Accessibility and Input Monitoring, flip the"
-echo "\"ctrlSPEAK\" switch System Settings shows you. The recording pill at the"
+echo "\"LocalVoice\" switch System Settings shows you. The recording pill at the"
 echo "bottom of the screen tracks what is still missing."
 echo
 
@@ -402,7 +410,7 @@ if [[ "$(cat "$SETUP_STATUS_FILE" 2>/dev/null)" == "granted" ]]; then
   echo "Usage: triple-tap Control to start, then triple-tap Control to stop."
   echo "Click the badge in the recording pill to cycle German / English / Auto."
 else
-  echo "The permission setup did not finish. Grant these to ctrlSPEAK under"
+  echo "The permission setup did not finish. Grant these to LocalVoice under"
   echo "System Settings > Privacy & Security (the app is already listed in"
   echo "each pane; add it with + and pick $APP_PATH if it is not):"
   echo "  - Microphone"

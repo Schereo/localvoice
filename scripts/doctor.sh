@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-SERVICE_LABEL="com.localvoice.ctrlspeak"
+SERVICE_LABEL="com.localvoice.app"
 CURRENT_UID="$(id -u)"
 
 check_file() {
@@ -31,8 +31,8 @@ check_file "$CTRLSPEAK_PREFIX/libexec/model_download.py"
 check_file "$CTRLSPEAK_PREFIX/libexec/permissions.py"
 check_file "$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
 
-APP_PATH="$HOME/Applications/ctrlSPEAK.app"
-check_file "$APP_PATH/Contents/MacOS/ctrlSPEAK"
+APP_PATH="$HOME/Applications/LocalVoice.app"
+check_file "$APP_PATH/Contents/MacOS/LocalVoice"
 check_file "$APP_PATH/Contents/Resources/launch.conf"
 
 # The signature is the identity macOS keys the permissions to; without it the
@@ -46,7 +46,7 @@ fi
 
 # A LaunchAgent still pointing at the shell wrapper means permissions would be
 # attributed to bash again, which is the problem the bundle exists to solve.
-if grep -q "ctrlSPEAK.app/Contents/MacOS/ctrlSPEAK" "$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"; then
+if grep -q "LocalVoice.app/Contents/MacOS/LocalVoice" "$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"; then
   echo "✓ Service launches through the app bundle"
 else
   echo "✗ Service does not launch through the app bundle — re-run ./install.sh"

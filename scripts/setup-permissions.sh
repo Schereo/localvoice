@@ -12,18 +12,18 @@
 
 set -euo pipefail
 
-SERVICE_LABEL="com.localvoice.ctrlspeak"
+SERVICE_LABEL="com.localvoice.app"
 CURRENT_UID="$(id -u)"
-APP_PATH="$HOME/Applications/ctrlSPEAK.app"
+APP_PATH="$HOME/Applications/LocalVoice.app"
 SETUP_STATUS_FILE="$HOME/.config/ctrlspeak/setup-status"
 
 [[ -d "$APP_PATH" ]] || {
-  echo "ctrlSPEAK.app not found. Run ./install.sh first." >&2
+  echo "LocalVoice.app not found. Run ./install.sh first." >&2
   exit 1
 }
 
 if [[ "${1:-}" == "--reset" ]]; then
-  echo "Clearing ctrlSPEAK's existing permission entries..."
+  echo "Clearing LocalVoice's existing permission entries..."
   tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true
 fi
 
@@ -40,6 +40,6 @@ if [[ "$(cat "$SETUP_STATUS_FILE" 2>/dev/null)" == "granted" ]]; then
 fi
 
 echo "The permission setup did not finish. Grant Microphone, Accessibility and" >&2
-echo "Input Monitoring to ctrlSPEAK under System Settings > Privacy & Security," >&2
+echo "Input Monitoring to LocalVoice under System Settings > Privacy & Security," >&2
 echo "then run ./scripts/restart.sh" >&2
 exit 1
