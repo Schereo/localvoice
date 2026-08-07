@@ -89,12 +89,24 @@ If a permission is still missing at startup, ctrlSPEAK shows a `Permissions requ
 
 ## Usage
 
-1. Triple-tap **Control**.
+1. Tap the hotkey (default: triple-tap **Control**).
 2. The `RECORDING` pill appears and its waveform follows the microphone level.
 3. Speak normally.
-4. Triple-tap **Control** again.
+4. Tap the hotkey again — or press **Enter** to finish, or **Esc** to discard the recording.
 5. The pill changes to `Transcribing`, then `Text inserted`.
-6. The result is pasted wherever the cursor was positioned.
+6. The result is pasted wherever the cursor was positioned. If the focused element clearly cannot take text, nothing is typed into it — the transcript stays on the clipboard and the pill says `Copied to clipboard`.
+
+Enter and Esc are only interpreted while a recording runs, and macOS delivers them to the frontmost app as well — in fields where Enter submits (chat boxes), prefer the hotkey to stop.
+
+## Hotkey
+
+The activation gesture is a repeated tap on one modifier key, configured in `~/.config/ctrlspeak/hotkey` as `<modifier>,<taps>` — modifier `ctrl`, `cmd`, `alt` or `shift`; taps 2–4:
+
+```bash
+echo "cmd,2" > ~/.config/ctrlspeak/hotkey && ./scripts/restart.sh
+```
+
+Or at install time: `CTRLSPEAK_HOTKEY=cmd,2 ./install.sh`. Any other key pressed between taps voids the sequence, so `Cmd+C` quickly followed by `Cmd+V` does not trigger a double-tap.
 
 Click the language badge in the recording pill to switch between forced German (`🇩🇪 DE`) and English (`🇬🇧 EN`) transcription. The change applies to the current recording and is retained after restarts. The pill remains non-activating, so the cursor stays in the app where the text will be inserted.
 
@@ -116,9 +128,9 @@ German is the default. Click the badge in the recording pill to cycle through th
 
 | Badge | Behaviour |
 |---|---|
-| `🇩🇪 DE` | Always decode as German |
-| `🇬🇧 EN` | Always decode as English |
-| `🌐 AUTO` | Detect German or English per recording |
+| `DE` | Always decode as German |
+| `EN` | Always decode as English |
+| `AUTO` | Detect German or English per recording |
 
 The choice applies to the current recording and survives restarts. No separate global language shortcut is registered, avoiding conflicts with foreground applications.
 

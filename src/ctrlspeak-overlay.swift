@@ -8,6 +8,8 @@ enum OverlayMode: String {
     case language
     case permission
     case download
+    case cancelled
+    case clipboard
 }
 
 final class RecorderHUDView: NSView {
@@ -30,8 +32,9 @@ final class RecorderHUDView: NSView {
     private var displayedProgress: CGFloat = 0
     private var detailText = ""
 
+    // Right edge at 340 mirrors the 18 pt left margin of the recording dot.
     private var languageBadgeRect: NSRect {
-        NSRect(x: 289, y: bounds.midY - 11, width: 58, height: 22)
+        NSRect(x: 290, y: bounds.midY - 11, width: 50, height: 22)
     }
 
     override init(frame frameRect: NSRect) {
@@ -137,6 +140,18 @@ final class RecorderHUDView: NSView {
                 color: NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.28, alpha: 1),
                 symbol: "exclamationmark"
             )
+        case .cancelled:
+            drawResult(
+                title: "Recording discarded",
+                color: NSColor(calibratedRed: 1.00, green: 0.55, blue: 0.40, alpha: 1),
+                symbol: "xmark"
+            )
+        case .clipboard:
+            drawResult(
+                title: "Copied to clipboard",
+                color: NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1),
+                symbol: "checkmark"
+            )
         case .language:
             drawLanguageSelection()
         case .permission:
@@ -168,13 +183,15 @@ final class RecorderHUDView: NSView {
             kern: 0.8
         )
 
-        drawWaveform(in: NSRect(x: 108, y: 10, width: 119, height: 36))
+        // 8 pt of air after the label; the old layout started the waveform at
+        // 108 while the label ran to ~110, visually touching it.
+        drawWaveform(in: NSRect(x: 118, y: 10, width: 104, height: 36))
 
         let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
         drawText(
             elapsed,
-            in: NSRect(x: 235, y: centerY - 8, width: 47, height: 16),
+            in: NSRect(x: 226, y: centerY - 8, width: 54, height: 16),
             font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
             color: NSColor.white.withAlphaComponent(0.58),
             alignment: .right
@@ -259,6 +276,11 @@ final class RecorderHUDView: NSView {
             mark.move(to: NSPoint(x: 22, y: centerY))
             mark.line(to: NSPoint(x: 26, y: centerY - 4))
             mark.line(to: NSPoint(x: 33, y: centerY + 5))
+        } else if symbol == "xmark" {
+            mark.move(to: NSPoint(x: 23, y: centerY - 4))
+            mark.line(to: NSPoint(x: 31, y: centerY + 4))
+            mark.move(to: NSPoint(x: 31, y: centerY - 4))
+            mark.line(to: NSPoint(x: 23, y: centerY + 4))
         } else {
             mark.move(to: NSPoint(x: 27, y: centerY + 5))
             mark.line(to: NSPoint(x: 27, y: centerY - 2))
@@ -332,8 +354,7 @@ final class RecorderHUDView: NSView {
             alignment: .left
         )
 
-        // Wide enough for the longest label; "AUTO" truncated at the old 42pt.
-        drawLanguageBadge(in: NSRect(x: 283, y: centerY - 11, width: 58, height: 22))
+        drawLanguageBadge(in: NSRect(x: 290, y: centerY - 11, width: 50, height: 22))
     }
 
     private func drawPermission() {
@@ -486,20 +507,13 @@ final class RecorderHUDView: NSView {
         NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 0.16).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
 
-        let label: String
-        switch languageCode {
-        case "EN": label = "🇬🇧  EN"
-        case "AUTO": label = "🌐 AUTO"
-        default: label = "🇩🇪  DE"
-        }
-
         drawText(
-            label,
+            languageCode,
             in: NSRect(x: rect.minX, y: rect.midY - 7, width: rect.width, height: 15),
             font: .systemFont(ofSize: 10, weight: .bold),
             color: NSColor(calibratedRed: 0.64, green: 0.80, blue: 1, alpha: 0.96),
             alignment: .center,
-            kern: 0
+            kern: 0.5
         )
     }
 
@@ -692,10 +706,17 @@ final class OverlayController: NSObject {
             guard let newMode = OverlayMode(rawValue: parts[1]) else { return }
             hudView.setMode(newMode)
 
-            if newMode == .success {
+            switch newMode {
+            case .success:
                 close(after: 1.35)
-            } else if newMode == .empty {
+            case .empty:
                 close(after: 1.8)
+            case .cancelled:
+                close(after: 1.2)
+            case .clipboard:
+                close(after: 1.8)
+            default:
+                break
             }
         case "progress":
             // "progress" without a value, or a negative one, means indeterminate.

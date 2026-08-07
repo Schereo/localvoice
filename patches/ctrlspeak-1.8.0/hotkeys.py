@@ -25,6 +25,10 @@ logger = logging.getLogger("ctrlspeak.hotkeys")
 # Track which mode we're in for the current recording session
 _current_session_streaming = False
 
+# Set while an Esc-cancel is tearing the session down, so the transcript that
+# still comes out of the worker is thrown away instead of pasted.
+_session_cancelled = False
+
 _OVERLAY_PATH = os.environ.get(
     "CTRLSPEAK_OVERLAY_PATH",
     "/opt/homebrew/bin/ctrlspeak-overlay",
@@ -124,7 +128,7 @@ class _OverlaySession:
 
                     if command.startswith("state "):
                         mode = command.split(" ", 1)[1]
-                        if mode in {"success", "empty"}:
+                        if mode in {"success", "empty", "cancelled", "clipboard"}:
                             terminal_deadline = time.monotonic() + 3.0
 
                 if mode == "recording":
@@ -235,6 +239,39 @@ def _stop_queue_recording():
     return final_text
 
 
+def is_recording():
+    """Whether a recording session is currently collecting audio."""
+    return state.audio_manager is not None and state.audio_manager.is_collecting
+
+
+def cancel_recording():
+    """Discard the running recording session without inserting anything."""
+    global _session_cancelled
+
+    if not is_recording():
+        return True
+
+    logger.info("Recording cancelled via Esc.")
+    _session_cancelled = True
+    try:
+        _set_overlay_state("cancelled")
+        # The audio pipeline still runs to completion so the worker queue
+        # stays consistent; on_activate sees the flag and drops the text.
+        on_activate()
+    finally:
+        _session_cancelled = False
+    return True
+
+
+def finish_recording():
+    """Stop the running recording session and insert the transcript."""
+    if not is_recording():
+        return True
+
+    logger.info("Recording finished via Enter.")
+    return on_activate()
+
+
 def on_activate():
     """Handle global hotkey activation.
 
@@ -283,13 +320,22 @@ def on_activate():
 
         logger.info("Stop activated. Stopping audio recording...")
         play_stop_beep()
-        _set_overlay_state("processing")
+        if not _session_cancelled:
+            _set_overlay_state("processing")
 
         # Use the mode we started with
         if _current_session_streaming:
             final_text = streaming.stop_streaming()
         else:
             final_text = _stop_queue_recording()
+
+        if _session_cancelled:
+            # The pill already shows "cancelled"; the transcript is discarded.
+            logger.info("Session was cancelled; discarding transcription result.")
+            state.transcribed_chunks.clear()
+            state.recording_start_time = None
+            _current_session_streaming = False
+            return
 
         # Handle final text
         if final_text:
@@ -301,14 +347,16 @@ def on_activate():
 
             logger.info(f"Final text ({len(final_text)} chars): {final_text[:100]}...")
             copy_to_clipboard(final_text)
-            paste_from_clipboard()
+            pasted = paste_from_clipboard()
 
             # In automatic mode the choice is the model's, so name it rather
             # than leaving the user to infer it from the transcript.
             if state.source_lang == "auto" and state.last_detected_language:
                 _set_overlay_detail(f"Detected {state.last_detected_language.upper()}")
 
-            _set_overlay_state("success")
+            # No text field in focus: the transcript is on the clipboard, and
+            # the pill says so instead of claiming an insertion that never was.
+            _set_overlay_state("success" if pasted else "clipboard")
 
             state.console.print("\n[bold cyan]Transcription:[/bold cyan]")
             state.console.print(final_text)

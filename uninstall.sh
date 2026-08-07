@@ -117,6 +117,7 @@ fi
 
 echo "Removing the language preference..."
 rm -f "$HOME/.config/ctrlspeak/language" \
+  "$HOME/.config/ctrlspeak/hotkey" \
   "$HOME/.config/ctrlspeak/startup-pill.fifo" \
   "$HOME/.config/ctrlspeak/setup-status" \
   "$HOME/.config/ctrlspeak/permission-status"

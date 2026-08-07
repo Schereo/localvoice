@@ -5,6 +5,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_LABEL="com.localvoice.ctrlspeak"
 SOURCE_LANGUAGE="${CTRLSPEAK_LANGUAGE:-de}"
+HOTKEY="${CTRLSPEAK_HOTKEY:-}"
 SUPPORTED_CTRLSPEAK_VERSION="1.8.0"
 
 fail() {
@@ -22,6 +23,10 @@ fi
 
 if [[ "$SOURCE_LANGUAGE" != "de" && "$SOURCE_LANGUAGE" != "en" && "$SOURCE_LANGUAGE" != "auto" ]]; then
   fail "CTRLSPEAK_LANGUAGE must be 'de', 'en' or 'auto'."
+fi
+
+if [[ -n "$HOTKEY" && ! "$HOTKEY" =~ ^(ctrl|cmd|alt|shift),[234]$ ]]; then
+  fail "CTRLSPEAK_HOTKEY must look like 'cmd,2' (modifier: ctrl/cmd/alt/shift, taps: 2-4)."
 fi
 
 command -v brew >/dev/null 2>&1 || fail "Homebrew is missing. Install it from https://brew.sh and run this script again."
@@ -133,6 +138,7 @@ backup_and_install "$PATCH_DIR/models/factory.py" "$CTRLSPEAK_LIBEXEC/models/fac
 backup_and_install "$PATCH_DIR/models/registry.py" "$CTRLSPEAK_LIBEXEC/models/registry.py" 644
 backup_and_install "$PATCH_DIR/models/whisper_mlx.py" "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" 644
 backup_and_install "$PATCH_DIR/utils/clipboard.py" "$CTRLSPEAK_LIBEXEC/utils/clipboard.py" 644
+backup_and_install "$PATCH_DIR/utils/keyboard_shortcuts.py" "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py" 644
 
 "$CTRLSPEAK_PYTHON" -m py_compile \
   "$CTRLSPEAK_LIBEXEC/hotkeys.py" \
@@ -146,7 +152,8 @@ backup_and_install "$PATCH_DIR/utils/clipboard.py" "$CTRLSPEAK_LIBEXEC/utils/cli
   "$CTRLSPEAK_LIBEXEC/models/factory.py" \
   "$CTRLSPEAK_LIBEXEC/models/registry.py" \
   "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" \
-  "$CTRLSPEAK_LIBEXEC/utils/clipboard.py"
+  "$CTRLSPEAK_LIBEXEC/utils/clipboard.py" \
+  "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py"
 
 WRAPPER_PATH="$BREW_PREFIX/bin/ctrlspeak-local"
 cat > "$BUILD_DIR/ctrlspeak-local" <<EOF
@@ -347,6 +354,11 @@ EOF
 
 plutil -lint "$BUILD_DIR/$SERVICE_LABEL.plist" >/dev/null
 install -m 644 "$BUILD_DIR/$SERVICE_LABEL.plist" "$LAUNCH_AGENT_PATH"
+
+if [[ -n "$HOTKEY" ]]; then
+  mkdir -p "$HOME/.config/ctrlspeak"
+  printf '%s\n' "$HOTKEY" > "$HOME/.config/ctrlspeak/hotkey"
+fi
 
 # Guided permission setup. The app requests all three permissions itself, so
 # macOS pre-lists it in the privacy panes: the user confirms a dialog or flips

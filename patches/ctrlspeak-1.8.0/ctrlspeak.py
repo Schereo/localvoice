@@ -64,7 +64,7 @@ def run_app(args):
     from utils.audio import AudioManager
     from model_loader import get_model
     from transcription import transcription_worker
-    from hotkeys import on_activate
+    from hotkeys import on_activate, is_recording, cancel_recording, finish_recording
     from ui import CtrlSpeakApp, AppState
 
     state.startup_time = time.time()
@@ -141,6 +141,11 @@ def run_app(args):
 
         state.keyboard_manager = KeyboardShortcutManager()
         state.keyboard_manager.register_triple_ctrl_tap(on_activate)
+        state.keyboard_manager.register_recording_keys(
+            is_recording=is_recording,
+            on_cancel=cancel_recording,
+            on_finish=finish_recording,
+        )
         state.keyboard_manager.register_shortcut('<alt>+<esc>', exit_app)
 
         restore_environment_variables(saved_env_vars)
@@ -154,9 +159,12 @@ def run_app(args):
         # Sync loaded model state after successful load
         app_state.loaded_model = model_type_arg  # Store the alias that was actually loaded
 
+        hotkey_hint = state.keyboard_manager.hotkey_description
         console.print(
             Panel.fit(
-                "[bold cyan]ctrlspeak[/bold cyan] - Ready to transcribe.\nTriple-tap [bold]Ctrl[/bold] to start/stop recording.",
+                f"[bold cyan]ctrlspeak[/bold cyan] - Ready to transcribe.\n"
+                f"[bold]{hotkey_hint}[/bold] to start/stop recording.\n"
+                f"While recording: [bold]Enter[/bold] inserts, [bold]Esc[/bold] cancels.",
                 title="Welcome",
                 border_style="blue",
             )
