@@ -295,13 +295,11 @@ def on_activate():
             state.console.print("[bold yellow]Model is still loading. Please wait...[/bold yellow]")
             return
 
-        # Play start beep
-        play_start_beep()
-
         # Track recording start time for history (stored in state for thread safety)
         state.recording_start_time = time.time()
 
-        # Determine if we should use streaming mode
+        # Recording starts before the beep: the beep is a "go" signal, and
+        # anything said while it plays is already being captured.
         if streaming.is_model_streaming_capable():
             logger.info("Using STREAMING mode (model supports streaming)")
             _current_session_streaming = True
@@ -311,6 +309,7 @@ def on_activate():
             _current_session_streaming = False
             _start_queue_recording()
 
+        play_start_beep()
         _start_recording_overlay()
 
     else:

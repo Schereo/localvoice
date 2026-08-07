@@ -139,6 +139,7 @@ backup_and_install "$PATCH_DIR/models/registry.py" "$CTRLSPEAK_LIBEXEC/models/re
 backup_and_install "$PATCH_DIR/models/whisper_mlx.py" "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" 644
 backup_and_install "$PATCH_DIR/utils/clipboard.py" "$CTRLSPEAK_LIBEXEC/utils/clipboard.py" 644
 backup_and_install "$PATCH_DIR/utils/keyboard_shortcuts.py" "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py" 644
+backup_and_install "$PATCH_DIR/utils/audio.py" "$CTRLSPEAK_LIBEXEC/utils/audio.py" 644
 
 "$CTRLSPEAK_PYTHON" -m py_compile \
   "$CTRLSPEAK_LIBEXEC/hotkeys.py" \
@@ -153,7 +154,8 @@ backup_and_install "$PATCH_DIR/utils/keyboard_shortcuts.py" "$CTRLSPEAK_LIBEXEC/
   "$CTRLSPEAK_LIBEXEC/models/registry.py" \
   "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" \
   "$CTRLSPEAK_LIBEXEC/utils/clipboard.py" \
-  "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py"
+  "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py" \
+  "$CTRLSPEAK_LIBEXEC/utils/audio.py"
 
 WRAPPER_PATH="$BREW_PREFIX/bin/ctrlspeak-local"
 cat > "$BUILD_DIR/ctrlspeak-local" <<EOF
