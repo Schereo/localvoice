@@ -122,7 +122,7 @@ final class RecorderHUDView: NSView {
                     withAttributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium)]
                 ).width
                 : 0
-            let width = max(200, 50 + ceil(max(titleWidth, detailWidth)) + 20)
+            let width = max(200, 50 + ceil(max(titleWidth, detailWidth)) + 18)
             return NSSize(width: width, height: twoLines ? 56 : 44)
         }
     }
@@ -218,20 +218,23 @@ final class RecorderHUDView: NSView {
         let centerY = bounds.midY
 
         // Soft pulse plus crisp live dot.
+        // The dot sits on the same icon column (center x 27) as the spinner
+        // and the result circles, so nothing shifts sideways when the pill
+        // morphs from recording to processing to done.
         let pulse = (sin(phase * 0.72) + 1) / 2
         let haloRadius = 5.5 + pulse * 2.5
-        let haloRect = NSRect(x: 24 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
+        let haloRect = NSRect(x: 27 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
         NSColor(calibratedRed: 1, green: 0.25, blue: 0.30, alpha: 0.10 + pulse * 0.10).setFill()
         NSBezierPath(ovalIn: haloRect).fill()
 
         NSColor(calibratedRed: 1, green: 0.27, blue: 0.31, alpha: 1).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 21, y: centerY - 3, width: 6, height: 6)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 24, y: centerY - 3, width: 6, height: 6)).fill()
 
         // One shared gap between every neighbour pair — measured to the
         // timer's glyphs, not its layout box, or the right-aligned digits
         // would sit visually farther from the waveform than the dot does.
         let gap: CGFloat = 16
-        let dotRightEdge: CGFloat = 27
+        let dotRightEdge: CGFloat = 30
         let badge = languageBadgeRect
 
         let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
@@ -349,17 +352,17 @@ final class RecorderHUDView: NSView {
         let centerY = bounds.midY
         drawSpinner(center: NSPoint(x: 27, y: centerY))
 
-        drawText(
+        drawCenteredText(
             "Transcribing",
-            in: NSRect(x: 46, y: centerY - 10, width: 142, height: 20),
-            font: .systemFont(ofSize: 13.5, weight: .semibold),
-            color: ink.withAlphaComponent(0.88),
+            centeredIn: NSRect(x: 50, y: centerY - 10, width: 142, height: 20),
+            font: .systemFont(ofSize: 14, weight: .semibold),
+            color: ink.withAlphaComponent(0.92),
             alignment: .left
         )
 
         // Anchored to the right edge so the row fits the compact panel too.
         let step: CGFloat = 14
-        let startX = bounds.width - 24 - 4 * step
+        let startX = bounds.width - 21.5 - 4 * step
         for index in 0..<5 {
             let wave = (sin(phase * 1.45 - CGFloat(index) * 0.72) + 1) / 2
             let radius: CGFloat = 2.2 + wave * 1.35
@@ -417,9 +420,9 @@ final class RecorderHUDView: NSView {
         let textWidth = bounds.width - 66
 
         guard !detailText.isEmpty else {
-            drawText(
+            drawCenteredText(
                 title,
-                in: NSRect(x: 50, y: centerY - 8.5, width: textWidth, height: 17),
+                centeredIn: NSRect(x: 50, y: centerY - 10, width: textWidth, height: 20),
                 font: .systemFont(ofSize: 14, weight: .semibold),
                 color: ink.withAlphaComponent(0.92),
                 alignment: .left
@@ -438,7 +441,7 @@ final class RecorderHUDView: NSView {
         drawText(
             detailText,
             in: NSRect(x: 50, y: 11, width: textWidth, height: 15),
-            font: .systemFont(ofSize: 10.5, weight: .semibold),
+            font: .systemFont(ofSize: 10.5, weight: .medium),
             color: emphasized(color),
             alignment: .left
         )
@@ -477,9 +480,9 @@ final class RecorderHUDView: NSView {
         case "AUTO": languageName = "Automatic"
         default: languageName = "German"
         }
-        drawText(
+        drawCenteredText(
             "Language: \(languageName)",
-            in: NSRect(x: 50, y: centerY - 8.5, width: 215, height: 17),
+            centeredIn: NSRect(x: 50, y: centerY - 10, width: 215, height: 20),
             font: .systemFont(ofSize: 14, weight: .semibold),
             color: ink.withAlphaComponent(0.92),
             alignment: .left
@@ -512,7 +515,7 @@ final class RecorderHUDView: NSView {
 
         drawText(
             "Permissions required",
-            in: NSRect(x: 50, y: 30, width: 292, height: 16),
+            in: NSRect(x: 50, y: 30, width: 290, height: 18),
             font: .systemFont(ofSize: 13, weight: .semibold),
             color: ink.withAlphaComponent(0.92),
             alignment: .left
@@ -520,9 +523,9 @@ final class RecorderHUDView: NSView {
 
         drawText(
             detailText.isEmpty ? "Open System Settings to grant access" : detailText,
-            in: NSRect(x: 50, y: 10, width: 292, height: 15),
+            in: NSRect(x: 50, y: 11, width: 290, height: 15),
             font: .systemFont(ofSize: 10.5, weight: .medium),
-            color: amber.withAlphaComponent(0.80),
+            color: emphasized(amber).withAlphaComponent(0.90),
             alignment: .left
         )
     }
@@ -556,29 +559,30 @@ final class RecorderHUDView: NSView {
 
         drawText(
             "Downloading model",
-            in: NSRect(x: 50, y: 32, width: 200, height: 16),
-            font: .systemFont(ofSize: 12.5, weight: .semibold),
-            color: ink.withAlphaComponent(0.90),
+            in: NSRect(x: 50, y: 31, width: 200, height: 17),
+            font: .systemFont(ofSize: 13, weight: .semibold),
+            color: ink.withAlphaComponent(0.92),
             alignment: .left
         )
 
         if progressFraction != nil {
+            // Box top chosen so the digits share the title's baseline.
             drawText(
                 "\(Int((displayedProgress * 100).rounded()))%",
-                in: NSRect(x: 252, y: 32, width: 90, height: 16),
+                in: NSRect(x: bounds.width - 108, y: 30.5, width: 90, height: 16),
                 font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
                 color: ink.withAlphaComponent(0.62),
                 alignment: .right
             )
         }
 
-        drawProgressBar(in: NSRect(x: 50, y: 24, width: 292, height: 5))
+        drawProgressBar(in: NSRect(x: 50, y: 24, width: bounds.width - 68, height: 5))
 
         if !detailText.isEmpty {
             drawText(
                 detailText,
-                in: NSRect(x: 50, y: 7, width: 292, height: 14),
-                font: .systemFont(ofSize: 10, weight: .regular),
+                in: NSRect(x: 50, y: 8, width: bounds.width - 68, height: 15),
+                font: .systemFont(ofSize: 10.5, weight: .medium),
                 color: ink.withAlphaComponent(0.55),
                 alignment: .left
             )
