@@ -242,8 +242,6 @@ def run_app(args):
             state.audio_manager.open_input_stream()
 
         try:
-            logger.info("Starting Textual UI...")
-
             # Sync loaded device state after stream starts
             # If input_device is None, resolve to actual default device ID
             if state.audio_manager.input_device is None:
@@ -252,17 +250,34 @@ def run_app(args):
             else:
                 app_state.loaded_device = state.audio_manager.input_device
 
-            # Create and run Textual app
-            app = CtrlSpeakApp(
-                app_state=app_state,
-                audio_manager=state.audio_manager,
-                model_type=model_type_arg  # Pass the alias, not the resolved full name
-            )
+            # Under the LaunchAgent there is no terminal: stdout and stderr are
+            # the log files from the plist, and TERM is set, so Textual believes
+            # it can draw. It then repaints full-screen frames into the log
+            # forever — a pinned CPU core and ~5 GB of escape sequences a day.
+            # The UI is a convenience for running ctrlSPEAK by hand; the service
+            # does not need it. Hotkeys, the pill and the transcription worker
+            # were all started above and run in their own threads, so headless
+            # we only have to keep the process alive until exit_app() flips
+            # main_loop_active.
+            if sys.stdout.isatty():
+                logger.info("Starting Textual UI...")
 
-            # Run the app (this blocks until app exits)
-            app.run()
+                # Create and run Textual app
+                app = CtrlSpeakApp(
+                    app_state=app_state,
+                    audio_manager=state.audio_manager,
+                    model_type=model_type_arg  # Pass the alias, not the resolved full name
+                )
 
-            logger.info("Textual UI exited, cleaning up...")
+                # Run the app (this blocks until app exits)
+                app.run()
+
+                logger.info("Textual UI exited, cleaning up...")
+            else:
+                logger.info("No terminal attached; running headless without the Textual UI.")
+                while state.main_loop_active:
+                    time.sleep(0.2)
+                logger.info("Headless loop exited, cleaning up...")
         finally:
             state.audio_manager.close_input_stream()
 
