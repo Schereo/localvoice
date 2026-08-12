@@ -572,16 +572,45 @@ class AudioManager:
         # bounded moment so we do not usually stack a second stream on the
         # device — but never adopt its deadlock: after the timeout we open
         # anyway, because a working microphone beats a tidy one.
+        teardown_wedged = False
         pending = self._pending_close
         if pending is not None and pending.is_alive():
             pending.join(self.CLOSE_TIMEOUT_S)
             if pending.is_alive():
+                teardown_wedged = True
                 logger.warning(
                     "Previous microphone teardown is still blocked in CoreAudio; "
                     "opening a new stream anyway."
                 )
-        self._pending_close = None
+        if not teardown_wedged:
+            self._pending_close = None
 
+        try:
+            self._open_and_start()
+        except Exception as exc:
+            # PortAudio enumerates the audio devices once, in Pa_Initialize.
+            # This service lives for days, so anything that changes the audio
+            # topology in the meantime — an iPhone arriving over Continuity,
+            # AirPods connecting, a dock, a sleep/wake cycle — leaves it
+            # holding a stale list, and every open then fails with -10851 /
+            # -9986 until the process is restarted. Cycling PortAudio is what
+            # re-reads that list.
+            if teardown_wedged:
+                # _terminate() would pull the rug out from under the stream
+                # that teardown is still holding. Restarting is the only safe
+                # way out of that one.
+                raise
+            logger.warning(
+                f"Opening the microphone failed ({exc}); refreshing PortAudio's "
+                "device list and retrying once."
+            )
+            self.current_stream = None
+            sd._terminate()
+            sd._initialize()
+            self._open_and_start()
+
+    def _open_and_start(self):
+        """Create the input stream and start it."""
         stream = self.start_input_stream()
         stream.start()
 
