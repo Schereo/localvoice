@@ -5,6 +5,7 @@ Audio functionality for ctrlSPEAK.
 import sounddevice as sd
 import numpy as np
 import time
+import threading
 import logging
 from collections import deque
 from queue import Queue
@@ -64,6 +65,10 @@ class AudioManager:
         # Audio device selection
         self.input_device = None  # None means use default device
         self.current_stream = None  # Store active stream for hot swapping
+        # Teardown of a closed stream runs on its own thread; see
+        # close_input_stream for why it must not block the caller.
+        self._pending_close = None
+        self.CLOSE_TIMEOUT_S = 2.0
 
         # Phase 5 Tuning: Reduce silence duration based on user feedback
         self.SILENCE_DURATION_S = 1.0
@@ -562,14 +567,38 @@ class AudioManager:
         """Open and start the input stream if it is not already running."""
         if self.current_stream is not None:
             return
+
+        # A previous teardown can still be wedged inside CoreAudio. Give it a
+        # bounded moment so we do not usually stack a second stream on the
+        # device — but never adopt its deadlock: after the timeout we open
+        # anyway, because a working microphone beats a tidy one.
+        pending = self._pending_close
+        if pending is not None and pending.is_alive():
+            pending.join(self.CLOSE_TIMEOUT_S)
+            if pending.is_alive():
+                logger.warning(
+                    "Previous microphone teardown is still blocked in CoreAudio; "
+                    "opening a new stream anyway."
+                )
+        self._pending_close = None
+
         stream = self.start_input_stream()
         stream.start()
 
     def close_input_stream(self):
-        """Stop and close the input stream, releasing the microphone.
+        """Release the microphone, without waiting for CoreAudio to agree.
 
-        Releasing it is what turns the macOS microphone indicator off, so
-        the on-demand mode calls this after every recording session.
+        Releasing the stream is what turns the macOS microphone indicator
+        off, so the on-demand mode calls this after every recording session.
+
+        The teardown itself runs on its own thread. PortAudio's stop path
+        takes a CoreAudio HAL mutex that the device's IO thread can already
+        hold while it sits in AudioUnitGetProperty, and the two then wait on
+        each other forever. This method is called from the hotkey handler,
+        which runs on pynput's CGEventTap callback — blocking there hangs
+        dictation mid-session with the pill stuck on "transcribing", and
+        stalls the event tap macOS expects to return promptly. So the wait
+        never happens on the caller's thread.
         """
         stream = self.current_stream
         self.current_stream = None
@@ -581,12 +610,19 @@ class AudioManager:
         self._onset_buffer.clear()
         self._onset_samples = 0
 
-        try:
-            stream.stop()
-            stream.close()
-            logger.info("AudioManager: Input stream closed; microphone released.")
-        except Exception as exc:
-            logger.warning(f"Could not close the input stream cleanly: {exc}")
+        def _teardown():
+            try:
+                stream.stop()
+                stream.close()
+                logger.info("AudioManager: Input stream closed; microphone released.")
+            except Exception as exc:
+                logger.warning(f"Could not close the input stream cleanly: {exc}")
+
+        closer = threading.Thread(
+            target=_teardown, daemon=True, name="AudioStreamCloser"
+        )
+        self._pending_close = closer
+        closer.start()
 
     def start_input_stream(self):
         """Start the audio input stream using the instance method as callback"""
