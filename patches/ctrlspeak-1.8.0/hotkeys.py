@@ -358,17 +358,28 @@ def on_activate():
                 state.recording_start_time = None  # Reset for next recording
 
             logger.info(f"Final text ({len(final_text)} chars): {final_text[:100]}...")
-            copy_to_clipboard(final_text)
-            pasted = paste_from_clipboard()
+            copied = copy_to_clipboard(final_text)
+            # Pasting means pressing Cmd+V, which would deliver whatever the
+            # clipboard still held from before — so only paste what we put there.
+            pasted = paste_from_clipboard() if copied else False
 
             # In automatic mode the choice is the model's, so name it rather
             # than leaving the user to infer it from the transcript.
             if state.source_lang == "auto" and state.last_detected_language:
                 _set_overlay_detail(f"Detected {state.last_detected_language.upper()}")
 
-            # No text field in focus: the transcript is on the clipboard, and
-            # the pill says so instead of claiming an insertion that never was.
-            _set_overlay_state("success" if pasted else "clipboard")
+            if copied:
+                # No text field in focus: the transcript is on the clipboard,
+                # and the pill says so instead of claiming an insertion that
+                # never was.
+                _set_overlay_state("success" if pasted else "clipboard")
+            else:
+                # The transcript exists but could not be handed over. Name the
+                # reason and pick a state that dismisses itself; a pill left
+                # standing is what made this look like a dead app before. The
+                # text is still written to the log and to history below.
+                _set_overlay_detail("Clipboard unavailable")
+                _set_overlay_state("empty")
 
             state.console.print("\n[bold cyan]Transcription:[/bold cyan]")
             state.console.print(final_text)
