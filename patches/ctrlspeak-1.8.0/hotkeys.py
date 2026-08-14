@@ -15,7 +15,7 @@ import threading
 import time
 from pathlib import Path
 import state
-from utils.clipboard import copy_to_clipboard, paste_from_clipboard
+from utils.clipboard import copy_to_clipboard, paste_from_clipboard, type_text
 from utils.player import play_start_beep, play_stop_beep
 from utils.history import get_history_manager
 import streaming
@@ -373,11 +373,17 @@ def on_activate():
                 # and the pill says so instead of claiming an insertion that
                 # never was.
                 _set_overlay_state("success" if pasted else "clipboard")
+            elif type_text(final_text):
+                # Clipboard unreachable, but the text still got there. Say how,
+                # because the paste-vs-typed distinction matters in apps that
+                # mangle synthetic keystrokes.
+                _set_overlay_detail("Typed — clipboard unavailable")
+                _set_overlay_state("success")
             else:
-                # The transcript exists but could not be handed over. Name the
-                # reason and pick a state that dismisses itself; a pill left
-                # standing is what made this look like a dead app before. The
-                # text is still written to the log and to history below.
+                # Nothing could take the text. Name the reason and pick a state
+                # that dismisses itself; a pill left standing is what made this
+                # look like a dead app before. The transcript is still written
+                # to the log and to history below.
                 _set_overlay_detail("Clipboard unavailable")
                 _set_overlay_state("empty")
 
