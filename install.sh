@@ -9,12 +9,20 @@ LEGACY_LABEL="com.localvoice.ctrlspeak"
 SOURCE_LANGUAGE="${CTRLSPEAK_LANGUAGE:-de}"
 HOTKEY="${CTRLSPEAK_HOTKEY:-}"
 MIC_STANDBY="${CTRLSPEAK_MIC_STANDBY:-}"
+# The ctrlSPEAK release this patch set is written against. Independent of
+# LocalVoice's own version below: upstream moves on its own schedule.
 SUPPORTED_CTRLSPEAK_VERSION="1.8.0"
 
 fail() {
   echo "Error: $*" >&2
   exit 1
 }
+
+# LocalVoice's version, single-sourced from VERSION so the app bundle, the
+# changelog and the git tag cannot drift apart. The bundle used to report
+# SUPPORTED_CTRLSPEAK_VERSION, which made every install claim to be 1.8.0.
+LOCALVOICE_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION" 2>/dev/null || true)"
+[[ -n "$LOCALVOICE_VERSION" ]] || fail "Could not read the version from $PROJECT_DIR/VERSION."
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   fail "This installer only supports macOS."
@@ -49,6 +57,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo "Installing LocalVoice $LOCALVOICE_VERSION (ctrlSPEAK $SUPPORTED_CTRLSPEAK_VERSION)..."
 echo "Installing ctrlSPEAK and its local MLX dependencies..."
 brew tap patelnav/ctrlspeak
 
@@ -257,9 +266,9 @@ cat > "$APP_STAGE/Contents/Info.plist" <<EOF
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>$SUPPORTED_CTRLSPEAK_VERSION</string>
+  <string>$LOCALVOICE_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>$SUPPORTED_CTRLSPEAK_VERSION</string>
+  <string>$LOCALVOICE_VERSION</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
