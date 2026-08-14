@@ -11,6 +11,43 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Changed
+
+- Microphone capture runs in its own process. CoreAudio's HAL deadlocks in the
+  stream teardown path, and a mutex wedged inside our own process cannot be
+  broken from Python — every earlier mitigation worked around that rather than
+  removing it. Releasing the microphone is now killing a child process, which
+  the kernel always honours immediately. The indicator goes out the moment a
+  recording ends, and opening is bounded: the child reports `ready` or
+  `open-failed`, and the parent raises after five seconds instead of hanging.
+- Hotkey callbacks only enqueue; a worker thread runs the commands one at a
+  time and in order. The callbacks run on pynput's `CGEventTap`, so anything
+  blocking there used to take key handling down with it — while the process
+  stayed alive and `KeepAlive` never fired, leaving dictation dead behind a
+  healthy-looking service.
+- The installer records what it deployed in
+  `~/.config/ctrlspeak/installed-version`, and `doctor.sh` compares that
+  instead of the app bundle's version. The bundle only changes when it is
+  rebuilt, while most of LocalVoice lives outside it, so an up-to-date install
+  could report as stale. The stamp sits outside the bundle deliberately:
+  writing inside a signed bundle changes its signature, and under ad-hoc
+  signing that means losing the macOS permissions. ([#7])
+
+### Added
+
+- A watchdog restarts the service when a command makes no progress for 90
+  seconds, showing a pill on the way out. `os._exit` is the only exit that
+  works with threads stuck in a kernel mutex; the LaunchAgent brings the
+  service back seconds later.
+
+### Removed
+
+- The bounded teardown join and the PortAudio device-list refresh from 1.0.1.
+  Both existed to survive a deadlock and a stale device list inside the
+  process that owned the stream. A fresh capture process per recording
+  re-runs `Pa_Initialize` and cannot deadlock the parent, so both are
+  superseded rather than dropped.
+
 ## [1.1.0] — 2026-08-14
 
 ### Added
