@@ -10,6 +10,7 @@ enum OverlayMode: String {
     case download
     case cancelled
     case clipboard
+    case error
 }
 
 final class RecorderHUDView: NSView {
@@ -97,6 +98,7 @@ final class RecorderHUDView: NSView {
         case .empty: return "No speech detected"
         case .cancelled: return "Recording discarded"
         case .clipboard: return "Copied to clipboard"
+        case .error: return "LocalVoice is restarting"
         default: return nil
         }
     }
@@ -203,6 +205,12 @@ final class RecorderHUDView: NSView {
             )
         case .clipboard:
             drawResult(title: RecorderHUDView.resultTitle(mode)!, color: accent, symbol: "checkmark")
+        case .error:
+            drawResult(
+                title: RecorderHUDView.resultTitle(mode)!,
+                color: NSColor(calibratedRed: 0.95, green: 0.62, blue: 0.15, alpha: 1),
+                symbol: "exclamationmark"
+            )
         case .language:
             drawLanguageSelection()
         case .permission:
@@ -825,6 +833,14 @@ final class OverlayController: NSObject {
         } else if launchMode == "language" {
             hudView.setMode(.language)
             close(after: 1.5)
+        } else if launchMode == "error" {
+            // Shown by the watchdog just before it hard-exits, so this mode
+            // never reads stdin: the writer is gone a moment later, and EOF
+            // would dismiss the pill before it could be read.
+            hudView.setMode(.error)
+            hudView.setDetail("Audio stopped responding — back in a moment")
+            syncPanelSize()
+            close(after: 4.5)
         } else {
             // Status modes must paint immediately; waiting for the first
             // command would flash the recording UI for a frame.

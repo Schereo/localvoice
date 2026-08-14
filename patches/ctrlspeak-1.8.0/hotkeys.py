@@ -43,6 +43,156 @@ _overlay_session = None
 _overlay_session_lock = threading.Lock()
 _language_lock = threading.Lock()
 
+# --- Hotkey dispatch -------------------------------------------------------
+#
+# The key callbacks run on pynput's CGEventTap callback, which macOS expects
+# to return promptly — and which the whole hotkey system depends on. Every
+# heavy step (opening CoreAudio, the clipboard, waiting for a transcription)
+# can wedge in a C-level mutex, and wedging it there took dictation down for
+# good. So the callbacks only enqueue; this worker does the work.
+_command_queue = queue.Queue()
+_worker_thread = None
+_worker_lock = threading.Lock()
+
+# The watchdog's view of the worker: when the current command started, and
+# what it was. Plain assignments, atomic in CPython, read without a lock so
+# the watchdog can never block on the thread it is watching.
+_command_started_at = None
+_command_name = None
+
+# Generous enough for a long recording's transcription (a 30 s clip decodes
+# in about a second), short enough that a wedge does not cost the morning.
+WATCHDOG_TIMEOUT_S = 90.0
+
+# How long the microphone stays open after a recording. Successive dictations
+# then reuse the stream instead of cycling CoreAudio each time — that cycle is
+# where the HAL deadlocks — while the indicator still goes dark soon after.
+MIC_IDLE_CLOSE_S = 60.0
+_mic_close_timer = None
+_mic_timer_lock = threading.Lock()
+
+
+def _announce_restart():
+    """Put a pill on screen explaining the imminent hard exit.
+
+    Spawned detached and stdin-less: this process is about to die, and the
+    pill has to outlive it long enough to be read.
+    """
+    try:
+        subprocess.Popen(
+            [_OVERLAY_PATH, "error", state.source_lang],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        logger.warning(f"Could not show the restart pill: {exc}")
+
+
+def _watchdog():
+    """Restart the service when a command stops making progress.
+
+    A CoreAudio or pasteboard deadlock leaves the process alive, so launchd's
+    KeepAlive never fires — dictation is dead but the service looks healthy.
+    os._exit is the only exit that works with threads stuck in a kernel mutex;
+    the LaunchAgent brings us back a few seconds later.
+    """
+    while True:
+        time.sleep(1.0)
+
+        started = _command_started_at
+        if started is None:
+            continue
+
+        elapsed = time.monotonic() - started
+        if elapsed < WATCHDOG_TIMEOUT_S:
+            continue
+
+        logger.error(
+            f"Watchdog: '{_command_name}' has not finished after {elapsed:.0f}s; "
+            "the audio or clipboard stack is wedged. Restarting the service."
+        )
+        _announce_restart()
+        time.sleep(0.4)  # let the pill process get off the ground
+        os._exit(1)
+
+
+def _worker():
+    """Run queued hotkey commands one at a time, in order."""
+    global _command_started_at, _command_name
+
+    while True:
+        name, handler = _command_queue.get()
+        _command_name = name
+        _command_started_at = time.monotonic()
+        try:
+            handler()
+        except Exception as exc:
+            logger.error(f"Hotkey command '{name}' failed: {exc}", exc_info=True)
+        finally:
+            _command_started_at = None
+            _command_name = None
+
+
+def _ensure_worker():
+    global _worker_thread
+
+    with _worker_lock:
+        if _worker_thread is not None:
+            return
+
+        _worker_thread = threading.Thread(
+            target=_worker, name="ctrlspeak-hotkey-worker", daemon=True
+        )
+        _worker_thread.start()
+        threading.Thread(
+            target=_watchdog, name="ctrlspeak-watchdog", daemon=True
+        ).start()
+
+
+def _dispatch(name, handler):
+    """Hand a command to the worker and return to the event tap at once."""
+    _ensure_worker()
+    _command_queue.put((name, handler))
+    return True
+
+
+def _cancel_mic_close():
+    """Stop a pending teardown, so a new recording reuses the open stream."""
+    global _mic_close_timer
+
+    with _mic_timer_lock:
+        if _mic_close_timer is not None:
+            _mic_close_timer.cancel()
+            _mic_close_timer = None
+
+
+def _schedule_mic_close():
+    """Release the microphone once dictation has been idle for a while."""
+    global _mic_close_timer
+
+    def _close_if_idle():
+        global _mic_close_timer
+
+        with _mic_timer_lock:
+            _mic_close_timer = None
+
+        if is_recording():
+            return
+
+        logger.info("Microphone idle; releasing the input stream.")
+        state.audio_manager.close_input_stream()
+
+    with _mic_timer_lock:
+        if _mic_close_timer is not None:
+            _mic_close_timer.cancel()
+
+        _mic_close_timer = threading.Timer(MIC_IDLE_CLOSE_S, _close_if_idle)
+        _mic_close_timer.name = "ctrlspeak-mic-idle-close"
+        _mic_close_timer.daemon = True
+        _mic_close_timer.start()
+
 
 class _OverlaySession:
     """Own a persistent recorder HUD and feed it microphone levels."""
@@ -245,37 +395,48 @@ def is_recording():
 
 
 def cancel_recording():
-    """Discard the running recording session without inserting anything."""
+    """Queue a discard of the running session (called from the event tap)."""
+    if not is_recording():
+        return True
+
+    return _dispatch("cancel", _perform_cancel)
+
+
+def _perform_cancel():
     global _session_cancelled
 
     if not is_recording():
-        return True
+        return
 
     logger.info("Recording cancelled via Esc.")
     _session_cancelled = True
     try:
         _set_overlay_state("cancelled")
         # The audio pipeline still runs to completion so the worker queue
-        # stays consistent; on_activate sees the flag and drops the text.
-        on_activate()
+        # stays consistent; _perform_activate sees the flag and drops the text.
+        _perform_activate()
     finally:
         _session_cancelled = False
-    return True
 
 
 def finish_recording():
-    """Stop the running recording session and insert the transcript."""
+    """Queue a stop-and-insert (called from the event tap)."""
     if not is_recording():
         return True
 
     logger.info("Recording finished via Enter.")
-    return on_activate()
+    return _dispatch("finish", _perform_activate)
 
 
 def on_activate():
-    """Handle global hotkey activation.
+    """Queue a hotkey activation (called from the event tap)."""
+    return _dispatch("activate", _perform_activate)
 
-    Routes to streaming or queue-based mode depending on model capabilities.
+
+def _perform_activate():
+    """Start or stop a recording session.
+
+    Runs on the hotkey worker thread, never on the event tap.
     """
     global _current_session_streaming
 
@@ -295,14 +456,19 @@ def on_activate():
             state.console.print("[bold yellow]Model is still loading. Please wait...[/bold yellow]")
             return
 
-        # On-demand microphone: open the stream for this session only, so
-        # the macOS mic indicator lights up during recordings, not always.
+        # On-demand microphone: open the stream for this session, so the
+        # macOS mic indicator lights up around recordings rather than always.
+        # A pending idle teardown is cancelled first — reusing a still-open
+        # stream is both faster and one less trip through CoreAudio's teardown.
         if not state.mic_standby:
+            _cancel_mic_close()
             try:
                 state.audio_manager.open_input_stream()
             except Exception as exc:
                 logger.error(f"Could not open the microphone stream: {exc}")
                 state.console.print("[bold red]Could not open the microphone.[/bold red]")
+                _set_overlay_detail("Microphone unavailable")
+                _set_overlay_state("empty")
                 return
 
         # Track recording start time for history (stored in state for thread safety)
@@ -339,7 +505,7 @@ def on_activate():
             final_text = _stop_queue_recording()
 
         if not state.mic_standby:
-            state.audio_manager.close_input_stream()
+            _schedule_mic_close()
 
         if _session_cancelled:
             # The pill already shows "cancelled"; the transcript is discarded.

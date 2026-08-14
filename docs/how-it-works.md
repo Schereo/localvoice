@@ -24,6 +24,16 @@ Download progress is measured from the Hugging Face blob directory. Xet, the hub
 
 macOS lights the mic indicator whenever any process holds an open input stream — it cannot distinguish "listening and discarding" from "recording". LocalVoice therefore opens the stream per recording session by default, so the indicator reflects actual recordings. Standby mode (see [usage](usage.md#microphone-standby)) keeps the stream open for instant starts; idle audio then exists only as the rolling 0.45 s onset buffer in memory.
 
+## Staying alive
+
+Three rules keep a wedged subsystem from taking dictation down with it.
+
+**The event tap never blocks.** Hotkey callbacks run on pynput's CGEventTap callback, which macOS expects to return promptly. They only enqueue; a worker thread does the work. A wedge in CoreAudio or the pasteboard can no longer freeze the key handling itself.
+
+**A watchdog owns the last resort.** A deadlock leaves the process alive, so launchd's `KeepAlive` never fires — dictation is dead while the service looks healthy. If a command makes no progress for 90 seconds, a watchdog thread shows a pill and calls `os._exit(1)`, the only exit that works with threads stuck in a kernel mutex. The LaunchAgent restarts the service seconds later.
+
+**The microphone is cycled as little as possible.** CoreAudio's HAL deadlocks in the open/close path, so the stream is not released after every recording but 60 seconds after the last one. Successive dictations reuse it — faster, and one less trip through the teardown — while the indicator still goes dark shortly after you stop.
+
 ## Why the first word is not swallowed
 
 Two mechanisms used to eat word onsets: audio arriving before the recording flag flips was discarded, and within a recording, chunks only entered the segment buffer once Silero VAD classified them as speech — soft first phonemes were dropped as silence. A rolling ~0.45 s onset buffer bridges both gaps: the callback keeps recent chunks while idle and during unclassified silence, and the moment VAD first flips to speech the roll is prepended to the segment. The start beep plays after recording starts, so it marks "already capturing".
