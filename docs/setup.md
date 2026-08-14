@@ -35,6 +35,12 @@ Manual fallback: open **System Settings → Privacy & Security**, add `~/Applica
 
 The installer signs `LocalVoice.app` ad-hoc by default. If a **Developer ID Application** certificate is in your keychain, it is picked up automatically — permissions then attach to your team and bundle id and survive rebuilds. Create one via Xcode → Settings → Accounts → your team → *Manage Certificates…*, then re-run `./install.sh` and grant the permissions once more. Force a specific identity with `CTRLSPEAK_SIGN_IDENTITY="Developer ID Application: …" ./install.sh`.
 
+## Upgrading
+
+`git pull && ./install.sh`. The installer records the version it deployed in `~/.config/ctrlspeak/installed-version`, which is what `./scripts/doctor.sh` compares against this checkout.
+
+One caveat with ad-hoc signing: the version is written into the app bundle's `Info.plist`, the bundle is signed, and its signature *is* its identity as far as macOS permissions are concerned. So a version bump produces a new identity, and the three permissions have to be granted once more — the installer clears the stale rows and re-runs the wizard for you, but it is a minute of clicking per release. A **Developer ID Application** certificate removes this entirely: permissions then attach to your team and bundle id and survive every rebuild. See [Code signing](#code-signing).
+
 ## Service, logs, health
 
 ```bash

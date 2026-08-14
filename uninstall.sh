@@ -124,7 +124,8 @@ rm -f "$HOME/.config/ctrlspeak/language" \
   "$HOME/.config/ctrlspeak/mic-standby" \
   "$HOME/.config/ctrlspeak/startup-pill.fifo" \
   "$HOME/.config/ctrlspeak/setup-status" \
-  "$HOME/.config/ctrlspeak/permission-status"
+  "$HOME/.config/ctrlspeak/permission-status" \
+  "$HOME/.config/ctrlspeak/installed-version"
 
 echo "Removing LocalVoice's privacy-pane entries..."
 tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true

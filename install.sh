@@ -320,6 +320,13 @@ else
     fail "Could not sign the app bundle. Check that Xcode Command Line Tools are installed."
 fi
 
+# What is actually deployed, recorded outside the app bundle on purpose: the
+# bundle is signed, so anything written inside it changes the signature — and
+# under ad-hoc signing a changed signature is a new identity, which costs the
+# user their macOS permissions. The stamp lets doctor.sh answer "is this
+# checkout installed?" without that price.
+INSTALLED_VERSION_FILE="$HOME/.config/ctrlspeak/installed-version"
+
 APP_PATH="$HOME/Applications/LocalVoice.app"
 mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
@@ -390,6 +397,9 @@ if [[ -n "$MIC_STANDBY" ]]; then
   mkdir -p "$HOME/.config/ctrlspeak"
   printf '%s\n' "$MIC_STANDBY" > "$HOME/.config/ctrlspeak/mic-standby"
 fi
+
+mkdir -p "$HOME/.config/ctrlspeak"
+printf '%s\n' "$LOCALVOICE_VERSION" > "$INSTALLED_VERSION_FILE"
 
 # Guided permission setup. The app requests all three permissions itself, so
 # macOS pre-lists it in the privacy panes: the user confirms a dialog or flips

@@ -95,10 +95,13 @@ fi
 # A running install can be older than the checkout it is diagnosed from, which
 # is exactly the case where a bug report and the source disagree. Name both.
 REPO_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION" 2>/dev/null || echo "unknown")"
-INSTALLED_VERSION="$(defaults read "$APP_PATH/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "unknown")"
+BUNDLE_VERSION="$(defaults read "$APP_PATH/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "unknown")"
+# The stamp, not the bundle, says what was deployed: the bundle only changes
+# when install.sh rebuilds it, while most of LocalVoice lives outside it.
+INSTALLED_VERSION="$(tr -d '[:space:]' < "$HOME/.config/ctrlspeak/installed-version" 2>/dev/null || echo "$BUNDLE_VERSION")"
 
 echo
-echo "LocalVoice $INSTALLED_VERSION installed (repository: $REPO_VERSION)"
+echo "LocalVoice $INSTALLED_VERSION installed (repository: $REPO_VERSION, bundle: $BUNDLE_VERSION)"
 if [[ "$INSTALLED_VERSION" != "$REPO_VERSION" ]]; then
   echo "! Installed version differs from this checkout — re-run ./install.sh to match."
 fi
