@@ -4,6 +4,7 @@ set -euo pipefail
 
 SERVICE_LABEL="com.localvoice.app"
 CURRENT_UID="$(id -u)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 check_file() {
   local path="$1"
@@ -89,6 +90,18 @@ else
 
   echo "  Fix with: ./scripts/setup-permissions.sh"
 fi
+
+# A running install can be older than the checkout it is diagnosed from, which
+# is exactly the case where a bug report and the source disagree. Name both.
+REPO_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/VERSION" 2>/dev/null || echo "unknown")"
+INSTALLED_VERSION="$(defaults read "$APP_PATH/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "unknown")"
+
+echo
+echo "LocalVoice $INSTALLED_VERSION installed (repository: $REPO_VERSION)"
+if [[ "$INSTALLED_VERSION" != "$REPO_VERSION" ]]; then
+  echo "! Installed version differs from this checkout — re-run ./install.sh to match."
+fi
+echo "ctrlSPEAK $(brew list --versions ctrlspeak | awk 'NR == 1 { print $2 }')"
 
 echo
 echo "All installation checks passed."
