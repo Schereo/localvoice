@@ -7,6 +7,12 @@ import subprocess
 
 logger = logging.getLogger("ctrlspeak.clipboard")
 
+# pbcopy reaches the pasteboard server over synchronous XPC, and when that
+# server wedges the call never returns on its own. Everything here runs on
+# pynput's CGEventTap callback, so an unbounded wait freezes dictation
+# outright. Five seconds is far longer than a healthy pasteboard needs.
+CLIPBOARD_TIMEOUT_S = 5.0
+
 # Focused-element roles that clearly accept keyboard text input.
 _TEXT_ROLES = {
     "AXTextField",
@@ -17,16 +23,36 @@ _TEXT_ROLES = {
 
 
 def copy_to_clipboard(text):
-    """Copy text to clipboard"""
+    """Copy text to the clipboard. Returns True when it actually landed.
+
+    A wedged pasteboard server used to hang the whole session here: the
+    transcript was finished, pbcopy never returned, and the pill sat on
+    "transcribing" until the service was restarted. Failing is fine —
+    hanging is not, so this reports the outcome instead of raising into
+    the hotkey handler.
+    """
     # PyObjC's NSPasteboard backend can silently keep stale contents when
     # called from pynput's listener thread. macOS pbcopy is thread-safe and
     # addresses the active user's general pasteboard directly.
-    subprocess.run(
-        ["/usr/bin/pbcopy"],
-        input=str(text),
-        text=True,
-        check=True,
-    )
+    try:
+        subprocess.run(
+            ["/usr/bin/pbcopy"],
+            input=str(text),
+            text=True,
+            check=True,
+            timeout=CLIPBOARD_TIMEOUT_S,
+        )
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error(
+            f"pbcopy did not return within {CLIPBOARD_TIMEOUT_S:.0f}s — the macOS "
+            "pasteboard server is not responding. Restarting it usually clears "
+            "this: killall pboard"
+        )
+        return False
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.error(f"Could not copy to the clipboard: {exc}")
+        return False
 
 
 def _focused_element_accepts_text():
