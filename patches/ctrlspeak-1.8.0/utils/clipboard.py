@@ -98,6 +98,38 @@ def _focused_element_accepts_text():
         return True
 
 
+def type_text(text):
+    """Type the transcript straight into the focused field.
+
+    The fallback for when the clipboard is unavailable. Universal Clipboard
+    resolves remote items on the pasteboard's serial queue, so if the other
+    device does not answer, every local pasteboard operation queues behind
+    it and pbcopy cannot land — while Handoff, which is worth keeping, is
+    exactly what causes that. Synthetic keystrokes need none of it.
+
+    Not the default: typing is slower than a paste, and a few apps drop
+    characters from fast synthetic input where Cmd+V is atomic. It runs
+    only where the alternative is delivering nothing at all.
+
+    Returns True when the text was typed, False when nothing could take it.
+    """
+    if not _focused_element_accepts_text():
+        return False
+
+    from pynput import keyboard
+
+    kb = keyboard.Controller()
+    time.sleep(0.1)
+    try:
+        kb.type(text)
+    except Exception as exc:
+        logger.error(f"Could not type the transcript: {exc}")
+        return False
+
+    logger.info(f"Typed the transcript directly ({len(text)} chars).")
+    return True
+
+
 def paste_from_clipboard():
     """Paste into the focused text field, if there is one.
 
