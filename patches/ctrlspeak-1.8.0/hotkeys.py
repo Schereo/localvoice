@@ -64,10 +64,13 @@ _command_name = None
 # in about a second), short enough that a wedge does not cost the morning.
 WATCHDOG_TIMEOUT_S = 90.0
 
-# How long the microphone stays open after a recording. Successive dictations
-# then reuse the stream instead of cycling CoreAudio each time — that cycle is
-# where the HAL deadlocks — while the indicator still goes dark soon after.
-MIC_IDLE_CLOSE_S = 60.0
+# How long the microphone stays open after a recording. Zero — release it at
+# once, so the macOS indicator tracks dictation exactly. The delay existed to
+# avoid cycling CoreAudio's teardown, where the HAL deadlocks; capture now
+# lives in a child process and releasing is a kill, so there is nothing left
+# to avoid. Raise it only to shave the ~0.15 s respawn off back-to-back
+# dictations, at the cost of an indicator that outstays its recording.
+MIC_IDLE_CLOSE_S = 0.0
 _mic_close_timer = None
 _mic_timer_lock = threading.Lock()
 
@@ -169,8 +172,12 @@ def _cancel_mic_close():
 
 
 def _schedule_mic_close():
-    """Release the microphone once dictation has been idle for a while."""
+    """Release the microphone: at once, or after the configured idle time."""
     global _mic_close_timer
+
+    if MIC_IDLE_CLOSE_S <= 0:
+        state.audio_manager.close_input_stream()
+        return
 
     def _close_if_idle():
         global _mic_close_timer

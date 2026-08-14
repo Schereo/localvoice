@@ -27,7 +27,7 @@ Any other key pressed between taps voids the sequence, so `Cmd+C` quickly follow
 
 ## Microphone standby
 
-By default the microphone stream is opened when a recording starts and released 60 seconds after the last one — so the macOS mic indicator follows your dictation rather than burning all day, while back-to-back recordings reuse the open stream instead of cycling CoreAudio each time. The trade-off is a moment of extra latency on the first recording after an idle spell, and no pre-tap audio in the onset buffer (the in-recording protection against swallowed first syllables remains).
+By default the microphone is opened when a recording starts and released the moment it ends, so the macOS indicator tracks your dictation exactly. Capture runs in its own process (see [how it works](how-it-works.md#staying-alive)), which makes the release a `kill` — instant, and immune to the CoreAudio deadlock that a normal teardown can hit. The trade-off is roughly 0.2 s to spin capture up at the start of a recording, and no pre-tap audio in the onset buffer (the in-recording protection against swallowed first syllables remains).
 
 If you prefer instant starts, enable standby — the stream then stays open while the service runs, and the indicator with it. Idle audio is held only as a rolling 0.45 s in memory and never stored or sent anywhere:
 

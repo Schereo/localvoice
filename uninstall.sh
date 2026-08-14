@@ -105,7 +105,7 @@ if [[ -n "$CTRLSPEAK_LIBEXEC" && -d "$CTRLSPEAK_LIBEXEC" ]]; then
 
   # These two have no upstream counterpart, so there is no backup to restore
   # them from; everything else install.sh touched already came back above.
-  for added in overlay.py model_download.py; do
+  for added in overlay.py model_download.py mic_capture.py; do
     if [[ -f "$CTRLSPEAK_LIBEXEC/$added" ]]; then
       rm -f "$CTRLSPEAK_LIBEXEC/$added"
       removed=$((removed + 1))

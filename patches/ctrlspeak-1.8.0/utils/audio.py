@@ -6,6 +6,10 @@ import sounddevice as sd
 import numpy as np
 import time
 import threading
+import os
+import signal
+import subprocess
+import sys
 import logging
 from collections import deque
 from queue import Queue
@@ -64,11 +68,12 @@ class AudioManager:
 
         # Audio device selection
         self.input_device = None  # None means use default device
-        self.current_stream = None  # Store active stream for hot swapping
-        # Teardown of a closed stream runs on its own thread; see
-        # close_input_stream for why it must not block the caller.
-        self._pending_close = None
-        self.CLOSE_TIMEOUT_S = 2.0
+        # The microphone lives in a child process; see mic_capture.py. These
+        # track it and the thread pumping its frames into audio_callback.
+        self._mic_process = None
+        self._mic_reader = None
+        self.MIC_BLOCKSIZE = 1024
+        self.MIC_START_TIMEOUT_S = 5.0
 
         # Phase 5 Tuning: Reduce silence duration based on user feedback
         self.SILENCE_DURATION_S = 1.0
@@ -564,74 +569,95 @@ class AudioManager:
         return self._streaming_mode and self.is_collecting
 
     def open_input_stream(self):
-        """Open and start the input stream if it is not already running."""
-        if self.current_stream is not None:
+        """Start capturing, in a child process that owns the microphone."""
+        if self._mic_process is not None and self._mic_process.poll() is None:
             return
 
-        # A previous teardown can still be wedged inside CoreAudio. Give it a
-        # bounded moment so we do not usually stack a second stream on the
-        # device — but never adopt its deadlock: after the timeout we open
-        # anyway, because a working microphone beats a tidy one.
-        teardown_wedged = False
-        pending = self._pending_close
-        if pending is not None and pending.is_alive():
-            pending.join(self.CLOSE_TIMEOUT_S)
-            if pending.is_alive():
-                teardown_wedged = True
-                logger.warning(
-                    "Previous microphone teardown is still blocked in CoreAudio; "
-                    "opening a new stream anyway."
-                )
-        if not teardown_wedged:
-            self._pending_close = None
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        command = [
+            sys.executable,
+            os.path.join(package_dir, "mic_capture.py"),
+            str(SAMPLE_RATE),
+            str(CHANNELS),
+            str(self.MIC_BLOCKSIZE),
+            "-" if self.input_device is None else str(self.input_device),
+        ]
 
+        logger.info("AudioManager: Starting audio input stream...")
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+        )
+
+        # Wait for the child to confirm the device is open, so a failure
+        # surfaces here as an exception instead of as silent dead air.
+        ready = threading.Event()
+        failure = []
+
+        def watch_stderr():
+            for raw in iter(process.stderr.readline, b""):
+                line = raw.decode("utf-8", "replace").strip()
+                if line == "ready":
+                    ready.set()
+                elif line.startswith("open-failed:"):
+                    failure.append(line[len("open-failed:"):].strip())
+                    ready.set()
+                elif line:
+                    logger.warning(f"mic_capture: {line}")
+
+        threading.Thread(target=watch_stderr, name="mic-stderr", daemon=True).start()
+
+        if not ready.wait(self.MIC_START_TIMEOUT_S) or failure:
+            self._kill_mic_process(process)
+            reason = failure[0] if failure else "timed out while opening the device"
+            raise RuntimeError(f"microphone capture did not start: {reason}")
+
+        self._mic_process = process
+        self._mic_reader = threading.Thread(
+            target=self._pump_frames, args=(process,), name="mic-reader", daemon=True
+        )
+        self._mic_reader.start()
+
+    def _pump_frames(self, process):
+        """Feed the child's frames into audio_callback, block by block."""
+        block_bytes = self.MIC_BLOCKSIZE * CHANNELS * 4  # float32
+        stream = process.stdout
+
+        while True:
+            data = stream.read(block_bytes)
+            if not data or len(data) < block_bytes:
+                return
+            if process is not self._mic_process:
+                return  # superseded by a newer capture process
+
+            try:
+                chunk = np.frombuffer(data, dtype=np.float32).reshape(-1, CHANNELS)
+                self.audio_callback(chunk, self.MIC_BLOCKSIZE, None, None)
+            except Exception as exc:
+                logger.error(f"Error handling captured audio: {exc}", exc_info=True)
+
+    @staticmethod
+    def _kill_mic_process(process):
+        """Kill the capture process; the kernel releases the device with it."""
+        if process is None or process.poll() is not None:
+            return
         try:
-            self._open_and_start()
+            process.kill()
+            process.wait(timeout=2.0)
         except Exception as exc:
-            # PortAudio enumerates the audio devices once, in Pa_Initialize.
-            # This service lives for days, so anything that changes the audio
-            # topology in the meantime — an iPhone arriving over Continuity,
-            # AirPods connecting, a dock, a sleep/wake cycle — leaves it
-            # holding a stale list, and every open then fails with -10851 /
-            # -9986 until the process is restarted. Cycling PortAudio is what
-            # re-reads that list.
-            if teardown_wedged:
-                # _terminate() would pull the rug out from under the stream
-                # that teardown is still holding. Restarting is the only safe
-                # way out of that one.
-                raise
-            logger.warning(
-                f"Opening the microphone failed ({exc}); refreshing PortAudio's "
-                "device list and retrying once."
-            )
-            self.current_stream = None
-            sd._terminate()
-            sd._initialize()
-            self._open_and_start()
-
-    def _open_and_start(self):
-        """Create the input stream and start it."""
-        stream = self.start_input_stream()
-        stream.start()
+            logger.warning(f"Could not kill the capture process: {exc}")
 
     def close_input_stream(self):
-        """Release the microphone, without waiting for CoreAudio to agree.
+        """Release the microphone by killing the process that holds it.
 
-        Releasing the stream is what turns the macOS microphone indicator
-        off, so the on-demand mode calls this after every recording session.
-
-        The teardown itself runs on its own thread. PortAudio's stop path
-        takes a CoreAudio HAL mutex that the device's IO thread can already
-        hold while it sits in AudioUnitGetProperty, and the two then wait on
-        each other forever. This method is called from the hotkey handler,
-        which runs on pynput's CGEventTap callback — blocking there hangs
-        dictation mid-session with the pill stuck on "transcribing", and
-        stalls the event tap macOS expects to return promptly. So the wait
-        never happens on the caller's thread.
+        This is the whole point of the split. Closing a CoreAudio stream from
+        inside our own process can deadlock in the HAL and take dictation with
+        it — a wedged mutex there is unbreakable from Python. Killing a process
+        is not: the kernel releases the device immediately, and the macOS
+        microphone indicator goes out with it.
         """
-        stream = self.current_stream
-        self.current_stream = None
-        if stream is None:
+        process = self._mic_process
+        self._mic_process = None
+        if process is None:
             return
 
         # Stale pre-roll from the session that just ended must not leak into
@@ -639,103 +665,33 @@ class AudioManager:
         self._onset_buffer.clear()
         self._onset_samples = 0
 
-        def _teardown():
+        self._kill_mic_process(process)
+        for pipe in (process.stdout, process.stderr):
             try:
-                stream.stop()
-                stream.close()
-                logger.info("AudioManager: Input stream closed; microphone released.")
-            except Exception as exc:
-                logger.warning(f"Could not close the input stream cleanly: {exc}")
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
 
-        closer = threading.Thread(
-            target=_teardown, daemon=True, name="AudioStreamCloser"
-        )
-        self._pending_close = closer
-        closer.start()
-
-    def start_input_stream(self):
-        """Start the audio input stream using the instance method as callback"""
-        logger.info("AudioManager: Starting audio input stream...")
-        # Use self.audio_callback directly
-        device = self.input_device if self.input_device is not None else None
-        if device is not None:
-            logger.info(f"Using audio device: {device}")
-        stream = sd.InputStream(device=device, samplerate=SAMPLE_RATE, channels=CHANNELS, callback=self.audio_callback)
-        self.current_stream = stream
-        return stream
+        logger.info("AudioManager: Capture process stopped; microphone released.")
 
     def restart_input_stream(self, new_device_id):
-        """
-        Restart the audio input stream with a new device.
-        Used for hot-swapping audio devices without restarting the app.
+        """Switch capture to another input device.
 
         Args:
             new_device_id: ID of the new audio input device (or None for default)
-
-        Returns:
-            The new InputStream object
-
-        Raises:
-            Exception: If stream restart fails
         """
-        logger.info(f"AudioManager: Restarting input stream with device {new_device_id}...")
+        logger.info(f"AudioManager: Restarting capture with device {new_device_id}...")
 
-        try:
-            # Stop current stream if it exists
-            if self.current_stream is not None:
-                try:
-                    logger.debug("Stopping current audio stream...")
-                    self.current_stream.stop()
-                    self.current_stream.close()
-                    logger.info("Current audio stream stopped and closed")
-                except Exception as e:
-                    logger.warning(f"Error stopping current stream (continuing anyway): {e}")
+        was_capturing = self._mic_process is not None
+        self.close_input_stream()
+        self.input_device = new_device_id
 
-            # Update device
-            self.input_device = new_device_id
+        if was_capturing:
+            self.open_input_stream()
 
-            # Create and start new stream
-            logger.info(f"Creating new audio stream with device: {new_device_id}")
-            device = self.input_device if self.input_device is not None else None
-            new_stream = sd.InputStream(
-                device=device,
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                callback=self.audio_callback
-            )
+        return self._mic_process
 
-            # Start the new stream
-            new_stream.start()
-            self.current_stream = new_stream
-
-            # If device was None, resolve to actual default device for state tracking
-            if new_device_id is None:
-                actual_device_id = sd.default.device[0] if sd.default.device else None
-                logger.info(f"Audio stream successfully restarted with default device (resolved to {actual_device_id})")
-            else:
-                logger.info(f"Audio stream successfully restarted with device {new_device_id}")
-
-            return new_stream
-
-        except Exception as e:
-            logger.error(f"Failed to restart audio stream: {e}", exc_info=True)
-            # Try to restore a working stream with the old device or default
-            logger.warning("Attempting to restore previous audio stream...")
-            try:
-                fallback_stream = sd.InputStream(
-                    device=None,  # Use default device as fallback
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    callback=self.audio_callback
-                )
-                fallback_stream.start()
-                self.current_stream = fallback_stream
-                self.input_device = None
-                logger.info("Restored audio stream with default device")
-            except Exception as fallback_error:
-                logger.error(f"Failed to restore audio stream: {fallback_error}")
-
-            raise e
 
 # Remove standalone functions if they are no longer used elsewhere
 # def audio_callback(indata, frames, time, status, audio_queue): ...

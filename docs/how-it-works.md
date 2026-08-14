@@ -32,7 +32,7 @@ Three rules keep a wedged subsystem from taking dictation down with it.
 
 **A watchdog owns the last resort.** A deadlock leaves the process alive, so launchd's `KeepAlive` never fires — dictation is dead while the service looks healthy. If a command makes no progress for 90 seconds, a watchdog thread shows a pill and calls `os._exit(1)`, the only exit that works with threads stuck in a kernel mutex. The LaunchAgent restarts the service seconds later.
 
-**The microphone is cycled as little as possible.** CoreAudio's HAL deadlocks in the open/close path, so the stream is not released after every recording but 60 seconds after the last one. Successive dictations reuse it — faster, and one less trip through the teardown — while the indicator still goes dark shortly after you stop.
+**The microphone lives in its own process.** CoreAudio's HAL deadlocks in the stream teardown path, and a mutex wedged inside our own process cannot be broken from Python — that is what repeatedly killed dictation for good. `mic_capture.py` owns the stream and writes raw frames to the parent over a pipe; silence detection, buffering and the onset roll stay in the parent, unchanged. Releasing the microphone is then a `kill`, which the kernel always honours: immediate, deadlock-proof, and the macOS indicator goes out with the process. Opening is bounded too — the child reports `ready` or `open-failed`, and a timeout raises instead of hanging.
 
 ## Why the first word is not swallowed
 

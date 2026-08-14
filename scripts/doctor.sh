@@ -29,6 +29,7 @@ check_file "$CTRLSPEAK_PREFIX/libexec/hotkeys.py"
 check_file "$CTRLSPEAK_PREFIX/libexec/models/whisper_mlx.py"
 check_file "$CTRLSPEAK_PREFIX/libexec/overlay.py"
 check_file "$CTRLSPEAK_PREFIX/libexec/model_download.py"
+check_file "$CTRLSPEAK_PREFIX/libexec/mic_capture.py"
 check_file "$CTRLSPEAK_PREFIX/libexec/permissions.py"
 check_file "$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
 
