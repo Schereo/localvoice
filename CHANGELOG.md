@@ -30,6 +30,11 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   an AirPods microphone drops all its audio into the phone-call profile.
   `system` restores the old follow-the-default behaviour; a device name pins
   any other microphone. Stored as a name, so the choice survives replugs.
+- Media pause (`pause-media`, on by default): starting a recording pauses a
+  playing Spotify or Apple Music, and stopping resumes exactly what was
+  paused — never blind play/pause toggling, so silent players stay silent.
+  Uses Apple Events, so macOS asks once per player for the Automation
+  permission.
 - Menu bar icon, hosted in the launcher process: microphone picker (live
   device list), language mode, compact and standby toggles, open config,
   restart, quit. Every action writes to the config file the service already

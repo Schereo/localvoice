@@ -15,6 +15,7 @@ import threading
 import time
 import state
 from utils import localvoice_config
+from utils import media_pause
 from utils.clipboard import copy_to_clipboard, paste_from_clipboard, type_text
 from utils.player import play_start_beep, play_stop_beep
 from utils.history import get_history_manager
@@ -479,6 +480,12 @@ def _perform_activate():
             state.console.print("[bold yellow]Model is still loading. Please wait...[/bold yellow]")
             return
 
+        # Silence the room first: a playing Spotify or Music is paused before
+        # the microphone opens, so no music tail leaks into the recording and
+        # nothing competes with the dictation. Resumed on stop.
+        if localvoice_config.as_bool("pause-media"):
+            media_pause.pause_playing()
+
         # On-demand microphone: open the stream for this session, so the
         # macOS mic indicator lights up around recordings rather than always.
         # A pending idle teardown is cancelled first — reusing a still-open
@@ -492,6 +499,7 @@ def _perform_activate():
                 state.console.print("[bold red]Could not open the microphone.[/bold red]")
                 _set_overlay_detail("Microphone unavailable")
                 _set_overlay_state("empty")
+                media_pause.resume_paused()
                 return
 
         # Track recording start time for history (stored in state for thread safety)
@@ -518,6 +526,9 @@ def _perform_activate():
 
         logger.info("Stop activated. Stopping audio recording...")
         play_stop_beep()
+        # Music comes back right away, not after transcription: the recording
+        # is over the moment the stop beep plays.
+        media_pause.resume_paused()
         if not _session_cancelled:
             _set_overlay_state("processing")
 

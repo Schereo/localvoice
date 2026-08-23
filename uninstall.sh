@@ -106,9 +106,10 @@ if [[ -n "$CTRLSPEAK_LIBEXEC" && -d "$CTRLSPEAK_LIBEXEC" ]]; then
     restored=$((restored + 1))
   done < <(find "$CTRLSPEAK_LIBEXEC" -name "*.local-voice-backup" 2>/dev/null)
 
-  # These two have no upstream counterpart, so there is no backup to restore
+  # These have no upstream counterpart, so there is no backup to restore
   # them from; everything else install.sh touched already came back above.
-  for added in overlay.py model_download.py mic_capture.py; do
+  for added in overlay.py model_download.py mic_capture.py \
+    utils/localvoice_config.py utils/media_pause.py; do
     if [[ -f "$CTRLSPEAK_LIBEXEC/$added" ]]; then
       rm -f "$CTRLSPEAK_LIBEXEC/$added"
       removed=$((removed + 1))

@@ -47,6 +47,14 @@ different device from the menu bar icon, or set `microphone` in the config
 (`system` for the macOS default input, or a device name like `Shure MV7`).
 Details: [configuration.md](configuration.md#microphone).
 
+## Media pause
+
+Recording pauses whatever Spotify or Apple Music is playing and resumes it
+the moment you stop — only what was playing comes back, nothing is ever
+started. The first recording with a player open triggers a one-time macOS
+Automation prompt ("LocalVoice wants to control Spotify"). Disable with
+`pause-media = off` or via the menu bar.
+
 ## Menu bar
 
 The menu bar icon shows that LocalVoice is running and carries the everyday

@@ -43,6 +43,7 @@ mic-standby = off
 | `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
 | `microphone` | `built-in` · `system` · name | `built-in` | Which microphone records |
 | `menubar` | `on` · `off` | `on` | Show the menu bar icon |
+| `pause-media` | `on` · `off` | `on` | Pause Spotify/Music while recording |
 
 ### `hotkey`
 
@@ -101,6 +102,16 @@ built from the currently attached devices, the language mode, toggles for the
 compact pill and standby, and Open Config / Restart / Quit. Every menu action
 is just a write to this config file — menu and file are the same settings.
 `off` hides the icon; like everything here it takes effect within seconds.
+
+### `pause-media`
+
+`on` (default) pauses media players when a recording starts and resumes them
+the moment it stops. Only players that were actually *playing* are paused,
+and only those are resumed — music that was not running is never started.
+Covered players: Spotify and Apple Music (scriptable over Apple Events;
+browser tabs are not reachable this way). On first use macOS asks once per
+player for the Automation permission — "LocalVoice wants to control
+Spotify"; approve it, and from then on it is silent.
 
 ### `mic-standby`
 

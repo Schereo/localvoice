@@ -433,6 +433,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(toggleItem(
             title: "Microphone Standby", key: "mic-standby", selector: #selector(toggleStandby)
         ))
+        menu.addItem(toggleItem(
+            title: "Pause Media While Recording", key: "pause-media",
+            selector: #selector(togglePauseMedia), defaultValue: "on"
+        ))
 
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Open Config File", selector: #selector(openConfig), key: ","))
@@ -482,9 +486,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return menu
     }
 
-    private func toggleItem(title: String, key: String, selector: Selector) -> NSMenuItem {
+    private func toggleItem(
+        title: String, key: String, selector: Selector, defaultValue: String = "off"
+    ) -> NSMenuItem {
         let item = actionItem(title: title, selector: selector)
-        let value = (readConfigValue(key) ?? "off").lowercased()
+        let value = (readConfigValue(key) ?? defaultValue).lowercased()
         item.state = ["on", "true", "1", "yes"].contains(value) ? .on : .off
         return item
     }
@@ -513,6 +519,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func toggleStandby(_ sender: NSMenuItem) {
         writeConfigValue("mic-standby", sender.state == .on ? "off" : "on")
+    }
+
+    @objc private func togglePauseMedia(_ sender: NSMenuItem) {
+        writeConfigValue("pause-media", sender.state == .on ? "off" : "on")
     }
 
     @objc private func openConfig() {

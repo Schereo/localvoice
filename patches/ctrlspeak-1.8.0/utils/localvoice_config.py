@@ -35,6 +35,7 @@ DEFAULTS = {
     "mic-standby": "off",
     "microphone": "built-in",
     "menubar": "on",
+    "pause-media": "on",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
@@ -80,6 +81,11 @@ _KEY_BLOCKS = {
 """,
     "menubar": """\
 # Show the LocalVoice icon in the menu bar (on | off).
+""",
+    "pause-media": """\
+# Pause playing media players (Spotify, Music) when a recording starts and
+# resume exactly those when it ends. First use asks once for the macOS
+# Automation permission per player.
 """,
 }
 
