@@ -1,5 +1,7 @@
 import AVFoundation
+import AppKit
 import ApplicationServices
+import CoreAudio
 import Foundation
 import IOKit.hid
 
@@ -251,6 +253,288 @@ func printSetupStatus() -> Never {
     exit(0)
 }
 
+// MARK: - LocalVoice config file
+
+// The launcher shares the service's config file rather than owning any state:
+// the menu bar writes a key, the Python service's watcher applies it within
+// seconds, and the pill reads it per spawn. One source of truth, no IPC.
+
+let serviceLabel = "com.localvoice.app"
+
+func localVoiceConfigPath() -> String {
+    ProcessInfo.processInfo.environment["LOCALVOICE_CONFIG_DIR"].map { $0 + "/config" }
+        ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/localvoice/config").path
+}
+
+func readConfigValue(_ key: String) -> String? {
+    guard let raw = try? String(contentsOfFile: localVoiceConfigPath(), encoding: .utf8) else {
+        return nil
+    }
+    var value: String?
+    for line in raw.split(separator: "\n") {
+        let entry = line.trimmingCharacters(in: .whitespaces)
+        guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
+        guard entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key else {
+            continue
+        }
+        value = entry[entry.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+    }
+    return (value?.isEmpty ?? true) ? nil : value
+}
+
+func writeConfigValue(_ key: String, _ value: String) {
+    let path = localVoiceConfigPath()
+    let raw = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+    var lines = raw.isEmpty ? [] : raw.components(separatedBy: "\n")
+
+    var replaced = false
+    for index in lines.indices {
+        let entry = lines[index].trimmingCharacters(in: .whitespaces)
+        guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
+        if entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key {
+            lines[index] = "\(key) = \(value)"
+            replaced = true
+            break
+        }
+    }
+    if !replaced {
+        if let last = lines.last, last.isEmpty { lines.removeLast() }
+        lines.append("\(key) = \(value)")
+        lines.append("")
+    }
+
+    try? FileManager.default.createDirectory(
+        atPath: (path as NSString).deletingLastPathComponent,
+        withIntermediateDirectories: true
+    )
+    try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+}
+
+// MARK: - Menu bar
+
+/// The names of every device CoreAudio will record from, in system order.
+/// These are the same names PortAudio shows the Python service, so writing
+/// one into the config selects the same physical microphone on both sides.
+func audioInputDeviceNames() -> [String] {
+    var listAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    var listSize: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(
+        AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil, &listSize
+    ) == noErr, listSize > 0 else { return [] }
+
+    var deviceIDs = [AudioDeviceID](
+        repeating: 0, count: Int(listSize) / MemoryLayout<AudioDeviceID>.size
+    )
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil, &listSize, &deviceIDs
+    ) == noErr else { return [] }
+
+    var names: [String] = []
+    for deviceID in deviceIDs {
+        var configAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var configSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &configAddress, 0, nil, &configSize) == noErr,
+              configSize > 0 else { continue }
+
+        let bufferList = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(configSize), alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { bufferList.deallocate() }
+        guard AudioObjectGetPropertyData(
+            deviceID, &configAddress, 0, nil, &configSize,
+            bufferList.assumingMemoryBound(to: AudioBufferList.self)
+        ) == noErr else { continue }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(
+            bufferList.assumingMemoryBound(to: AudioBufferList.self)
+        )
+        let inputChannels = buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
+        guard inputChannels > 0 else { continue }
+
+        var nameAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var unmanagedName: Unmanaged<CFString>?
+        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &unmanagedName) { pointer in
+            AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, pointer)
+        }
+        if status == noErr, let name = unmanagedName?.takeRetainedValue() {
+            names.append(name as String)
+        }
+    }
+    return names
+}
+
+func runLaunchctl(_ subcommand: [String]) {
+    let launchctl = Process()
+    launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    launchctl.arguments = subcommand
+    try? launchctl.run()
+}
+
+/// The status item: microphone picker, language, pill options, and service
+/// controls. Every selection is a write to the config file; the menu is
+/// rebuilt on each open so it always shows the file's current truth and the
+/// devices currently attached.
+final class MenuBarController: NSObject, NSMenuDelegate {
+    private var statusItem: NSStatusItem?
+
+    var isVisible: Bool { statusItem != nil }
+
+    func setVisible(_ visible: Bool) {
+        if visible && statusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            if let button = item.button {
+                let icon = NSImage(
+                    systemSymbolName: "waveform.and.mic", accessibilityDescription: "LocalVoice"
+                ) ?? NSImage(systemSymbolName: "mic", accessibilityDescription: "LocalVoice")
+                icon?.isTemplate = true
+                button.image = icon
+                button.toolTip = "LocalVoice"
+            }
+            let menu = NSMenu()
+            menu.delegate = self
+            item.menu = menu
+            statusItem = item
+        } else if !visible, let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let microphoneItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        microphoneItem.submenu = microphoneMenu()
+        menu.addItem(microphoneItem)
+
+        let languageItem = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
+        languageItem.submenu = languageMenu()
+        menu.addItem(languageItem)
+
+        menu.addItem(.separator())
+        menu.addItem(toggleItem(
+            title: "Compact Pill", key: "compact", selector: #selector(toggleCompact)
+        ))
+        menu.addItem(toggleItem(
+            title: "Microphone Standby", key: "mic-standby", selector: #selector(toggleStandby)
+        ))
+
+        menu.addItem(.separator())
+        menu.addItem(actionItem(title: "Open Config File", selector: #selector(openConfig), key: ","))
+        menu.addItem(actionItem(title: "Restart Service", selector: #selector(restartService)))
+        menu.addItem(.separator())
+        menu.addItem(actionItem(title: "Quit LocalVoice", selector: #selector(quitService), key: "q"))
+    }
+
+    private func microphoneMenu() -> NSMenu {
+        let menu = NSMenu()
+        let setting = (readConfigValue("microphone") ?? "built-in").lowercased()
+
+        let builtIn = actionItem(title: "Built-in Microphone", selector: #selector(selectMicrophone(_:)))
+        builtIn.representedObject = "built-in"
+        builtIn.state = setting == "built-in" ? .on : .off
+        menu.addItem(builtIn)
+
+        let system = actionItem(title: "System Default", selector: #selector(selectMicrophone(_:)))
+        system.representedObject = "system"
+        system.state = setting == "system" ? .on : .off
+        menu.addItem(system)
+
+        let devices = audioInputDeviceNames()
+        if !devices.isEmpty {
+            menu.addItem(.separator())
+            for name in devices {
+                let item = actionItem(title: name, selector: #selector(selectMicrophone(_:)))
+                item.representedObject = name
+                if setting != "built-in" && setting != "system" {
+                    item.state = name.lowercased().contains(setting) ? .on : .off
+                }
+                menu.addItem(item)
+            }
+        }
+        return menu
+    }
+
+    private func languageMenu() -> NSMenu {
+        let menu = NSMenu()
+        let setting = (readConfigValue("language") ?? "de").lowercased()
+        for (code, title) in [("de", "German"), ("en", "English"), ("auto", "Automatic")] {
+            let item = actionItem(title: title, selector: #selector(selectLanguage(_:)))
+            item.representedObject = code
+            item.state = setting == code ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func toggleItem(title: String, key: String, selector: Selector) -> NSMenuItem {
+        let item = actionItem(title: title, selector: selector)
+        let value = (readConfigValue(key) ?? "off").lowercased()
+        item.state = ["on", "true", "1", "yes"].contains(value) ? .on : .off
+        return item
+    }
+
+    private func actionItem(title: String, selector: Selector, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
+        item.target = self
+        return item
+    }
+
+    @objc private func selectMicrophone(_ sender: NSMenuItem) {
+        if let value = sender.representedObject as? String {
+            writeConfigValue("microphone", value)
+        }
+    }
+
+    @objc private func selectLanguage(_ sender: NSMenuItem) {
+        if let value = sender.representedObject as? String {
+            writeConfigValue("language", value)
+        }
+    }
+
+    @objc private func toggleCompact(_ sender: NSMenuItem) {
+        writeConfigValue("compact", sender.state == .on ? "off" : "on")
+    }
+
+    @objc private func toggleStandby(_ sender: NSMenuItem) {
+        writeConfigValue("mic-standby", sender.state == .on ? "off" : "on")
+    }
+
+    @objc private func openConfig() {
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["-t", localVoiceConfigPath()]
+        try? open.run()
+    }
+
+    @objc private func restartService() {
+        // kickstart -k kills the whole job — this launcher included — and
+        // launchd brings it straight back; the menu bar icon returns with it.
+        runLaunchctl(["kickstart", "-k", "gui/\(getuid())/\(serviceLabel)"])
+    }
+
+    @objc private func quitService() {
+        // bootout unloads the job, so KeepAlive does not resurrect it; the
+        // next login (or scripts/restart.sh) brings LocalVoice back.
+        runLaunchctl(["bootout", "gui/\(getuid())/\(serviceLabel)"])
+    }
+}
+
 // MARK: - Service mode
 
 func runService(config: [String: String], arguments: [String]) -> Never {
@@ -303,7 +587,40 @@ func runService(config: [String: String], arguments: [String]) -> Never {
         fail("could not start \(command): \(error.localizedDescription)", code: 70)
     }
 
-    dispatchMain()
+    // The launcher outlives the fork/exec dance anyway (it is the TCC
+    // identity root), which makes it the natural host for the menu bar icon:
+    // no extra process, no extra permissions. An AppKit run loop replaces
+    // dispatchMain(); the signal sources and termination handler above are
+    // main-queue based and keep working under it.
+    let application = NSApplication.shared
+    application.setActivationPolicy(.accessory)
+
+    let menuBar = MenuBarController()
+
+    func menuBarEnabled() -> Bool {
+        // Default on; only an explicit "off" (or falsy value) hides it.
+        guard let value = readConfigValue("menubar")?.lowercased() else { return true }
+        return ["on", "true", "1", "yes"].contains(value)
+    }
+
+    menuBar.setVisible(menuBarEnabled())
+
+    // Follow config edits, so `menubar = off` takes effect like every other
+    // key: within a couple of seconds, no restart.
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    timer.schedule(deadline: .now() + 2.0, repeating: 2.0)
+    timer.setEventHandler {
+        let enabled = menuBarEnabled()
+        if enabled != menuBar.isVisible {
+            menuBar.setVisible(enabled)
+        }
+    }
+    timer.resume()
+
+    withExtendedLifetime((menuBar, timer)) {
+        application.run()
+    }
+    exit(0)
 }
 
 // MARK: - Entry

@@ -122,6 +122,22 @@ def _start_config_watcher():
         if language != state.source_lang:
             hotkeys._apply_language(language, persist=False)
 
+        from utils.audio import resolve_input_device
+
+        device = resolve_input_device(localvoice_config.effective("microphone"))
+        if device != state.audio_manager.input_device:
+            logger.info(f"Capture device changed to: {device or 'system default'}")
+            if hotkeys.is_recording():
+                # Mid-recording swaps would drop the buffered audio; the new
+                # device applies from the next session's stream open.
+                state.audio_manager.input_device = device
+            else:
+                try:
+                    # Reopens only if the stream was open (standby mode).
+                    state.audio_manager.restart_input_stream(device)
+                except Exception as exc:
+                    logger.warning(f"Could not switch the capture device: {exc}")
+
         standby = localvoice_config.as_bool("mic-standby")
         if standby != state.mic_standby:
             state.mic_standby = standby
@@ -280,6 +296,17 @@ def run_app(args):
             transcription_queue=state.transcription_queue,
             debug_mode=state.DEBUG_MODE,
             app_state=app_state
+        )
+
+        # Pin the capture device per config; "built-in" by default, so a
+        # connected Bluetooth headset does not silently become the dictation
+        # mic (and drag its own audio into the phone-call profile with it).
+        from utils.audio import resolve_input_device
+        state.audio_manager.input_device = resolve_input_device(
+            localvoice_config.effective("microphone")
+        )
+        logger.info(
+            f"Capture device: {state.audio_manager.input_device or 'system default'}"
         )
 
         state.keyboard_manager = KeyboardShortcutManager()

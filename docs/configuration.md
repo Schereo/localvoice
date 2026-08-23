@@ -41,6 +41,8 @@ mic-standby = off
 | `language` | `de` · `en` · `auto` | `de` | Transcription language |
 | `compact` | `on` · `off` | `off` | Hide the language badge in the pill |
 | `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
+| `microphone` | `built-in` · `system` · name | `built-in` | Which microphone records |
+| `menubar` | `on` · `off` | `on` | Show the menu bar icon |
 
 ### `hotkey`
 
@@ -59,8 +61,7 @@ Siri.
 - `de` / `en` — transcribe everything as German / English.
 - `auto` — Whisper detects the language per recording, deliberately restricted
   to the German/English pair (the full 99-language ranking readily mistakes
-  German for Dutch). After insertion the pill names what was detected
-  (`Detected DE`).
+  German for Dutch).
 
 Clicking the pill's language badge cycles the mode **and writes the choice
 back to this file** — badge and config are the same setting. Want a third
@@ -72,6 +73,34 @@ language? See [adding-a-language.md](adding-a-language.md).
 no language badge. Meant for people who leave the language fixed (typically
 `language = auto`) and don't need per-recording switching; while compact is
 on, the language can still be changed right here in the config.
+
+### `microphone`
+
+Which device records:
+
+- `built-in` (default) — the Mac's internal microphone, regardless of what
+  macOS considers the default input. This exists because of Bluetooth
+  headphones: the moment their microphone opens, AirPods drop from the
+  high-quality A2DP profile into the phone-call profile, so everything you
+  are listening to turns to mush *and* you dictate through the worst
+  microphone in the room. With `built-in`, connected AirPods stay untouched.
+- `system` — follow the macOS default input, whatever it is.
+- anything else — a case-insensitive match on the device name, e.g.
+  `microphone = Shure MV7`. The menu bar icon lists the devices currently
+  attached; the setting stores the *name*, so it keeps pointing at the same
+  physical device across unplugs and replugs.
+
+A setting that matches nothing warns in the log and falls back to the system
+default, so dictation keeps working. Changes apply from the next recording
+(or immediately in standby mode).
+
+### `menubar`
+
+`on` (default) shows the LocalVoice icon in the menu bar: a microphone picker
+built from the currently attached devices, the language mode, toggles for the
+compact pill and standby, and Open Config / Restart / Quit. Every menu action
+is just a write to this config file — menu and file are the same settings.
+`off` hides the icon; like everything here it takes effect within seconds.
 
 ### `mic-standby`
 

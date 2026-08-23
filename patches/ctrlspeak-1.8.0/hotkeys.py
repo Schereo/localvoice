@@ -552,11 +552,6 @@ def _perform_activate():
             # clipboard still held from before — so only paste what we put there.
             pasted = paste_from_clipboard() if copied else False
 
-            # In automatic mode the choice is the model's, so name it rather
-            # than leaving the user to infer it from the transcript.
-            if state.source_lang == "auto" and state.last_detected_language:
-                _set_overlay_detail(f"Detected {state.last_detected_language.upper()}")
-
             if copied:
                 # No text field in focus: the transcript is on the clipboard,
                 # and the pill says so instead of claiming an insertion that

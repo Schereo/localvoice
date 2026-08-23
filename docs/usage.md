@@ -32,11 +32,27 @@ If you prefer instant starts, enable standby — the stream then stays open whil
 
 German is the default; pick the initial mode at install time with `CTRLSPEAK_LANGUAGE=de|en|auto`.
 
-`AUTO` asks Whisper to detect the language per recording, deliberately restricted to the German/English pair — the full 99-language ranking readily mistakes German for Dutch, which then decodes as nonsense. After insertion the pill names what was detected (`Detected DE`). Detection costs one extra pass over the first 30 seconds of audio, so fixing the language stays marginally faster.
+`AUTO` asks Whisper to detect the language per recording, deliberately restricted to the German/English pair — the full 99-language ranking readily mistakes German for Dutch, which then decodes as nonsense. The detected language is written to the log, not the pill. Detection costs one extra pass over the first 30 seconds of audio, so fixing the language stays marginally faster.
 
 The badge choice applies to the current recording and is written to `language` in the [config file](configuration.md), so it survives restarts — badge and config are the same setting. No separate global language shortcut is registered, avoiding conflicts with foreground applications.
 
 Want a third language? See [adding-a-language.md](adding-a-language.md).
+
+## Microphone
+
+By default LocalVoice records through the Mac's **built-in microphone**, even
+when Bluetooth headphones are connected — opening an AirPods microphone would
+drop all their audio into phone-call quality for the whole recording. Pick a
+different device from the menu bar icon, or set `microphone` in the config
+(`system` for the macOS default input, or a device name like `Shure MV7`).
+Details: [configuration.md](configuration.md#microphone).
+
+## Menu bar
+
+The menu bar icon shows that LocalVoice is running and carries the everyday
+controls: microphone picker, language mode, compact pill, standby, open
+config, restart, quit. It writes to the same config file the service watches,
+so menu and file never disagree. Hide it with `menubar = off`.
 
 ## Compact pill
 

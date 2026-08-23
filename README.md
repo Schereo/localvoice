@@ -39,7 +39,7 @@ Needs an Apple Silicon Mac, [Homebrew](https://brew.sh), Xcode Command Line Tool
 | **Cmd+,** while recording | Open the settings in your text editor |
 | Badge click (`DE` / `EN` / `AUTO`) | Cycle the language mode |
 
-Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, a compact pill without the language badge, mic standby. Edits apply within seconds, no restart needed: **[docs/configuration.md](docs/configuration.md)**. The mic opens only while you record (the indicator stays honest); optional standby mode gives instant starts. If nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
+Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, microphone, a compact pill without the language badge, mic standby. Edits apply within seconds, no restart needed; the menu bar icon offers the same settings as menus: **[docs/configuration.md](docs/configuration.md)**. Recording uses the built-in mic by default, so connected AirPods keep their audio quality. The mic opens only while you record (the indicator stays honest); if nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
 
 Uninstall cleanly with `./uninstall.sh`.
 

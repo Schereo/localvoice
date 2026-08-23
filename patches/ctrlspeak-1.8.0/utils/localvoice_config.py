@@ -33,37 +33,55 @@ DEFAULTS = {
     "language": "de",
     "compact": "off",
     "mic-standby": "off",
+    "microphone": "built-in",
+    "menubar": "on",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
 VALID_HOTKEY_MODIFIERS = {"ctrl", "cmd", "alt", "shift"}
 _TRUTHY = {"on", "true", "1", "yes"}
 
-_TEMPLATE = """\
+_HEADER = """\
 # LocalVoice configuration.
 # Reference: https://github.com/Schereo/localvoice/blob/main/docs/configuration.md
 #
 # The running service picks up changes within a couple of seconds — no
 # restart needed. While the recording pill is on screen, Cmd+, opens this
 # file in your text editor.
+"""
 
+# One block per key: the comment that documents it plus the assignment. Used
+# to write a fresh file, and to append keys a pre-existing config does not
+# know yet, so an upgraded install stays self-documenting.
+_KEY_BLOCKS = {
+    "hotkey": """\
 # Activation hotkey, as <modifier>,<taps>.
 # Modifier: ctrl, cmd, alt or shift. Taps: 2-4. Example: cmd,2 = double-tap Cmd.
-hotkey = {hotkey}
-
+""",
+    "language": """\
 # Transcription language: de, en or auto (detects German vs English per
 # recording). Clicking the pill's language badge cycles this and writes the
 # choice back here.
-language = {language}
-
+""",
+    "compact": """\
 # Compact recording pill: "on" hides the language badge, leaving only the
 # dot, waveform and timer. Set the language above instead.
-compact = {compact}
-
+""",
+    "mic-standby": """\
 # Keep the microphone stream open while idle: instant recording starts, at
 # the price of an always-lit macOS microphone indicator.
-mic-standby = {mic_standby}
-"""
+""",
+    "microphone": """\
+# Which microphone records. "built-in" is the Mac's internal mic — the
+# default, because recording through Bluetooth headphones (AirPods) drops
+# all their audio into phone-call quality while the mic is open. "system"
+# follows the macOS default input; anything else matches a device name,
+# e.g. "Shure MV7". The menu bar icon lists what is available.
+""",
+    "menubar": """\
+# Show the LocalVoice icon in the menu bar (on | off).
+""",
+}
 
 
 def load():
@@ -137,11 +155,24 @@ def hotkey():
 
 
 def ensure_config_file():
-    """Create the config file if it is missing, migrating legacy values.
+    """Create the config file if missing; append keys it does not know yet.
 
-    Returns the config file path either way.
+    A fresh file starts from the legacy-migrated values; an existing file is
+    left untouched except that keys introduced by newer versions are appended
+    with their documentation, so the file the user opens always shows every
+    available setting. Returns the config file path either way.
     """
     if CONFIG_FILE.exists():
+        known = load()
+        missing = [key for key in _KEY_BLOCKS if key not in known]
+        if missing:
+            content = CONFIG_FILE.read_text(encoding="utf-8")
+            if content and not content.endswith("\n"):
+                content += "\n"
+            for key in missing:
+                content += "\n" + _KEY_BLOCKS[key] + f"{key} = {DEFAULTS[key]}\n"
+            _atomic_write(content)
+            logger.info(f"Added new configuration keys: {', '.join(missing)}")
         return CONFIG_FILE
 
     values = dict(DEFAULTS)
@@ -158,15 +189,12 @@ def ensure_config_file():
     values["mic-standby"] = "on" if values["mic-standby"] in _TRUTHY else "off"
     values["compact"] = "on" if values["compact"] in _TRUTHY else "off"
 
+    content = _HEADER
+    for key, block in _KEY_BLOCKS.items():
+        content += "\n" + block + f"{key} = {values[key]}\n"
+
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _atomic_write(
-        _TEMPLATE.format(
-            hotkey=values["hotkey"],
-            language=values["language"],
-            compact=values["compact"],
-            mic_standby=values["mic-standby"],
-        )
-    )
+    _atomic_write(content)
     logger.info(f"Created the configuration file at {CONFIG_FILE}")
     return CONFIG_FILE
 

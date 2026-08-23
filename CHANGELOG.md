@@ -25,6 +25,21 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 - Compact pill: `compact = on` hides the language badge, leaving dot,
   waveform and timer, for people who keep the language fixed (usually on
   `auto`).
+- Microphone selection (`microphone` key): `built-in` by default, so
+  connected Bluetooth headphones no longer become the dictation mic — opening
+  an AirPods microphone drops all its audio into the phone-call profile.
+  `system` restores the old follow-the-default behaviour; a device name pins
+  any other microphone. Stored as a name, so the choice survives replugs.
+- Menu bar icon, hosted in the launcher process: microphone picker (live
+  device list), language mode, compact and standby toggles, open config,
+  restart, quit. Every action writes to the config file the service already
+  watches — menu and file are the same settings. `menubar = off` hides it.
+
+### Removed
+
+- The `Detected DE` line the pill showed after auto-mode recordings. The
+  transcript itself already says which language came out; the detected
+  language still lands in the log.
 
 ### Fixed
 
