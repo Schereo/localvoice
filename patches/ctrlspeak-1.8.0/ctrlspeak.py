@@ -55,16 +55,101 @@ def find_cached_models():
 
 
 def _load_mic_standby():
-    """Read the standby preference; absent file means on-demand (off)."""
+    """Read the standby preference; absent everywhere means on-demand (off)."""
+    from utils import localvoice_config
+
+    return localvoice_config.as_bool("mic-standby")
+
+
+# Held for the process lifetime; a with-statement would release it at once.
+_instance_lock_handle = None
+
+
+def _acquire_single_instance_lock():
+    """Claim the one-service lock, or report that another instance holds it.
+
+    Two live services — launchd's plus one started by double-clicking the
+    app — each run their own hotkey listener and their own pill, and a
+    preference saved in one is invisible in the other: language toggles that
+    "do not stick" were exactly this. The lock makes the second arrival exit
+    instead; released by the kernel on any death, os._exit included.
+    """
+    global _instance_lock_handle
+    import fcntl
     from pathlib import Path
 
+    lock_path = Path.home() / ".config" / "ctrlspeak" / "service.lock"
     try:
-        raw = (Path.home() / ".config" / "ctrlspeak" / "mic-standby").read_text(
-            encoding="utf-8"
-        ).strip().lower()
-        return raw in {"on", "true", "1", "yes"}
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "w")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return False
+
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    _instance_lock_handle = handle
+    return True
+
+
+def _start_config_watcher():
+    """Apply edits to the LocalVoice config file to the running service.
+
+    The config opens in a plain text editor (Cmd+, while the pill is up), so
+    the natural flow is edit, save, speak — a restart requirement would turn
+    that into edit, save, wonder why nothing changed. Polling the mtime every
+    couple of seconds is cheap and avoids an FSEvents dependency.
+    """
+    import hotkeys
+    from utils import localvoice_config
+    from utils.keyboard_shortcuts import load_hotkey_config
+
+    def _mtime():
+        try:
+            return localvoice_config.CONFIG_FILE.stat().st_mtime
+        except OSError:
+            return None
+
+    def _apply_changes():
+        manager = state.keyboard_manager
+        modifier, taps = load_hotkey_config()
+        if (modifier, taps) != (manager.tap_modifier, manager.tap_count_required):
+            manager.tap_modifier = modifier
+            manager.tap_count_required = taps
+            logger.info(f"Hotkey changed to: {manager.hotkey_description}")
+
+        language = localvoice_config.language()
+        if language != state.source_lang:
+            hotkeys._apply_language(language, persist=False)
+
+        standby = localvoice_config.as_bool("mic-standby")
+        if standby != state.mic_standby:
+            state.mic_standby = standby
+            logger.info(f"Microphone standby: {'on' if standby else 'off (on-demand)'}")
+            try:
+                if standby:
+                    state.audio_manager.open_input_stream()
+                elif not hotkeys.is_recording():
+                    state.audio_manager.close_input_stream()
+            except Exception as exc:
+                logger.warning(f"Could not apply the microphone standby change: {exc}")
+
+    def _watch():
+        last_mtime = _mtime()
+        while state.main_loop_active:
+            time.sleep(2.0)
+            mtime = _mtime()
+            if mtime is None or mtime == last_mtime:
+                continue
+            last_mtime = mtime
+            try:
+                _apply_changes()
+            except Exception as exc:
+                logger.warning(f"Could not apply the edited configuration: {exc}")
+
+    threading.Thread(
+        target=_watch, name="localvoice-config-watcher", daemon=True
+    ).start()
 
 
 def _hide_from_dock():
@@ -99,8 +184,15 @@ def run_app(args):
     from utils.audio import AudioManager
     from model_loader import get_model
     from transcription import transcription_worker
-    from hotkeys import on_activate, is_recording, cancel_recording, finish_recording
+    from hotkeys import (
+        on_activate,
+        is_recording,
+        cancel_recording,
+        finish_recording,
+        open_config,
+    )
     from ui import CtrlSpeakApp, AppState
+    from utils import localvoice_config
 
     state.startup_time = time.time()
     setup_logging()
@@ -108,6 +200,11 @@ def run_app(args):
     saved_env_vars = save_environment_variables()
 
     try:
+        if not _acquire_single_instance_lock():
+            logger.warning("Another LocalVoice service already holds the lock; exiting this one.")
+            console.print("[bold yellow]Another LocalVoice service is already running. Exiting.[/bold yellow]")
+            return 0
+
         if not check_permissions():
             logger.warning("Permission check failed.")
             return 1
@@ -116,6 +213,17 @@ def run_app(args):
         model_type_arg = args.model
         state.source_lang = args.source_lang
         state.target_lang = args.target_lang
+
+        # The config file is the user's control surface; make sure it exists
+        # (the first run folds the pre-1.2 preference files in), then let it
+        # override the wrapper's language argument — both read the same file,
+        # so they only disagree when ctrlspeak is launched by hand.
+        try:
+            localvoice_config.ensure_config_file()
+        except OSError as exc:
+            logger.warning(f"Could not create the configuration file: {exc}")
+        state.source_lang = localvoice_config.language()
+        state.target_lang = state.source_lang
 
         # History configuration
         state.history_enabled = not args.no_history
@@ -180,6 +288,7 @@ def run_app(args):
             is_recording=is_recording,
             on_cancel=cancel_recording,
             on_finish=finish_recording,
+            on_open_config=open_config,
         )
         state.keyboard_manager.register_shortcut('<alt>+<esc>', exit_app)
 
@@ -240,6 +349,8 @@ def run_app(args):
         logger.info(f"Microphone standby: {'on' if state.mic_standby else 'off (on-demand)'}")
         if state.mic_standby:
             state.audio_manager.open_input_stream()
+
+        _start_config_watcher()
 
         try:
             # Sync loaded device state after stream starts

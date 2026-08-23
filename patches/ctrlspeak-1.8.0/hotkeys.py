@@ -13,8 +13,8 @@ import queue
 import subprocess
 import threading
 import time
-from pathlib import Path
 import state
+from utils import localvoice_config
 from utils.clipboard import copy_to_clipboard, paste_from_clipboard, type_text
 from utils.player import play_start_beep, play_stop_beep
 from utils.history import get_history_manager
@@ -32,12 +32,6 @@ _session_cancelled = False
 _OVERLAY_PATH = os.environ.get(
     "CTRLSPEAK_OVERLAY_PATH",
     "/opt/homebrew/bin/ctrlspeak-overlay",
-)
-_LANGUAGE_FILE = Path(
-    os.environ.get(
-        "CTRLSPEAK_LANGUAGE_FILE",
-        str(Path.home() / ".config" / "ctrlspeak" / "language"),
-    )
 )
 _overlay_session = None
 _overlay_session_lock = threading.Lock()
@@ -337,18 +331,14 @@ def _set_overlay_detail(text):
             _overlay_session.set_detail(text)
 
 
-def _save_language(language):
-    """Persist the language atomically for the next service launch."""
-    _LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temporary_file = _LANGUAGE_FILE.with_suffix(".tmp")
-    temporary_file.write_text(language + "\n", encoding="utf-8")
-    os.replace(temporary_file, _LANGUAGE_FILE)
+def _apply_language(language, persist=True):
+    """Apply a language selected in the recorder HUD or edited in the config.
 
-
-def _apply_language(language):
-    """Apply and persist a language selected in the recorder HUD."""
+    persist=False is for changes that already come *from* the config file;
+    writing them back would touch its mtime and ping the watcher again.
+    """
     language = language.lower()
-    if language not in {"de", "en", "auto"}:
+    if language not in localvoice_config.VALID_LANGUAGES:
         logger.warning(f"Ignoring unsupported language from recorder overlay: {language}")
         return
 
@@ -360,12 +350,38 @@ def _apply_language(language):
             state.app_state_ref.source_lang = language
             state.app_state_ref.target_lang = language
 
-        try:
-            _save_language(language)
-        except OSError as exc:
-            logger.warning(f"Could not persist language preference: {exc}")
+        if persist:
+            try:
+                localvoice_config.set_value("language", language)
+            except OSError as exc:
+                logger.warning(f"Could not persist language preference: {exc}")
 
     logger.info(f"Forced transcription language changed to: {language}")
+
+
+def open_config():
+    """Queue opening the config file in a text editor (Cmd+, while recording)."""
+    return _dispatch("open-config", _perform_open_config)
+
+
+def _perform_open_config():
+    """Open the LocalVoice configuration in the default text editor.
+
+    The recording keeps running: the shortcut is a door to the settings, not
+    a verdict on the current dictation — Esc discards, Enter inserts, as ever.
+    """
+    try:
+        config_path = localvoice_config.ensure_config_file()
+        subprocess.Popen(
+            ["/usr/bin/open", "-t", str(config_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info(f"Opened the configuration file: {config_path}")
+    except OSError as exc:
+        logger.warning(f"Could not open the configuration file: {exc}")
 
 
 def _start_queue_recording():

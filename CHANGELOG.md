@@ -11,6 +11,31 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-23
+
+### Added
+
+- One configuration file, `~/.config/localvoice/config`, now carries every
+  user-facing setting: `hotkey`, `language`, `compact`, `mic-standby`. The
+  running service applies edits within a couple of seconds — no restart — and
+  values from the old single-purpose files under `~/.config/ctrlspeak` are
+  migrated in on first start. Reference: `docs/configuration.md`.
+- Cmd+, while the recording pill is on screen opens the config file in the
+  default text editor.
+- Compact pill: `compact = on` hides the language badge, leaving dot,
+  waveform and timer, for people who keep the language fixed (usually on
+  `auto`).
+
+### Fixed
+
+- A language choice could appear not to stick: a service started outside
+  launchd (for example by double-clicking the app) ran *beside* the launchd
+  one, each with its own hotkey listener, pill and language state — a badge
+  click saved the choice in one instance while the other kept answering with
+  the old language. The service now takes a single-instance lock and a second
+  arrival exits immediately; install, restart and uninstall also clear any
+  stray instances from before the lock existed.
+
 ## [1.1.0] — 2026-08-14
 
 ### Added
@@ -73,7 +98,8 @@ core and grows its error log by gigabytes a day.
 - Pre-speech onset buffer, so a soft word onset is no longer clipped.
 - Clipboard fallback when no focused field can take the text.
 
-[Unreleased]: https://github.com/Schereo/localvoice/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Schereo/localvoice/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Schereo/localvoice/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Schereo/localvoice/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Schereo/localvoice/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Schereo/localvoice/releases/tag/v1.0.0

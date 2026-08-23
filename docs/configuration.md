@@ -1,0 +1,97 @@
+# Configuration reference
+
+All user-facing settings live in one plain-text file:
+
+```
+~/.config/localvoice/config
+```
+
+The service creates it on first start. Three ways to open it:
+
+- **Cmd+, while the recording pill is on screen** — opens the file in your
+  default text editor. The recording keeps running; Esc discards it, Enter
+  inserts it, as always.
+- `open -t ~/.config/localvoice/config` from a terminal.
+- Any editor, any time — it is just a text file.
+
+**Edits apply within a couple of seconds, no restart needed.** The service
+watches the file: hotkey, language and mic-standby changes take effect
+immediately; `compact` is read by each pill as it appears, so it shows up on
+the next recording.
+
+## Format
+
+`key = value`, one per line. Lines starting with `#` are comments; unknown
+keys are ignored. Invalid values fall back to the default rather than breaking
+anything.
+
+```ini
+# Example: double-tap Cmd, auto-detect DE/EN, minimal pill
+hotkey = cmd,2
+language = auto
+compact = on
+mic-standby = off
+```
+
+## Keys
+
+| Key | Values | Default | Effect |
+|---|---|---|---|
+| `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture |
+| `language` | `de` · `en` · `auto` | `de` | Transcription language |
+| `compact` | `on` · `off` | `off` | Hide the language badge in the pill |
+| `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
+
+### `hotkey`
+
+A repeated tap on a single modifier key: `ctrl`, `cmd`, `alt` or `shift`,
+followed by the tap count (2–4). `cmd,2` means double-tap Command. Modifiers
+only — a letter key would fire while typing.
+
+Any other key pressed between taps voids the sequence, so `Cmd+C` quickly
+followed by `Cmd+V` never triggers a double-tap. If your gesture collides with
+a system shortcut (macOS binds *press Cmd twice* to Siri, for example), change
+either side — Siri's binding lives in System Settings → Apple Intelligence &
+Siri.
+
+### `language`
+
+- `de` / `en` — transcribe everything as German / English.
+- `auto` — Whisper detects the language per recording, deliberately restricted
+  to the German/English pair (the full 99-language ranking readily mistakes
+  German for Dutch). After insertion the pill names what was detected
+  (`Detected DE`).
+
+Clicking the pill's language badge cycles the mode **and writes the choice
+back to this file** — badge and config are the same setting. Want a third
+language? See [adding-a-language.md](adding-a-language.md).
+
+### `compact`
+
+`on` strips the recording pill down to the dot, the waveform and the timer —
+no language badge. Meant for people who leave the language fixed (typically
+`language = auto`) and don't need per-recording switching; while compact is
+on, the language can still be changed right here in the config.
+
+### `mic-standby`
+
+By default the microphone opens when a recording starts and is released the
+moment it ends, so the macOS indicator tracks dictation exactly. `on` keeps
+the stream open while the service runs: recording starts become instant, at
+the price of an always-lit indicator. Idle audio is held only as a rolling
+0.45 s in memory and never stored or sent anywhere. Details:
+[usage.md](usage.md#microphone-standby).
+
+## Install-time overrides
+
+The installer accepts environment variables and writes them into the config
+file: `CTRLSPEAK_LANGUAGE=de|en|auto`, `CTRLSPEAK_HOTKEY=cmd,2`,
+`CTRLSPEAK_MIC_STANDBY=on|off` — e.g. `CTRLSPEAK_HOTKEY=cmd,2 ./install.sh`.
+
+## Migration from pre-1.2 versions
+
+Older versions kept single-value files under `~/.config/ctrlspeak` (`hotkey`,
+`language`, `mic-standby`). On its first start, version 1.2 folds their values
+into the new config file; until then they are still honoured as a fallback.
+`~/.config/ctrlspeak` itself remains in use for the service's internal state
+(installed version, setup status, the single-instance lock).

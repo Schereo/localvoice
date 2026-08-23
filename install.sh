@@ -7,6 +7,9 @@ SERVICE_LABEL="com.localvoice.app"
 # Earlier releases used this identity; cleaned up on upgrade.
 LEGACY_LABEL="com.localvoice.ctrlspeak"
 SOURCE_LANGUAGE="${CTRLSPEAK_LANGUAGE:-de}"
+# Only an explicitly set CTRLSPEAK_LANGUAGE overwrites the config file; the
+# "de" default above is just the fallback for a config-less first install.
+EXPLICIT_LANGUAGE="${CTRLSPEAK_LANGUAGE:-}"
 HOTKEY="${CTRLSPEAK_HOTKEY:-}"
 MIC_STANDBY="${CTRLSPEAK_MIC_STANDBY:-}"
 # The ctrlSPEAK release this patch set is written against. Independent of
@@ -157,6 +160,7 @@ backup_and_install "$PATCH_DIR/models/whisper_mlx.py" "$CTRLSPEAK_LIBEXEC/models
 backup_and_install "$PATCH_DIR/utils/clipboard.py" "$CTRLSPEAK_LIBEXEC/utils/clipboard.py" 644
 backup_and_install "$PATCH_DIR/utils/keyboard_shortcuts.py" "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py" 644
 backup_and_install "$PATCH_DIR/utils/audio.py" "$CTRLSPEAK_LIBEXEC/utils/audio.py" 644
+backup_and_install "$PATCH_DIR/utils/localvoice_config.py" "$CTRLSPEAK_LIBEXEC/utils/localvoice_config.py" 644
 
 "$CTRLSPEAK_PYTHON" -m py_compile \
   "$CTRLSPEAK_LIBEXEC/hotkeys.py" \
@@ -173,7 +177,8 @@ backup_and_install "$PATCH_DIR/utils/audio.py" "$CTRLSPEAK_LIBEXEC/utils/audio.p
   "$CTRLSPEAK_LIBEXEC/models/whisper_mlx.py" \
   "$CTRLSPEAK_LIBEXEC/utils/clipboard.py" \
   "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py" \
-  "$CTRLSPEAK_LIBEXEC/utils/audio.py"
+  "$CTRLSPEAK_LIBEXEC/utils/audio.py" \
+  "$CTRLSPEAK_LIBEXEC/utils/localvoice_config.py"
 
 WRAPPER_PATH="$BREW_PREFIX/bin/ctrlspeak-local"
 cat > "$BUILD_DIR/ctrlspeak-local" <<EOF
@@ -182,14 +187,21 @@ cat > "$BUILD_DIR/ctrlspeak-local" <<EOF
 export PATH="$BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export CTRLSPEAK_OVERLAY_PATH="$BREW_PREFIX/bin/ctrlspeak-overlay"
 
-LANGUAGE_FILE="\$HOME/.config/ctrlspeak/language"
+# The language comes from the LocalVoice config file, with the pre-1.2
+# single-value file as the fallback until the service's first run migrates it.
+CONFIG_FILE="\$HOME/.config/localvoice/config"
+LEGACY_LANGUAGE_FILE="\$HOME/.config/ctrlspeak/language"
 LANGUAGE="$SOURCE_LANGUAGE"
 
-if [[ -f "\$LANGUAGE_FILE" ]]; then
-  read -r SAVED_LANGUAGE < "\$LANGUAGE_FILE"
-  if [[ "\$SAVED_LANGUAGE" == "de" || "\$SAVED_LANGUAGE" == "en" || "\$SAVED_LANGUAGE" == "auto" ]]; then
-    LANGUAGE="\$SAVED_LANGUAGE"
-  fi
+SAVED_LANGUAGE=""
+if [[ -f "\$CONFIG_FILE" ]]; then
+  SAVED_LANGUAGE="\$(sed -n 's/^[[:space:]]*language[[:space:]]*=[[:space:]]*//p' "\$CONFIG_FILE" | tail -n 1 | tr -d '[:space:]')"
+fi
+if [[ -z "\$SAVED_LANGUAGE" && -f "\$LEGACY_LANGUAGE_FILE" ]]; then
+  read -r SAVED_LANGUAGE < "\$LEGACY_LANGUAGE_FILE"
+fi
+if [[ "\$SAVED_LANGUAGE" == "de" || "\$SAVED_LANGUAGE" == "en" || "\$SAVED_LANGUAGE" == "auto" ]]; then
+  LANGUAGE="\$SAVED_LANGUAGE"
 fi
 
 # On a cold model cache, put the download pill on screen immediately. The
@@ -335,6 +347,14 @@ mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 # app, agent, or set of stale permission rows behind.
 launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
 launchctl bootout "gui/$CURRENT_UID/$LEGACY_LABEL" 2>/dev/null || true
+
+# A service started outside launchd — double-clicking the app, an old manual
+# launch — keeps running beside the launchd one: two hotkey listeners, two
+# pills, and preferences that only half stick. The service now refuses to
+# double-start, but instances predating that check have to go by hand.
+pkill -f "$CTRLSPEAK_LIBEXEC/ctrlspeak.py" 2>/dev/null || true
+pkill -f "LocalVoice.app/Contents/MacOS/LocalVoice" 2>/dev/null || true
+
 rm -f "$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
 rm -rf "$HOME/Applications/ctrlSPEAK.app"
 tccutil reset All "$LEGACY_LABEL" >/dev/null 2>&1 || true
@@ -388,15 +408,25 @@ EOF
 plutil -lint "$BUILD_DIR/$SERVICE_LABEL.plist" >/dev/null
 install -m 644 "$BUILD_DIR/$SERVICE_LABEL.plist" "$LAUNCH_AGENT_PATH"
 
-if [[ -n "$HOTKEY" ]]; then
-  mkdir -p "$HOME/.config/ctrlspeak"
-  printf '%s\n' "$HOTKEY" > "$HOME/.config/ctrlspeak/hotkey"
-fi
+# Create ~/.config/localvoice/config (migrating any pre-1.2 preference files),
+# then fold the CTRLSPEAK_* environment overrides in. All three values passed
+# here were validated at the top of this script.
+echo "Writing the configuration file..."
+"$CTRLSPEAK_PYTHON" - <<EOF
+import sys
 
-if [[ -n "$MIC_STANDBY" ]]; then
-  mkdir -p "$HOME/.config/ctrlspeak"
-  printf '%s\n' "$MIC_STANDBY" > "$HOME/.config/ctrlspeak/mic-standby"
-fi
+sys.path.insert(0, "$CTRLSPEAK_LIBEXEC")
+from utils import localvoice_config
+
+localvoice_config.ensure_config_file()
+for key, value in (
+    ("hotkey", "$HOTKEY"),
+    ("mic-standby", "$MIC_STANDBY"),
+    ("language", "$EXPLICIT_LANGUAGE"),
+):
+    if value:
+        localvoice_config.set_value(key, value)
+EOF
 
 mkdir -p "$HOME/.config/ctrlspeak"
 printf '%s\n' "$LOCALVOICE_VERSION" > "$INSTALLED_VERSION_FILE"
@@ -440,6 +470,9 @@ if [[ "$(cat "$SETUP_STATUS_FILE" 2>/dev/null)" == "granted" ]]; then
   echo
   echo "Usage: triple-tap Control to start, then triple-tap Control to stop."
   echo "Click the badge in the recording pill to cycle German / English / Auto."
+  echo
+  echo "Settings (hotkey, language, compact pill) live in ~/.config/localvoice/config."
+  echo "While the pill is on screen, Cmd+, opens it; edits apply within seconds."
 else
   echo "The permission setup did not finish. Grant these to LocalVoice under"
   echo "System Settings > Privacy & Security (the app is already listed in"

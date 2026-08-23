@@ -1,5 +1,34 @@
 import AppKit
 
+/// Whether the config asks for the compact recording pill (no language badge).
+///
+/// Read from the same key = value file the Python service uses; only this one
+/// key matters here, so a full config type would be ceremony. Each pill is a
+/// fresh process, so an edited setting shows up on the next recording without
+/// any restart.
+func loadCompactSetting() -> Bool {
+    let configPath = ProcessInfo.processInfo.environment["LOCALVOICE_CONFIG_DIR"].map {
+        $0 + "/config"
+    } ?? FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/localvoice/config").path
+
+    guard let raw = try? String(contentsOfFile: configPath, encoding: .utf8) else {
+        return false
+    }
+
+    var compact = false
+    for line in raw.split(separator: "\n") {
+        let entry = line.trimmingCharacters(in: .whitespaces)
+        guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
+        let key = entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased()
+        guard key == "compact" else { continue }
+        let value = entry[entry.index(after: separator)...]
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        compact = ["on", "true", "1", "yes"].contains(value)
+    }
+    return compact
+}
+
 enum OverlayMode: String {
     case recording
     case processing
@@ -15,6 +44,11 @@ enum OverlayMode: String {
 
 final class RecorderHUDView: NSView {
     var onLanguageToggle: ((String) -> Void)?
+
+    // Compact mode: the recording pill drops the language badge and shrinks
+    // to dot, waveform and timer. For people who leave the language fixed
+    // (usually on auto), the badge is chrome they asked to be rid of.
+    var hideLanguageBadge = false
 
     // The native dictation HUD is light frost with dark ink in light mode and
     // the inverse in dark mode. All chrome colors derive from these two.
@@ -109,7 +143,7 @@ final class RecorderHUDView: NSView {
     func desiredSize() -> NSSize? {
         switch mode {
         case .recording, .processing:
-            return NSSize(width: 300, height: 44)
+            return NSSize(width: hideLanguageBadge ? 240 : 300, height: 44)
         case .permission, .download:
             return NSSize(width: 358, height: 56)
         case .language:
@@ -145,7 +179,7 @@ final class RecorderHUDView: NSView {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        if mode == .recording {
+        if mode == .recording && !hideLanguageBadge {
             addCursorRect(languageBadgeRect, cursor: .pointingHand)
         }
     }
@@ -155,7 +189,7 @@ final class RecorderHUDView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard mode == .recording else { return }
+        guard mode == .recording, !hideLanguageBadge else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard languageBadgeRect.contains(point) else { return }
 
@@ -249,7 +283,10 @@ final class RecorderHUDView: NSView {
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
         let timerFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
         let timerWidth = ceil((elapsed as NSString).size(withAttributes: [.font: timerFont]).width)
-        let timerX = badge.minX - gap - timerWidth
+        // Without the badge, the timer takes over its 18 pt right margin.
+        let timerX = hideLanguageBadge
+            ? bounds.width - 18 - timerWidth
+            : badge.minX - gap - timerWidth
 
         drawWaveform(in: NSRect(
             x: dotRightEdge + gap,
@@ -266,7 +303,9 @@ final class RecorderHUDView: NSView {
             alignment: .right
         )
 
-        drawLanguageBadge(in: badge)
+        if !hideLanguageBadge {
+            drawLanguageBadge(in: badge)
+        }
     }
 
     // Apple's glass edge is not a uniform outline. The rim reads as the edge
@@ -738,10 +777,12 @@ final class OverlayController: NSObject {
 
         // Recording sessions carry only dot, waveform, timer and badge and
         // sit in the flatter capsule; status modes keep the taller panel
-        // their two text lines need.
-        let compact = launchMode == "recording" || launchMode == "preview"
-        let capsuleSize = compact
-            ? NSSize(width: 300, height: 44)
+        // their two text lines need. The configured compact pill drops the
+        // badge as well and shrinks the capsule accordingly.
+        let hideBadge = loadCompactSetting()
+        let recordingCapsule = launchMode == "recording" || launchMode == "preview"
+        let capsuleSize = recordingCapsule
+            ? NSSize(width: hideBadge ? 240 : 300, height: 44)
             : NSSize(width: 358, height: launchMode == "language" ? 44 : 56)
         let margin = OverlayController.shadowMargin
         let panelSize = NSSize(
@@ -787,6 +828,7 @@ final class OverlayController: NSObject {
         effectView = visualEffect
 
         hudView = RecorderHUDView(frame: visualEffect.bounds)
+        hudView.hideLanguageBadge = hideBadge
         hudView.setLanguage(language)
         hudView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hudView)

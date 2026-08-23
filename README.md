@@ -36,16 +36,18 @@ Needs an Apple Silicon Mac, [Homebrew](https://brew.sh), Xcode Command Line Tool
 |---|---|
 | Hotkey tap (default: triple-tap **Ctrl**) | Start recording / stop and insert |
 | **Enter** / **Esc** while recording | Insert / discard |
+| **Cmd+,** while recording | Open the settings in your text editor |
 | Badge click (`DE` / `EN` / `AUTO`) | Cycle the language mode |
 
-Change the hotkey: `echo "cmd,2" > ~/.config/ctrlspeak/hotkey && ./scripts/restart.sh`. The mic opens only while you record (the indicator stays honest); optional standby mode gives instant starts. If nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
+Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, a compact pill without the language badge, mic standby. Edits apply within seconds, no restart needed: **[docs/configuration.md](docs/configuration.md)**. The mic opens only while you record (the indicator stays honest); optional standby mode gives instant starts. If nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
 
 Uninstall cleanly with `./uninstall.sh`.
 
 ## More
 
 - **[docs/setup.md](docs/setup.md)** — installer steps, permissions wizard, code signing, health checks, uninstall
-- **[docs/usage.md](docs/usage.md)** — keys, hotkey config, language modes, insertion behaviour
+- **[docs/configuration.md](docs/configuration.md)** — the config file: hotkey, language, compact pill, mic standby
+- **[docs/usage.md](docs/usage.md)** — keys, language modes, insertion behaviour
 - **[docs/how-it-works.md](docs/how-it-works.md)** — architecture: app identity, pill protocol, download pipeline, onset buffer
 - **[docs/adding-a-language.md](docs/adding-a-language.md)** — how to add a third language beyond DE/EN
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — project layout and how to hack on it

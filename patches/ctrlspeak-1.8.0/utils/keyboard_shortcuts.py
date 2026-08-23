@@ -1,24 +1,17 @@
 import threading
-from pathlib import Path
 from pynput import keyboard
 import subprocess
 import sys
 import time
-import os
 from rich.console import Console
 from rich.panel import Panel
 from utils.permission_manager import check_keyboard_permissions
 
 # The activation hotkey is a repeated tap on one modifier key. Which modifier
-# and how many taps comes from a config file, e.g. "cmd,2" for a double-tap
-# on Command. Modifiers only: a plain letter would fire while typing.
-_HOTKEY_FILE = Path(
-    os.environ.get(
-        "CTRLSPEAK_HOTKEY_FILE",
-        str(Path.home() / ".config" / "ctrlspeak" / "hotkey"),
-    )
-)
-_DEFAULT_HOTKEY = ("ctrl", 3)
+# and how many taps comes from the LocalVoice config file, e.g. "hotkey =
+# cmd,2" for a double-tap on Command. Modifiers only: a plain letter would
+# fire while typing.
+from utils import localvoice_config
 
 _MODIFIER_KEYS = {
     "ctrl": {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r},
@@ -27,18 +20,21 @@ _MODIFIER_KEYS = {
     "shift": {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r},
 }
 
+# macOS virtual key code for the comma key (kVK_ANSI_Comma), so Cmd+, is
+# recognised even when the event carries no character.
+_COMMA_VIRTUAL_KEY = 43
+
 
 def load_hotkey_config():
-    """Read (modifier, taps) from the config file, falling back to ctrl,3."""
-    try:
-        raw = _HOTKEY_FILE.read_text(encoding="utf-8").strip().lower()
-        modifier, _, taps_text = raw.partition(",")
-        taps = int(taps_text)
-        if modifier in _MODIFIER_KEYS and 2 <= taps <= 4:
-            return modifier, taps
-    except (OSError, ValueError):
-        pass
-    return _DEFAULT_HOTKEY
+    """Read (modifier, taps) from the config, falling back to ctrl,3."""
+    return localvoice_config.hotkey()
+
+
+def _is_comma(key):
+    return (
+        getattr(key, "char", None) == ","
+        or getattr(key, "vk", None) == _COMMA_VIRTUAL_KEY
+    )
 
 
 class KeyboardShortcutManager:
@@ -59,14 +55,18 @@ class KeyboardShortcutManager:
         self.triple_tap_callback = None
         self.key_listener = None
 
-        # Esc/Enter handling while a recording session is active. The querying
-        # callable decides "active"; the listener stays passive otherwise.
+        # Esc/Enter/Cmd+, handling while a recording session is active. The
+        # querying callable decides "active"; the listener stays passive
+        # otherwise.
         self.recording_active_check = None
         self.recording_cancel_callback = None
         self.recording_finish_callback = None
+        self.recording_open_config_callback = None
 
-        # Alt+Esc exit, folded into the single listener (see register_shortcut).
+        # Alt+Esc exit and Cmd+, tracking, folded into the single listener
+        # (see register_shortcut for why there is only one).
         self._alt_down = False
+        self._cmd_down = False
         self.exit_callback = None
 
     @property
@@ -76,11 +76,13 @@ class KeyboardShortcutManager:
         labels = {"ctrl": "Ctrl", "cmd": "Cmd", "alt": "Option", "shift": "Shift"}
         return f"{names[self.tap_count_required]}-tap {labels[self.tap_modifier]}"
 
-    def register_recording_keys(self, is_recording, on_cancel, on_finish):
-        """While is_recording() is true, Esc cancels and Enter finishes."""
+    def register_recording_keys(self, is_recording, on_cancel, on_finish, on_open_config=None):
+        """While is_recording() is true: Esc cancels, Enter finishes, and
+        Cmd+, opens the LocalVoice configuration file."""
         self.recording_active_check = is_recording
         self.recording_cancel_callback = on_cancel
         self.recording_finish_callback = on_finish
+        self.recording_open_config_callback = on_open_config
     
     def check_permissions(self):
         """Check and request necessary accessibility permissions for keyboard control"""
@@ -128,13 +130,15 @@ class KeyboardShortcutManager:
 
         if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
             self._alt_down = True
+        if key in _MODIFIER_KEYS["cmd"]:
+            self._cmd_down = True
 
         if key == keyboard.Key.esc and self._alt_down and self.exit_callback:
             self.ctrl_tap_count = 0
             return self.exit_callback()
 
-        # pynput cannot swallow events, so Esc and Enter also reach the
-        # frontmost app; they are only interpreted here during a recording.
+        # pynput cannot swallow events, so Esc, Enter and Cmd+, also reach
+        # the frontmost app; they are only interpreted here during a recording.
         if recording:
             if key == keyboard.Key.esc and self.recording_cancel_callback:
                 self.ctrl_tap_count = 0
@@ -142,6 +146,9 @@ class KeyboardShortcutManager:
             if key == keyboard.Key.enter and self.recording_finish_callback:
                 self.ctrl_tap_count = 0
                 return self.recording_finish_callback()
+            if self._cmd_down and self.recording_open_config_callback and _is_comma(key):
+                self.ctrl_tap_count = 0
+                return self.recording_open_config_callback()
 
         if key in _MODIFIER_KEYS[self.tap_modifier]:
             current_time = time.time()
@@ -172,6 +179,8 @@ class KeyboardShortcutManager:
         """
         if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
             self._alt_down = False
+        if key in _MODIFIER_KEYS["cmd"]:
+            self._cmd_down = False
         return True
     
     def start_listening(self):
