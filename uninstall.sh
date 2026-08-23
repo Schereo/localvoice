@@ -80,6 +80,9 @@ fi
 echo "Stopping the background service..."
 launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
 launchctl bootout "gui/$CURRENT_UID/$LEGACY_LABEL" 2>/dev/null || true
+# Instances started outside launchd (a double-clicked app) survive bootout.
+pkill -f "libexec/ctrlspeak.py" 2>/dev/null || true
+pkill -f "LocalVoice.app/Contents/MacOS/LocalVoice" 2>/dev/null || true
 rm -f "$LAUNCH_AGENT_PATH" "$LEGACY_AGENT_PATH"
 
 echo "Removing the app bundle..."
@@ -103,9 +106,10 @@ if [[ -n "$CTRLSPEAK_LIBEXEC" && -d "$CTRLSPEAK_LIBEXEC" ]]; then
     restored=$((restored + 1))
   done < <(find "$CTRLSPEAK_LIBEXEC" -name "*.local-voice-backup" 2>/dev/null)
 
-  # These two have no upstream counterpart, so there is no backup to restore
+  # These have no upstream counterpart, so there is no backup to restore
   # them from; everything else install.sh touched already came back above.
-  for added in overlay.py model_download.py mic_capture.py; do
+  for added in overlay.py model_download.py mic_capture.py \
+    utils/localvoice_config.py utils/media_pause.py; do
     if [[ -f "$CTRLSPEAK_LIBEXEC/$added" ]]; then
       rm -f "$CTRLSPEAK_LIBEXEC/$added"
       removed=$((removed + 1))
@@ -118,14 +122,16 @@ if [[ -n "$CTRLSPEAK_LIBEXEC" && -d "$CTRLSPEAK_LIBEXEC" ]]; then
   echo "  restored $restored file(s), removed $removed added file(s)"
 fi
 
-echo "Removing the language preference..."
+echo "Removing the configuration..."
+rm -rf "$HOME/.config/localvoice"
 rm -f "$HOME/.config/ctrlspeak/language" \
   "$HOME/.config/ctrlspeak/hotkey" \
   "$HOME/.config/ctrlspeak/mic-standby" \
   "$HOME/.config/ctrlspeak/startup-pill.fifo" \
   "$HOME/.config/ctrlspeak/setup-status" \
   "$HOME/.config/ctrlspeak/permission-status" \
-  "$HOME/.config/ctrlspeak/installed-version"
+  "$HOME/.config/ctrlspeak/installed-version" \
+  "$HOME/.config/ctrlspeak/service.lock"
 
 echo "Removing LocalVoice's privacy-pane entries..."
 tccutil reset All "$SERVICE_LABEL" >/dev/null 2>&1 || true
