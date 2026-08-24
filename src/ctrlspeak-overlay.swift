@@ -162,7 +162,10 @@ final class RecorderHUDView: NSView {
                     withAttributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium)]
                 ).width
                 : 0
-            let width = max(170, 46 + ceil(max(titleWidth, detailWidth)) + 18)
+            // Hug the text: a fixed floor left the leftover width as dead
+            // space on the right of short titles. 120 only keeps the result
+            // from dipping below the processing capsule it morphs out of.
+            let width = max(120, 46 + ceil(max(titleWidth, detailWidth)) + 18)
             return NSSize(width: width, height: twoLines ? 56 : 44)
         }
     }
