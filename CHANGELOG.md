@@ -40,6 +40,14 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   restart, quit. Every action writes to the config file the service already
   watches — menu and file are the same settings. `menubar = off` hides it.
 
+### Added (post-1.2.0 branch)
+
+- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
+  jargon, handed to Whisper as its initial prompt so it reuses their exact
+  spelling — verified with synthesized audio containing an invented name.
+  Applies from the next recording; Whisper reads at most the last ~224
+  tokens of the list.
+
 ### Changed
 
 - Quieter result pills: regular-weight 12.5 pt text instead of semibold

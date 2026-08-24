@@ -106,6 +106,16 @@ class WhisperMLXModel(BaseSTTModel):
         import mlx_whisper
 
         import state
+        from utils import localvoice_config
+
+        # The user's vocabulary rides in as Whisper's initial prompt: the
+        # decoder conditions on it as if those words had just been said, and
+        # then reuses their spelling. Read per call, so an edited word list
+        # applies from the very next recording. Whisper itself truncates the
+        # prompt to its context budget (the last ~224 tokens), so an oversized
+        # list degrades gracefully instead of failing.
+        vocabulary = localvoice_config.vocabulary()
+        initial_prompt = ", ".join(vocabulary) if vocabulary else None
 
         transcriptions = []
         for audio_path in audio_paths:
@@ -124,6 +134,7 @@ class WhisperMLXModel(BaseSTTModel):
                 task="transcribe",
                 temperature=0.0,
                 condition_on_previous_text=False,
+                initial_prompt=initial_prompt,
                 verbose=None,
             )
             transcriptions.append(self._clean_text(result.get("text", "")))

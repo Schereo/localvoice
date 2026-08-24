@@ -36,6 +36,7 @@ DEFAULTS = {
     "microphone": "built-in",
     "menubar": "on",
     "pause-media": "on",
+    "vocabulary": "",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
@@ -86,6 +87,12 @@ _KEY_BLOCKS = {
 # Pause playing media players (Spotify, Music) when a recording starts and
 # resume exactly those when it ends. First use asks once for the macOS
 # Automation permission per player.
+""",
+    "vocabulary": """\
+# Words the transcriber should know and spell correctly — names, brands,
+# jargon. Comma-separated: vocabulary = Ada, ctrlSPEAK, MLX
+# The model reads this list before every recording; keep it to the terms
+# that actually come up, a few dozen at most.
 """,
 }
 
@@ -158,6 +165,12 @@ def parse_hotkey(raw):
 def hotkey():
     """The configured (modifier, taps) activation gesture, validated."""
     return parse_hotkey(effective("hotkey")) or parse_hotkey(DEFAULTS["hotkey"])
+
+
+def vocabulary():
+    """User-taught words the transcriber should spell correctly, as a list."""
+    raw = str(effective("vocabulary") or "")
+    return [word.strip() for word in raw.split(",") if word.strip()]
 
 
 def ensure_config_file():
