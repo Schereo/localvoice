@@ -142,8 +142,12 @@ final class RecorderHUDView: NSView {
     /// stretch of empty pill. nil keeps whatever the panel currently has.
     func desiredSize() -> NSSize? {
         switch mode {
-        case .recording, .processing:
+        case .recording:
             return NSSize(width: hideLanguageBadge ? 240 : 300, height: 44)
+        case .processing:
+            // Just the dots: transcription takes about a second, too short
+            // for a label to earn its width.
+            return NSSize(width: 120, height: 44)
         case .permission, .download:
             return NSSize(width: 358, height: 56)
         case .language:
@@ -151,14 +155,17 @@ final class RecorderHUDView: NSView {
         default:
             guard let title = RecorderHUDView.resultTitle(mode) else { return nil }
             let twoLines = !detailText.isEmpty
-            let titleFont = NSFont.systemFont(ofSize: twoLines ? 13 : 14, weight: .semibold)
+            let titleFont = NSFont.systemFont(ofSize: twoLines ? 12 : 12.5, weight: .regular)
             let titleWidth = (title as NSString).size(withAttributes: [.font: titleFont]).width
             let detailWidth = twoLines
                 ? (detailText as NSString).size(
                     withAttributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium)]
                 ).width
                 : 0
-            let width = max(200, 50 + ceil(max(titleWidth, detailWidth)) + 18)
+            // Hug the text: a fixed floor left the leftover width as dead
+            // space on the right of short titles. 120 only keeps the result
+            // from dipping below the processing capsule it morphs out of.
+            let width = max(120, 46 + ceil(max(titleWidth, detailWidth)) + 18)
             return NSSize(width: width, height: twoLines ? 56 : 44)
         }
     }
@@ -395,21 +402,13 @@ final class RecorderHUDView: NSView {
         }
     }
 
+    // One animation, nothing else: the pulsing dot row, centred. A spinner
+    // plus a label plus the dots said "loading" three times over, for a state
+    // that lasts about a second.
     private func drawProcessing() {
         let centerY = bounds.midY
-        drawSpinner(center: NSPoint(x: 27, y: centerY))
-
-        drawCenteredText(
-            "Transcribing",
-            centeredIn: NSRect(x: 50, y: centerY - 10, width: 142, height: 20),
-            font: .systemFont(ofSize: 14, weight: .semibold),
-            color: ink.withAlphaComponent(0.92),
-            alignment: .left
-        )
-
-        // Anchored to the right edge so the row fits the compact panel too.
         let step: CGFloat = 14
-        let startX = bounds.width - 21.5 - 4 * step
+        let startX = bounds.midX - 2 * step
         for index in 0..<5 {
             let wave = (sin(phase * 1.45 - CGFloat(index) * 0.72) + 1) / 2
             let radius: CGFloat = 2.2 + wave * 1.35
@@ -419,59 +418,48 @@ final class RecorderHUDView: NSView {
         }
     }
 
-    private func drawSpinner(center: NSPoint) {
-        let segmentCount = 9
-        for index in 0..<segmentCount {
-            let angle = (CGFloat(index) / CGFloat(segmentCount)) * .pi * 2
-            let animatedHead = Int(phase * 2.3) % segmentCount
-            let distance = (index - animatedHead + segmentCount) % segmentCount
-            let alpha = max(0.16, 1 - CGFloat(distance) / CGFloat(segmentCount))
-            let radius: CGFloat = 7
-            let point = NSPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
-            accent.withAlphaComponent(alpha).setFill()
-            NSBezierPath(ovalIn: NSRect(x: point.x - 1.4, y: point.y - 1.4, width: 2.8, height: 2.8)).fill()
-        }
-    }
-
+    // Quiet by design: a small icon and a regular-weight line. The pill only
+    // confirms what already happened — bold shouting made it the loudest
+    // thing on screen for the least interesting moment.
     private func drawResult(title: String, color rawColor: NSColor, symbol: String) {
         let centerY = bounds.midY
         let color = emphasized(rawColor)
         color.withAlphaComponent(0.20).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 17, y: centerY - 9, width: 18, height: 18)).fill()
 
         color.setStroke()
         let mark = NSBezierPath()
-        mark.lineWidth = 2
+        mark.lineWidth = 1.7
         mark.lineCapStyle = .round
         mark.lineJoinStyle = .round
 
         if symbol == "checkmark" {
             mark.move(to: NSPoint(x: 22, y: centerY))
-            mark.line(to: NSPoint(x: 26, y: centerY - 4))
-            mark.line(to: NSPoint(x: 33, y: centerY + 5))
+            mark.line(to: NSPoint(x: 25.2, y: centerY - 3.2))
+            mark.line(to: NSPoint(x: 30.8, y: centerY + 4))
         } else if symbol == "xmark" {
-            mark.move(to: NSPoint(x: 23, y: centerY - 4))
-            mark.line(to: NSPoint(x: 31, y: centerY + 4))
-            mark.move(to: NSPoint(x: 31, y: centerY - 4))
-            mark.line(to: NSPoint(x: 23, y: centerY + 4))
+            mark.move(to: NSPoint(x: 22.8, y: centerY - 3.2))
+            mark.line(to: NSPoint(x: 29.2, y: centerY + 3.2))
+            mark.move(to: NSPoint(x: 29.2, y: centerY - 3.2))
+            mark.line(to: NSPoint(x: 22.8, y: centerY + 3.2))
         } else {
-            mark.move(to: NSPoint(x: 27, y: centerY + 5))
-            mark.line(to: NSPoint(x: 27, y: centerY - 2))
-            mark.move(to: NSPoint(x: 27, y: centerY - 6))
-            mark.line(to: NSPoint(x: 27, y: centerY - 6.2))
+            mark.move(to: NSPoint(x: 26, y: centerY + 4))
+            mark.line(to: NSPoint(x: 26, y: centerY - 1.5))
+            mark.move(to: NSPoint(x: 26, y: centerY - 4.6))
+            mark.line(to: NSPoint(x: 26, y: centerY - 4.8))
         }
         mark.stroke()
 
         // Automatic mode reports the language it picked, which needs a second
         // line; without it the title stays vertically centred as before.
-        let textWidth = bounds.width - 66
+        let textWidth = bounds.width - 62
 
         guard !detailText.isEmpty else {
             drawCenteredText(
                 title,
-                centeredIn: NSRect(x: 50, y: centerY - 10, width: textWidth, height: 20),
-                font: .systemFont(ofSize: 14, weight: .semibold),
-                color: ink.withAlphaComponent(0.92),
+                centeredIn: NSRect(x: 46, y: centerY - 10, width: textWidth, height: 20),
+                font: .systemFont(ofSize: 12.5, weight: .regular),
+                color: ink.withAlphaComponent(0.90),
                 alignment: .left
             )
             return
@@ -479,15 +467,15 @@ final class RecorderHUDView: NSView {
 
         drawText(
             title,
-            in: NSRect(x: 50, y: 30, width: textWidth, height: 18),
-            font: .systemFont(ofSize: 13, weight: .semibold),
-            color: ink.withAlphaComponent(0.92),
+            in: NSRect(x: 46, y: 30, width: textWidth, height: 17),
+            font: .systemFont(ofSize: 12, weight: .regular),
+            color: ink.withAlphaComponent(0.90),
             alignment: .left
         )
 
         drawText(
             detailText,
-            in: NSRect(x: 50, y: 11, width: textWidth, height: 15),
+            in: NSRect(x: 46, y: 11, width: textWidth, height: 15),
             font: .systemFont(ofSize: 10.5, weight: .medium),
             color: emphasized(color),
             alignment: .left

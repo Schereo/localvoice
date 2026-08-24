@@ -62,6 +62,14 @@ controls: microphone picker, language mode, compact pill, standby, open
 config, restart, quit. It writes to the same config file the service watches,
 so menu and file never disagree. Hide it with `menubar = off`.
 
+## Vocabulary
+
+Teach the transcriber your names and jargon: `vocabulary = Ada, ctrlSPEAK,
+MLX` in the config. The words are fed to Whisper as context before every
+recording, which biases it strongly toward their exact spelling. Edits apply
+from the next recording. Details:
+[configuration.md](configuration.md#vocabulary).
+
 ## Compact pill
 
 If you leave the language fixed (usually on `auto`) and don't want the blue badge in the pill, set `compact = on` in the config. The recording pill then shrinks to the dot, the waveform and the timer; language changes happen in the config file instead. The next recording after the edit shows the compact pill.

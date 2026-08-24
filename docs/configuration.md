@@ -44,6 +44,7 @@ mic-standby = off
 | `microphone` | `built-in` · `system` · name | `built-in` | Which microphone records |
 | `menubar` | `on` · `off` | `on` | Show the menu bar icon |
 | `pause-media` | `on` · `off` | `on` | Pause Spotify/Music while recording |
+| `vocabulary` | comma-separated words | empty | Words the transcriber should spell correctly |
 
 ### `hotkey`
 
@@ -112,6 +113,22 @@ Covered players: Spotify and Apple Music (scriptable over Apple Events;
 browser tabs are not reachable this way). On first use macOS asks once per
 player for the Automation permission — "LocalVoice wants to control
 Spotify"; approve it, and from then on it is silent.
+
+### `vocabulary`
+
+Names, brands and jargon the transcriber keeps getting wrong, as a
+comma-separated list:
+
+```ini
+vocabulary = Ada, ctrlSPEAK, MLX, LocalVoice
+```
+
+The list is handed to Whisper as its *initial prompt* — the model conditions
+on it as if those words had just been said, and then reuses their spelling
+when it hears them. It is a strong bias, not a hard guarantee. Edits apply
+from the very next recording. Whisper reads at most the last ~224 tokens of
+the prompt, so keep the list to the terms that actually come up — a few
+dozen at most; beyond that the oldest entries silently fall off.
 
 ### `mic-standby`
 
