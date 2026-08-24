@@ -40,6 +40,13 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   restart, quit. Every action writes to the config file the service already
   watches — menu and file are the same settings. `menubar = off` hides it.
 
+### Changed
+
+- Quieter result pills: regular-weight 12.5 pt text instead of semibold
+  14 pt, a smaller status icon, and a tighter capsule. The transcription
+  state drops its spinner and "Transcribing" label — a small capsule with
+  the pulsing dot row is all a one-second state needs.
+
 ### Removed
 
 - The `Detected DE` line the pill showed after auto-mode recordings. The
