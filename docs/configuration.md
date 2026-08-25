@@ -45,6 +45,7 @@ mic-standby = off
 | `menubar` | `on` · `off` | `on` | Show the menu bar icon |
 | `pause-media` | `on` · `off` | `on` | Pause Spotify/Music while recording |
 | `vocabulary` | comma-separated words | empty | Words the transcriber should spell correctly |
+| `live-preview` | `on` · `off` | `off` | Show the transcript in the pill while you speak |
 
 ### `hotkey`
 
@@ -129,6 +130,26 @@ when it hears them. It is a strong bias, not a hard guarantee. Edits apply
 from the very next recording. Whisper reads at most the last ~224 tokens of
 the prompt, so keep the list to the terms that actually come up — a few
 dozen at most; beyond that the oldest entries silently fall off.
+
+### `live-preview`
+
+`on` makes the recording pill show what it heard, while you are still
+speaking. Two kinds of text appear below the waveform:
+
+- **Confirmed text** — each time you pause for a second, the finished phrase
+  is transcribed and joins the line in full ink. This text is final; it is
+  exactly what will be inserted.
+- **A live guess** — the phrase you are currently saying, re-transcribed
+  about once a second and drawn dimmed, because it may still change as you
+  finish the sentence.
+
+The pill grows to fit up to two lines and always shows the most recent words
+(older text scrolls out to the left). The inserted result is byte-for-byte
+the same as with the preview off — the preview only shows work that was
+already happening. The live guess costs extra model runs while you speak,
+which is why the feature is opt-in; on Apple Silicon the load is modest.
+Confirmed phrases always take priority over the guess, so the preview never
+delays the actual transcription.
 
 ### `mic-standby`
 

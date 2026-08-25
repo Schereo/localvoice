@@ -29,6 +29,14 @@ func loadCompactSetting() -> Bool {
     return compact
 }
 
+/// Corner radius for a capsule of the given height. Half the height up to
+/// the 56 pt status pill — the classic capsule — but capped beyond that: the
+/// recording pill grown around a live transcript reads as a rounded card,
+/// not a lozenge.
+func capsuleRadius(forHeight height: CGFloat) -> CGFloat {
+    min(height / 2, 28)
+}
+
 enum OverlayMode: String {
     case recording
     case processing
@@ -83,10 +91,26 @@ final class RecorderHUDView: NSView {
     private var displayedProgress: CGFloat = 0
     private var detailText = ""
 
+    // The live transcript, split into what is settled and what may still
+    // change: confirmed text is every phrase the model has finished, the
+    // partial is its current guess at the phrase being spoken. Only the
+    // recording state draws them; the capsule grows to fit up to two lines.
+    private var finalTranscript = ""
+    private var partialTranscript = ""
+    private var transcriptCacheKey = ""
+    private var transcriptCache: (text: NSAttributedString, lines: Int)?
+
+    // Recording chrome (dot, waveform, timer, badge) lives in the bottom
+    // 44 pt band. With no transcript the capsule *is* that band; with text
+    // the capsule grows upward while the band — and so the chrome — stays
+    // put on screen.
+    private static let controlBandHeight: CGFloat = 44
+    private var controlBandMidY: CGFloat { RecorderHUDView.controlBandHeight / 2 }
+
     // Right-aligned with the same 18 pt margin the recording dot gets on the
     // left, independent of the panel width the launch mode chose.
     private var languageBadgeRect: NSRect {
-        NSRect(x: bounds.width - 68, y: bounds.midY - 11, width: 50, height: 22)
+        NSRect(x: bounds.width - 68, y: controlBandMidY - 11, width: 50, height: 22)
     }
 
     override init(frame frameRect: NSRect) {
@@ -126,6 +150,90 @@ final class RecorderHUDView: NSView {
         needsDisplay = true
     }
 
+    /// Update one half of the live transcript; nil leaves that half alone.
+    func setTranscript(final: String?, partial: String?) {
+        if let final { finalTranscript = final }
+        if let partial { partialTranscript = partial }
+        transcriptCache = nil
+        transcriptCacheKey = ""
+        needsDisplay = true
+    }
+
+    private var hasTranscript: Bool {
+        !finalTranscript.isEmpty || !partialTranscript.isEmpty
+    }
+
+    private static let transcriptFont = NSFont.systemFont(ofSize: 11.5, weight: .regular)
+
+    private var transcriptLineHeight: CGFloat {
+        let font = RecorderHUDView.transcriptFont
+        return ceil(font.ascender - font.descender + font.leading) + 1
+    }
+
+    /// The suffix of the transcript that fits `maxLines` at `width`, with the
+    /// confirmed part in full ink and the live guess dimmed. Old words fall
+    /// off the front (marked by an ellipsis) so the newest are always visible.
+    private func fittedTranscript(width: CGFloat, maxLines: Int) -> (text: NSAttributedString, lines: Int)? {
+        guard hasTranscript, width > 40 else { return nil }
+
+        let cacheKey = "\(width)|\(isDarkAppearance)|\(finalTranscript)\u{1}\(partialTranscript)"
+        if cacheKey == transcriptCacheKey, let cached = transcriptCache {
+            return cached
+        }
+
+        var words: [(text: Substring, isFinal: Bool)] = []
+        words.append(contentsOf: finalTranscript.split(separator: " ").map { ($0, true) })
+        words.append(contentsOf: partialTranscript.split(separator: " ").map { ($0, false) })
+        guard !words.isEmpty else { return nil }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.lineBreakMode = .byWordWrapping
+
+        func attributed(droppingFirst dropped: Int) -> NSAttributedString {
+            let visible = words[dropped...]
+            let result = NSMutableAttributedString()
+            for (index, word) in visible.enumerated() {
+                var piece = index == 0 && dropped > 0 ? "…" + word.text : String(word.text)
+                if index < visible.count - 1 { piece += " " }
+                result.append(NSAttributedString(string: piece, attributes: [
+                    .font: RecorderHUDView.transcriptFont,
+                    .foregroundColor: ink.withAlphaComponent(word.isFinal ? 0.90 : 0.42),
+                    .paragraphStyle: paragraph,
+                ]))
+            }
+            return result
+        }
+
+        func lineCount(_ text: NSAttributedString) -> Int {
+            let bounds = text.boundingRect(
+                with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin]
+            )
+            return max(1, Int((bounds.height / transcriptLineHeight).rounded()))
+        }
+
+        // Binary search for the fewest dropped words that still fit: the
+        // transcript of a long dictation is measured O(log n) times per
+        // update instead of once per word.
+        var low = 0
+        var high = words.count - 1
+        while low < high {
+            let middle = (low + high) / 2
+            if lineCount(attributed(droppingFirst: middle)) <= maxLines {
+                high = middle
+            } else {
+                low = middle + 1
+            }
+        }
+
+        let text = attributed(droppingFirst: low)
+        let fitted = (text: text, lines: min(maxLines, lineCount(text)))
+        transcriptCacheKey = cacheKey
+        transcriptCache = fitted
+        return fitted
+    }
+
     static func resultTitle(_ mode: OverlayMode) -> String? {
         switch mode {
         case .success: return "Text inserted"
@@ -137,17 +245,39 @@ final class RecorderHUDView: NSView {
         }
     }
 
+    // The transient pills' shared layout contract, used by desiredSize()
+    // (which measures) and the draw functions (which render) — one source,
+    // so the capsule can never measure with one font and draw with another.
+    static let processingCapsuleWidth: CGFloat = 120
+    static let quietTextX: CGFloat = 46
+    static let quietRightMargin: CGFloat = 16
+    static let quietDetailFont = NSFont.systemFont(ofSize: 10.5, weight: .medium)
+
+    static func quietTitleFont(twoLines: Bool) -> NSFont {
+        .systemFont(ofSize: twoLines ? 12 : 12.5, weight: .regular)
+    }
+
     /// The panel size this state wants: single-line states sit in a flatter
     /// capsule, result states shrink to their text instead of trailing a
     /// stretch of empty pill. nil keeps whatever the panel currently has.
     func desiredSize() -> NSSize? {
         switch mode {
         case .recording:
-            return NSSize(width: hideLanguageBadge ? 240 : 300, height: 44)
+            guard hasTranscript else {
+                return NSSize(width: hideLanguageBadge ? 240 : 300, height: 44)
+            }
+            // With live text the capsule widens for a readable line and grows
+            // upward: 44 pt control band + text lines + 10 pt top inset.
+            let width: CGFloat = hideLanguageBadge ? 340 : 380
+            let lines = fittedTranscript(width: width - 48, maxLines: 2)?.lines ?? 1
+            return NSSize(
+                width: width,
+                height: RecorderHUDView.controlBandHeight + CGFloat(lines) * transcriptLineHeight + 10
+            )
         case .processing:
             // Just the dots: transcription takes about a second, too short
             // for a label to earn its width.
-            return NSSize(width: 120, height: 44)
+            return NSSize(width: RecorderHUDView.processingCapsuleWidth, height: 44)
         case .permission, .download:
             return NSSize(width: 358, height: 56)
         case .language:
@@ -155,17 +285,23 @@ final class RecorderHUDView: NSView {
         default:
             guard let title = RecorderHUDView.resultTitle(mode) else { return nil }
             let twoLines = !detailText.isEmpty
-            let titleFont = NSFont.systemFont(ofSize: twoLines ? 12 : 12.5, weight: .regular)
+            let titleFont = RecorderHUDView.quietTitleFont(twoLines: twoLines)
             let titleWidth = (title as NSString).size(withAttributes: [.font: titleFont]).width
             let detailWidth = twoLines
                 ? (detailText as NSString).size(
-                    withAttributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium)]
+                    withAttributes: [.font: RecorderHUDView.quietDetailFont]
                 ).width
                 : 0
             // Hug the text: a fixed floor left the leftover width as dead
-            // space on the right of short titles. 120 only keeps the result
-            // from dipping below the processing capsule it morphs out of.
-            let width = max(120, 46 + ceil(max(titleWidth, detailWidth)) + 18)
+            // space on the right of short titles. The processing width as the
+            // floor keeps the result from dipping below the capsule it
+            // morphs out of.
+            let width = max(
+                RecorderHUDView.processingCapsuleWidth,
+                RecorderHUDView.quietTextX
+                    + ceil(max(titleWidth, detailWidth))
+                    + RecorderHUDView.quietRightMargin
+            )
             return NSSize(width: width, height: twoLines ? 56 : 44)
         }
     }
@@ -263,13 +399,23 @@ final class RecorderHUDView: NSView {
 
     // The pulsing red dot alone marks the live recording; a "RECORDING"
     // label would say the same thing again and cost 90 pt of pill width.
+    // Chrome sits in the bottom control band; the live transcript, when
+    // there is one, fills the space the capsule grew above it.
     private func drawRecording() {
-        let centerY = bounds.midY
+        let centerY = controlBandMidY
 
-        // Soft pulse plus crisp live dot.
-        // The dot sits on the same icon column (center x 27) as the spinner
-        // and the result circles, so nothing shifts sideways when the pill
-        // morphs from recording to processing to done.
+        if hasTranscript {
+            let textRect = NSRect(
+                x: 24,
+                y: RecorderHUDView.controlBandHeight,
+                width: bounds.width - 48,
+                height: bounds.height - RecorderHUDView.controlBandHeight - 10
+            )
+            fittedTranscript(width: textRect.width, maxLines: 2)?.text.draw(in: textRect)
+        }
+
+        // Soft pulse plus crisp live dot, anchored on the control band's
+        // left edge with the same margin the result icons use.
         let pulse = (sin(phase * 0.72) + 1) / 2
         let haloRadius = 5.5 + pulse * 2.5
         let haloRect = NSRect(x: 27 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
@@ -299,7 +445,7 @@ final class RecorderHUDView: NSView {
             x: dotRightEdge + gap,
             y: 8,
             width: timerX - gap - (dotRightEdge + gap),
-            height: bounds.height - 16
+            height: RecorderHUDView.controlBandHeight - 16
         ))
 
         drawCenteredText(
@@ -322,7 +468,7 @@ final class RecorderHUDView: NSView {
     // hairline carrying that dual-glint gradient, and a faint sheen across
     // the upper face of the capsule.
     private func drawGlassRim() {
-        let radius = bounds.height / 2
+        let radius = capsuleRadius(forHeight: bounds.height)
 
         func ring(_ outerInset: CGFloat, _ innerInset: CGFloat) -> NSBezierPath {
             let outerRect = bounds.insetBy(dx: outerInset, dy: outerInset)
@@ -452,13 +598,14 @@ final class RecorderHUDView: NSView {
 
         // Automatic mode reports the language it picked, which needs a second
         // line; without it the title stays vertically centred as before.
-        let textWidth = bounds.width - 62
+        let textX = RecorderHUDView.quietTextX
+        let textWidth = bounds.width - textX - RecorderHUDView.quietRightMargin
 
         guard !detailText.isEmpty else {
             drawCenteredText(
                 title,
-                centeredIn: NSRect(x: 46, y: centerY - 10, width: textWidth, height: 20),
-                font: .systemFont(ofSize: 12.5, weight: .regular),
+                centeredIn: NSRect(x: textX, y: centerY - 10, width: textWidth, height: 20),
+                font: RecorderHUDView.quietTitleFont(twoLines: false),
                 color: ink.withAlphaComponent(0.90),
                 alignment: .left
             )
@@ -467,16 +614,16 @@ final class RecorderHUDView: NSView {
 
         drawText(
             title,
-            in: NSRect(x: 46, y: 30, width: textWidth, height: 17),
-            font: .systemFont(ofSize: 12, weight: .regular),
+            in: NSRect(x: textX, y: 30, width: textWidth, height: 17),
+            font: RecorderHUDView.quietTitleFont(twoLines: true),
             color: ink.withAlphaComponent(0.90),
             alignment: .left
         )
 
         drawText(
             detailText,
-            in: NSRect(x: 46, y: 11, width: textWidth, height: 15),
-            font: .systemFont(ofSize: 10.5, weight: .medium),
+            in: NSRect(x: textX, y: 11, width: textWidth, height: 15),
+            font: RecorderHUDView.quietDetailFont,
             color: emphasized(color),
             alignment: .left
         )
@@ -490,22 +637,26 @@ final class RecorderHUDView: NSView {
             : color.blended(withFraction: 0.38, of: .black) ?? color
     }
 
+    // Same quiet styling as the result pills: this is the same class of
+    // transient, auto-dismissing confirmation, and the two can appear
+    // seconds apart.
     private func drawLanguageSelection() {
         let centerY = bounds.midY
         accent.withAlphaComponent(0.18).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 16, y: centerY - 11, width: 22, height: 22)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 17, y: centerY - 9, width: 18, height: 18)).fill()
 
         accent.setStroke()
-        let globe = NSBezierPath(ovalIn: NSRect(x: 21, y: centerY - 6, width: 12, height: 12))
-        globe.lineWidth = 1.3
+        let globe = NSBezierPath(ovalIn: NSRect(x: 21, y: centerY - 5, width: 10, height: 10))
+        globe.lineWidth = 1.2
         globe.stroke()
 
         let meridian = NSBezierPath()
-        meridian.move(to: NSPoint(x: 27, y: centerY - 6))
+        meridian.lineWidth = 1.2
+        meridian.move(to: NSPoint(x: 26, y: centerY - 5))
         meridian.curve(
-            to: NSPoint(x: 27, y: centerY + 6),
-            controlPoint1: NSPoint(x: 23.5, y: centerY - 2),
-            controlPoint2: NSPoint(x: 23.5, y: centerY + 2)
+            to: NSPoint(x: 26, y: centerY + 5),
+            controlPoint1: NSPoint(x: 23.2, y: centerY - 1.7),
+            controlPoint2: NSPoint(x: 23.2, y: centerY + 1.7)
         )
         meridian.stroke()
 
@@ -517,9 +668,14 @@ final class RecorderHUDView: NSView {
         }
         drawCenteredText(
             "Language: \(languageName)",
-            centeredIn: NSRect(x: 50, y: centerY - 10, width: 215, height: 20),
-            font: .systemFont(ofSize: 14, weight: .semibold),
-            color: ink.withAlphaComponent(0.92),
+            centeredIn: NSRect(
+                x: RecorderHUDView.quietTextX,
+                y: centerY - 10,
+                width: bounds.width - RecorderHUDView.quietTextX - 68,
+                height: 20
+            ),
+            font: RecorderHUDView.quietTitleFont(twoLines: false),
+            color: ink.withAlphaComponent(0.90),
             alignment: .left
         )
 
@@ -769,9 +925,16 @@ final class OverlayController: NSObject {
         // badge as well and shrinks the capsule accordingly.
         let hideBadge = loadCompactSetting()
         let recordingCapsule = launchMode == "recording" || launchMode == "preview"
-        let capsuleSize = recordingCapsule
-            ? NSSize(width: hideBadge ? 240 : 300, height: 44)
-            : NSSize(width: 358, height: launchMode == "language" ? 44 : 56)
+        let capsuleSize: NSSize
+        if recordingCapsule {
+            capsuleSize = NSSize(width: hideBadge ? 240 : 300, height: 44)
+        } else if launchMode == "language" {
+            // Sized to "Language: Automatic" plus the badge, in the quiet
+            // typography the result pills use.
+            capsuleSize = NSSize(width: 250, height: 44)
+        } else {
+            capsuleSize = NSSize(width: 358, height: 56)
+        }
         let margin = OverlayController.shadowMargin
         let panelSize = NSSize(
             width: capsuleSize.width + margin * 2,
@@ -810,7 +973,7 @@ final class OverlayController: NSObject {
         // the blur the way the native dictation HUD lets it. The rim is drawn
         // by the HUD view as a lit glass edge instead of a flat layer border.
         visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = capsuleSize.height / 2
+        visualEffect.layer?.cornerRadius = capsuleRadius(forHeight: capsuleSize.height)
         visualEffect.layer?.masksToBounds = true
         visualEffect.layer?.backgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.07).cgColor
         effectView = visualEffect
@@ -836,8 +999,8 @@ final class OverlayController: NSObject {
         containerView.layer?.shadowOffset = CGSize(width: 0, height: -5)
         containerView.layer?.shadowPath = CGPath(
             roundedRect: visualEffect.frame,
-            cornerWidth: capsuleSize.height / 2,
-            cornerHeight: capsuleSize.height / 2,
+            cornerWidth: capsuleRadius(forHeight: capsuleSize.height),
+            cornerHeight: capsuleRadius(forHeight: capsuleSize.height),
             transform: nil
         )
 
@@ -891,27 +1054,35 @@ final class OverlayController: NSObject {
     /// different width. Height changes need a fresh mask (the radius is tied
     /// to it), which resizePanel takes care of.
     private static func capsuleMask(size: NSSize) -> NSImage {
+        let radius = capsuleRadius(forHeight: size.height)
         let mask = NSImage(size: size, flipped: false) { rect in
             NSColor.black.setFill()
             NSBezierPath(
                 roundedRect: rect,
-                xRadius: rect.height / 2,
-                yRadius: rect.height / 2
+                xRadius: radius,
+                yRadius: radius
             ).fill()
             return true
         }
         mask.capInsets = NSEdgeInsets(
             top: 0,
-            left: size.height / 2 + 1,
+            left: radius + 1,
             bottom: 0,
-            right: size.height / 2 + 1
+            right: radius + 1
         )
         mask.resizingMode = .stretch
         return mask
     }
 
+    private static let morphDuration: TimeInterval = 0.22
+
     /// Morph the panel to the capsule size the current state wants, keeping
     /// it horizontally centred and anchored to the bottom edge.
+    ///
+    /// Capsule, window and shadow move as one motion. The capsule used to be
+    /// set to its final size synchronously while only the window animated —
+    /// on every stop that read as a snap, a sideways slide, then another
+    /// jump into the result size.
     private func syncPanelSize() {
         guard let wanted = hudView.desiredSize() else { return }
 
@@ -920,9 +1091,10 @@ final class OverlayController: NSObject {
             return
         }
 
+        let radius = capsuleRadius(forHeight: wanted.height)
         if abs(current.height - wanted.height) > 1 {
             effectView.maskImage = OverlayController.capsuleMask(size: wanted)
-            effectView.layer?.cornerRadius = wanted.height / 2
+            effectView.layer?.cornerRadius = radius
         }
 
         let margin = OverlayController.shadowMargin
@@ -931,16 +1103,33 @@ final class OverlayController: NSObject {
         frame.size.width = wanted.width + margin * 2
         frame.size.height = wanted.height + margin * 2
 
-        effectView.frame = NSRect(x: margin, y: margin, width: wanted.width, height: wanted.height)
-        containerView.interactiveFrame = effectView.frame
-        containerView.layer?.shadowPath = CGPath(
-            roundedRect: effectView.frame,
-            cornerWidth: wanted.height / 2,
-            cornerHeight: wanted.height / 2,
+        let effectFrame = NSRect(x: margin, y: margin, width: wanted.width, height: wanted.height)
+        containerView.interactiveFrame = effectFrame
+
+        // shadowPath does not follow the animator; give it its own matching
+        // animation, then commit the final value.
+        let shadowPath = CGPath(
+            roundedRect: effectFrame,
+            cornerWidth: radius,
+            cornerHeight: radius,
             transform: nil
         )
+        if let layer = containerView.layer {
+            let shadowAnimation = CABasicAnimation(keyPath: "shadowPath")
+            shadowAnimation.fromValue = layer.shadowPath
+            shadowAnimation.toValue = shadowPath
+            shadowAnimation.duration = OverlayController.morphDuration
+            shadowAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(shadowAnimation, forKey: "shadowPath")
+            layer.shadowPath = shadowPath
+        }
 
-        panel.setFrame(frame, display: true, animate: true)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = OverlayController.morphDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            effectView.animator().frame = effectFrame
+            panel.animator().setFrame(frame, display: true)
+        }
     }
 
     private func positionPanel(panelSize: NSSize) {
@@ -1026,6 +1215,12 @@ final class OverlayController: NSObject {
             hudView.setProgress(parts.count == 2 ? Double(parts[1]) : nil)
         case "detail":
             hudView.setDetail(parts.count == 2 ? parts[1] : "")
+        case "final":
+            hudView.setTranscript(final: parts.count == 2 ? parts[1] : "", partial: nil)
+            syncPanelSize()
+        case "partial":
+            hudView.setTranscript(final: nil, partial: parts.count == 2 ? parts[1] : "")
+            syncPanelSize()
         case "quit":
             close()
         default:

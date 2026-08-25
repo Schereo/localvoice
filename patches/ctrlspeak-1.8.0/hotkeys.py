@@ -218,6 +218,14 @@ class _OverlaySession:
         """Set the pill's secondary line. Newlines would desync the protocol."""
         self.commands.put("detail " + " ".join(str(text).split()))
 
+    def set_final_text(self, text):
+        """Replace the pill's confirmed live-transcript line."""
+        self.commands.put(("final " + " ".join(str(text).split())).rstrip())
+
+    def set_partial_text(self, text):
+        """Replace the pill's dimmed in-progress guess."""
+        self.commands.put(("partial " + " ".join(str(text).split())).rstrip())
+
     def close(self):
         self.commands.put("quit")
 
@@ -332,6 +340,19 @@ def _set_overlay_detail(text):
             _overlay_session.set_detail(text)
 
 
+def set_overlay_transcript(final=None, partial=None):
+    """Update the live transcript in the recording pill; None leaves a half
+    untouched. Called from the transcription worker, hence public and
+    self-locking."""
+    with _overlay_session_lock:
+        if _overlay_session is None:
+            return
+        if final is not None:
+            _overlay_session.set_final_text(final)
+        if partial is not None:
+            _overlay_session.set_partial_text(partial)
+
+
 def _apply_language(language, persist=True):
     """Apply a language selected in the recorder HUD or edited in the config.
 
@@ -383,6 +404,75 @@ def _perform_open_config():
         logger.info(f"Opened the configuration file: {config_path}")
     except OSError as exc:
         logger.warning(f"Could not open the configuration file: {exc}")
+
+
+# --- Live transcript preview ----------------------------------------------
+#
+# With "live-preview" on, the pill shows the transcript while the user talks:
+# confirmed phrases come from the normal segment pipeline (pushed by the
+# transcription worker), and the dimmed guess of the phrase in progress comes
+# from this ticker. About once a second it snapshots the still-open segment
+# buffer and hands it to the transcription queue as a preview job — the same
+# worker thread decodes it, because MLX streams are thread-local.
+
+PREVIEW_INTERVAL_S = 1.0
+# A guess only needs the tail of a long phrase, and decoding minutes of audio
+# every second would starve the pipeline the preview rides on.
+PREVIEW_MAX_WINDOW_S = 15.0
+PREVIEW_MIN_AUDIO_S = 0.6
+
+
+def _live_preview_ticker():
+    """Feed snapshots of the open segment to the worker while recording."""
+    import numpy as np
+    from utils.audio import SAMPLE_RATE
+
+    while state.live_preview_active and is_recording():
+        time.sleep(PREVIEW_INTERVAL_S)
+        if not (state.live_preview_active and is_recording()):
+            break
+
+        # Real segments always win: only ask for a guess while the pipeline
+        # is idle, so the preview can never delay a confirmed phrase.
+        if state.transcription_queue.unfinished_tasks > 0:
+            continue
+
+        manager = state.audio_manager
+        # Snapshot under the GIL; the callback thread only appends, and the
+        # buffer is swapped wholesale when a segment closes.
+        chunks = list(manager.audio_buffer)
+        if not chunks:
+            continue
+        try:
+            audio = np.concatenate(chunks)
+        except ValueError:
+            continue
+        if len(audio) < int(PREVIEW_MIN_AUDIO_S * SAMPLE_RATE):
+            continue
+
+        max_samples = int(PREVIEW_MAX_WINDOW_S * SAMPLE_RATE)
+        if len(audio) > max_samples:
+            audio = audio[-max_samples:]
+
+        import transcription
+
+        state.transcription_queue.put(
+            (transcription.PREVIEW_JOB, audio, manager.segments_queued)
+        )
+
+    logger.debug("Live preview ticker finished.")
+
+
+def _start_live_preview():
+    """Arm the live preview for this session if the config asks for it."""
+    state.live_preview_active = localvoice_config.as_bool("live-preview")
+    if not state.live_preview_active:
+        return
+
+    threading.Thread(
+        target=_live_preview_ticker, name="ctrlspeak-live-preview", daemon=True
+    ).start()
+    logger.info("Live transcript preview enabled for this session.")
 
 
 def _start_queue_recording():
@@ -510,6 +600,7 @@ def _perform_activate():
         if streaming.is_model_streaming_capable():
             logger.info("Using STREAMING mode (model supports streaming)")
             _current_session_streaming = True
+            state.live_preview_active = False
             streaming.start_streaming()
         else:
             logger.info("Using QUEUE mode (batch transcription)")
@@ -518,6 +609,8 @@ def _perform_activate():
 
         play_start_beep()
         _start_recording_overlay()
+        if not _current_session_streaming:
+            _start_live_preview()
 
     else:
         # =================================================================
@@ -526,6 +619,9 @@ def _perform_activate():
 
         logger.info("Stop activated. Stopping audio recording...")
         play_stop_beep()
+        # The session is over: the ticker stops feeding snapshots, and any
+        # preview still in the queue is skipped by the worker's staleness check.
+        state.live_preview_active = False
         # Music comes back right away, not after transcription: the recording
         # is over the moment the stop beep plays.
         media_pause.resume_paused()

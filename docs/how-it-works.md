@@ -10,9 +10,15 @@ The same launcher implements the permission wizard (`--setup`): it requests Micr
 
 ## The pill
 
-The pill is a standalone Swift/AppKit process driven over a line protocol on stdin: `state <mode>`, `level <0..1>`, `progress <0..1>` (negative = indeterminate), `detail <text>`, `quit`. Recording sessions stream ctrlSPEAK's existing RMS levels to it — no second microphone stream is opened. The window is non-activating, floats across Spaces, and never takes focus from the field the text will land in.
+The pill is a standalone Swift/AppKit process driven over a line protocol on stdin: `state <mode>`, `level <0..1>`, `progress <0..1>` (negative = indeterminate), `detail <text>`, `final <text>`, `partial <text>`, `quit`. Recording sessions stream ctrlSPEAK's existing RMS levels to it — no second microphone stream is opened. The window is non-activating, floats across Spaces, and never takes focus from the field the text will land in.
 
 The capsule is frosted with the system's adaptive material, so contrast does not depend on what sits behind it; every chrome color derives from an appearance-aware ink. Result states measure their text and morph the capsule to fit; single-line states use a flatter 44 pt capsule. The rim is drawn as a lit glass edge, and separation comes from a shadow layer whose transparent margin refuses hit-testing, so clicks beside the pill fall through.
+
+## The live transcript
+
+With `live-preview` on, the recording pill shows the transcript as it forms. The two protocol commands mirror the two kinds of text: `final` carries the phrases the segment pipeline has finished (full ink — this text will be inserted verbatim), `partial` carries the model's current guess at the phrase being spoken (dimmed, because it may still change). The capsule keeps its chrome in the bottom 44 pt band and grows upward around up to two lines of text, oldest words scrolling off behind an ellipsis; beyond the 56 pt status pill the corner radius is capped, so the grown capsule reads as a rounded card rather than a lozenge.
+
+The guess costs extra decodes, so it is built to never compete with the real pipeline: about once a second, and only while the transcription queue is idle, a snapshot of the still-open segment (at most its last 15 s) is queued as a preview job for the same worker thread the real segments use — MLX streams are thread-local, so there is exactly one decoding thread. Each snapshot is stamped with the segment counter; once the audio manager finalizes that audio into a real segment, the stamp no longer matches and the stale guess is dropped instead of racing the confirmed line. The inserted result is byte-for-byte the same with the preview on or off.
 
 ## First launch and downloads
 

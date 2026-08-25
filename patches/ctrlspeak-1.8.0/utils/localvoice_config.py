@@ -38,6 +38,7 @@ DEFAULTS = {
     "menubar": "on",
     "pause-media": "on",
     "vocabulary": "",
+    "live-preview": "off",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
@@ -94,6 +95,11 @@ _KEY_BLOCKS = {
 # jargon. Comma-separated: vocabulary = Ada, ctrlSPEAK, MLX
 # The model reads this list before every recording; keep it to the terms
 # that actually come up, a few dozen at most.
+""",
+    "live-preview": """\
+# Show the transcript inside the recording pill while you speak: confirmed
+# text after each pause, plus a dimmed live guess of the current phrase.
+# The live guess re-runs the model about once a second while you talk.
 """,
 }
 
