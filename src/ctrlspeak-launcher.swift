@@ -437,6 +437,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             title: "Pause Media While Recording", key: "pause-media",
             selector: #selector(togglePauseMedia), defaultValue: "on"
         ))
+        menu.addItem(toggleItem(
+            title: "Live Transcript Preview", key: "live-preview",
+            selector: #selector(toggleLivePreview)
+        ))
 
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Open Config File", selector: #selector(openConfig), key: ","))
@@ -523,6 +527,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func togglePauseMedia(_ sender: NSMenuItem) {
         writeConfigValue("pause-media", sender.state == .on ? "off" : "on")
+    }
+
+    @objc private func toggleLivePreview(_ sender: NSMenuItem) {
+        writeConfigValue("live-preview", sender.state == .on ? "off" : "on")
     }
 
     @objc private func openConfig() {

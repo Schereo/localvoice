@@ -97,6 +97,12 @@ class AudioManager:
         self.is_collecting = False
         self.audio_buffer = []
 
+        # Counts the segments handed to the transcription queue this session.
+        # The live preview stamps each snapshot of the open segment with this
+        # number; once it moves on, that snapshot's audio has been finalized
+        # and the stale guess must not be shown.
+        self.segments_queued = 0
+
         # Rolling pre-speech buffer. It bridges two gaps that both eat the
         # first word: audio arriving before is_collecting flips (the moment
         # between the activation tap and recording actually starting), and
@@ -367,6 +373,7 @@ class AudioManager:
                          logger.info(f"Queueing segment of {segment_duration_s:.2f}s for transcription.")
                          try:
                              self.transcription_queue.put(segment_data)
+                             self.segments_queued += 1
                          except Exception as q_e:
                              logger.error(f"Error putting segment onto queue: {q_e}")
                     else:
@@ -425,6 +432,7 @@ class AudioManager:
         
         # Phase 3: Reset buffer and silence state
         self.reset_collected_audio() # Now resets buffer and silence state
+        self.segments_queued = 0
         self.set_is_collecting(True) # This also starts the timer/live display
         # Beep now played in ctrlspeak.py
     
@@ -450,6 +458,7 @@ class AudioManager:
                 if segment_duration_s >= self.MIN_CHUNK_DURATION_S:
                     logger.info(f"Queueing final segment of {segment_duration_s:.2f}s for transcription.")
                     self.transcription_queue.put(segment_data)
+                    self.segments_queued += 1
                 else:
                     logger.info(f"Skipping short final segment ({segment_duration_s:.2f}s) below minimum duration {self.MIN_CHUNK_DURATION_S}s.")
                     

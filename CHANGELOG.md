@@ -11,6 +11,16 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Added
+
+- Live transcript in the recording pill (`live-preview = on`, off by
+  default): confirmed phrases appear in full ink after each pause, and a
+  dimmed guess of the phrase being spoken updates about once a second. The
+  capsule grows around up to two lines, newest words always visible. The
+  inserted result is unchanged — the preview only shows work the segment
+  pipeline was already doing, plus low-priority guess decodes that never
+  delay it.
+
 ## [1.2.0] — 2026-08-23
 
 ### Added
