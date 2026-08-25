@@ -64,6 +64,11 @@ mic_standby = False
 # automatic mode, where the pill reports it back after transcription.
 last_detected_language = None
 
+# Whether this recording session shows the live transcript in the pill.
+# Read from the config once per session start, so a mid-recording edit of
+# "live-preview" cannot half-apply.
+live_preview_active = False
+
 # Recording timing
 recording_start_time = None
 

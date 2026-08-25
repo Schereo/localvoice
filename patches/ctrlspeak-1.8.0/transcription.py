@@ -15,6 +15,72 @@ warnings.filterwarnings('ignore', category=RuntimeWarning, module='tqdm')
 
 logger = logging.getLogger("ctrlspeak")
 
+# Marker for live-preview jobs on the transcription queue: a snapshot of the
+# still-open segment, decoded only to feed the pill's dimmed guess. Real
+# segments stay plain numpy arrays, so the queue format is unchanged for them.
+PREVIEW_JOB = "live-preview"
+
+
+def _transcribe_file(model, audio_data, temp_file_path):
+    """Write one audio array to the temp WAV and decode it. Returns text or None."""
+    if audio_data.dtype != np.float32:
+        audio_data = audio_data.astype(np.float32)
+    sf.write(temp_file_path, audio_data, SAMPLE_RATE)
+
+    results = model.transcribe_batch(
+        [temp_file_path],
+        source_lang=state.source_lang,
+        target_lang=state.target_lang,
+    )
+    if results and isinstance(results, list):
+        return results[0]
+    return None
+
+
+def _handle_preview_job(model, audio_data, generation):
+    """Decode a snapshot of the open segment and show it as the pill's guess.
+
+    The generation stamp is the segment counter at snapshot time: once the
+    audio manager has finalized that audio into a real segment, the snapshot
+    is stale and decoding (or showing) it would race the confirmed line.
+    Checked before the decode to skip wasted work, and again after, because
+    the segment can close while the model runs.
+    """
+    manager = state.audio_manager
+
+    def _stale():
+        return (
+            manager is None
+            or not manager.is_collecting
+            or generation != manager.segments_queued
+            or not state.live_preview_active
+        )
+
+    if _stale():
+        return
+
+    temp_file_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            temp_file_path = tmp.name
+        text = _transcribe_file(model, audio_data, temp_file_path)
+    except Exception as exc:
+        if "fds_to_keep" not in str(exc):
+            logger.warning(f"Live preview decode failed: {exc}")
+        return
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except OSError:
+                pass
+
+    if text and not _stale():
+        from hotkeys import set_overlay_transcript
+
+        set_overlay_transcript(partial=text)
+
+
 def transcription_worker(model, work_queue, results_list, source_lang, target_lang):
     """
     Pulls audio data from queue, transcribes using the real model (via temp file),
@@ -42,6 +108,16 @@ def transcription_worker(model, work_queue, results_list, source_lang, target_la
                 work_queue.task_done()
                 logger.debug("Worker thread loop terminating.")
                 break
+
+            if (
+                isinstance(audio_data, tuple)
+                and len(audio_data) == 3
+                and audio_data[0] == PREVIEW_JOB
+            ):
+                _, preview_audio, generation = audio_data
+                _handle_preview_job(model, preview_audio, generation)
+                work_queue.task_done()
+                continue
 
             logger.debug(f"Worker received chunk of type {type(audio_data)} and shape {getattr(audio_data, 'shape', 'N/A')}")
 
@@ -96,6 +172,21 @@ def transcription_worker(model, work_queue, results_list, source_lang, target_la
             if text:
                 state.console.print(f"\n[dim]{text}[/dim]")
                 results_list.append(text)
+
+                # While the recording is still open, the pill mirrors what is
+                # settled so far; the dimmed guess is cleared because its
+                # audio is part of the confirmed line now. After stop the pill
+                # is already in the processing state — nothing to mirror.
+                if (
+                    state.live_preview_active
+                    and state.audio_manager is not None
+                    and state.audio_manager.is_collecting
+                ):
+                    from hotkeys import set_overlay_transcript
+
+                    set_overlay_transcript(
+                        final=" ".join(results_list).strip(), partial=""
+                    )
 
             work_queue.task_done()
 

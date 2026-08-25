@@ -11,8 +11,27 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Added
+
+- Live transcript in the recording pill (`live-preview = on`, off by
+  default): confirmed phrases appear in full ink after each pause, and a
+  dimmed guess of the phrase being spoken updates about once a second. The
+  capsule grows around up to two lines, newest words always visible. The
+  inserted result is unchanged — the preview only shows work the segment
+  pipeline was already doing, plus low-priority guess decodes that never
+  delay it.
+
+### Changed
+
+- The language pill wears the same quiet styling as the result pills —
+  small icon, regular-weight text, a capsule sized to its content — instead
+  of the abandoned bold look.
+
 ### Fixed
 
+- The pill now morphs between sizes as one motion. The capsule used to snap
+  to its final size while only the window animated, which read as a jump, a
+  sideways slide, then another jump on every stop.
 - With a `vocabulary` configured, near-silent audio could make the decoder
   emit the word list over and over — and paste it. Three layers now stand in
   the way: the standard temperature-fallback ladder (its compression-ratio
@@ -49,17 +68,32 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   device list), language mode, compact and standby toggles, open config,
   restart, quit. Every action writes to the config file the service already
   watches — menu and file are the same settings. `menubar = off` hides it.
-
-### Added (post-1.2.0 branch)
-
-- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
-  jargon, handed to Whisper as its initial prompt so it reuses their exact
-  spelling — verified with synthesized audio containing an invented name.
-  Applies from the next recording; Whisper reads at most the last ~224
-  tokens of the list.
+- A watchdog restarts the service when a command makes no progress for 90
+  seconds, showing a pill on the way out. `os._exit` is the only exit that
+  works with threads stuck in a kernel mutex; the LaunchAgent brings the
+  service back seconds later.
 
 ### Changed
 
+- Microphone capture runs in its own process. CoreAudio's HAL deadlocks in the
+  stream teardown path, and a mutex wedged inside our own process cannot be
+  broken from Python — every earlier mitigation worked around that rather than
+  removing it. Releasing the microphone is now killing a child process, which
+  the kernel always honours immediately. The indicator goes out the moment a
+  recording ends, and opening is bounded: the child reports `ready` or
+  `open-failed`, and the parent raises after five seconds instead of hanging.
+- Hotkey callbacks only enqueue; a worker thread runs the commands one at a
+  time and in order. The callbacks run on pynput's `CGEventTap`, so anything
+  blocking there used to take key handling down with it — while the process
+  stayed alive and `KeepAlive` never fired, leaving dictation dead behind a
+  healthy-looking service.
+- The installer records what it deployed in
+  `~/.config/ctrlspeak/installed-version`, and `doctor.sh` compares that
+  instead of the app bundle's version. The bundle only changes when it is
+  rebuilt, while most of LocalVoice lives outside it, so an up-to-date install
+  could report as stale. The stamp sits outside the bundle deliberately:
+  writing inside a signed bundle changes its signature, and under ad-hoc
+  signing that means losing the macOS permissions. ([#7])
 - Quieter result pills: regular-weight 12.5 pt text instead of semibold
   14 pt, a smaller status icon, and a tighter capsule. The transcription
   state drops its spinner and "Transcribing" label — a small capsule with
@@ -70,6 +104,19 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 - The `Detected DE` line the pill showed after auto-mode recordings. The
   transcript itself already says which language came out; the detected
   language still lands in the log.
+- The bounded teardown join and the PortAudio device-list refresh from 1.0.1.
+  Both existed to survive a deadlock and a stale device list inside the
+  process that owned the stream. A fresh capture process per recording
+  re-runs `Pa_Initialize` and cannot deadlock the parent, so both are
+  superseded rather than dropped.
+
+### Added (post-1.2.0 branch)
+
+- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
+  jargon, handed to Whisper as its initial prompt so it reuses their exact
+  spelling — verified with synthesized audio containing an invented name.
+  Applies from the next recording; Whisper reads at most the last ~224
+  tokens of the list.
 
 ### Fixed
 
