@@ -11,6 +11,39 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-23
+
+### Added
+
+- One configuration file, `~/.config/localvoice/config`, now carries every
+  user-facing setting: `hotkey`, `language`, `compact`, `mic-standby`. The
+  running service applies edits within a couple of seconds — no restart — and
+  values from the old single-purpose files under `~/.config/ctrlspeak` are
+  migrated in on first start. Reference: `docs/configuration.md`.
+- Cmd+, while the recording pill is on screen opens the config file in the
+  default text editor.
+- Compact pill: `compact = on` hides the language badge, leaving dot,
+  waveform and timer, for people who keep the language fixed (usually on
+  `auto`).
+- Microphone selection (`microphone` key): `built-in` by default, so
+  connected Bluetooth headphones no longer become the dictation mic — opening
+  an AirPods microphone drops all its audio into the phone-call profile.
+  `system` restores the old follow-the-default behaviour; a device name pins
+  any other microphone. Stored as a name, so the choice survives replugs.
+- Media pause (`pause-media`, on by default): starting a recording pauses a
+  playing Spotify or Apple Music, and stopping resumes exactly what was
+  paused — never blind play/pause toggling, so silent players stay silent.
+  Uses Apple Events, so macOS asks once per player for the Automation
+  permission.
+- Menu bar icon, hosted in the launcher process: microphone picker (live
+  device list), language mode, compact and standby toggles, open config,
+  restart, quit. Every action writes to the config file the service already
+  watches — menu and file are the same settings. `menubar = off` hides it.
+- A watchdog restarts the service when a command makes no progress for 90
+  seconds, showing a pill on the way out. `os._exit` is the only exit that
+  works with threads stuck in a kernel mutex; the LaunchAgent brings the
+  service back seconds later.
+
 ### Changed
 
 - Microphone capture runs in its own process. CoreAudio's HAL deadlocks in the
@@ -32,21 +65,39 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   could report as stale. The stamp sits outside the bundle deliberately:
   writing inside a signed bundle changes its signature, and under ad-hoc
   signing that means losing the macOS permissions. ([#7])
-
-### Added
-
-- A watchdog restarts the service when a command makes no progress for 90
-  seconds, showing a pill on the way out. `os._exit` is the only exit that
-  works with threads stuck in a kernel mutex; the LaunchAgent brings the
-  service back seconds later.
+- Quieter result pills: regular-weight 12.5 pt text instead of semibold
+  14 pt, a smaller status icon, and a tighter capsule. The transcription
+  state drops its spinner and "Transcribing" label — a small capsule with
+  the pulsing dot row is all a one-second state needs.
 
 ### Removed
 
+- The `Detected DE` line the pill showed after auto-mode recordings. The
+  transcript itself already says which language came out; the detected
+  language still lands in the log.
 - The bounded teardown join and the PortAudio device-list refresh from 1.0.1.
   Both existed to survive a deadlock and a stale device list inside the
   process that owned the stream. A fresh capture process per recording
   re-runs `Pa_Initialize` and cannot deadlock the parent, so both are
   superseded rather than dropped.
+
+### Added (post-1.2.0 branch)
+
+- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
+  jargon, handed to Whisper as its initial prompt so it reuses their exact
+  spelling — verified with synthesized audio containing an invented name.
+  Applies from the next recording; Whisper reads at most the last ~224
+  tokens of the list.
+
+### Fixed
+
+- A language choice could appear not to stick: a service started outside
+  launchd (for example by double-clicking the app) ran *beside* the launchd
+  one, each with its own hotkey listener, pill and language state — a badge
+  click saved the choice in one instance while the other kept answering with
+  the old language. The service now takes a single-instance lock and a second
+  arrival exits immediately; install, restart and uninstall also clear any
+  stray instances from before the lock existed.
 
 ## [1.1.0] — 2026-08-14
 
@@ -110,7 +161,8 @@ core and grows its error log by gigabytes a day.
 - Pre-speech onset buffer, so a soft word onset is no longer clipped.
 - Clipboard fallback when no focused field can take the text.
 
-[Unreleased]: https://github.com/Schereo/localvoice/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Schereo/localvoice/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Schereo/localvoice/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Schereo/localvoice/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Schereo/localvoice/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Schereo/localvoice/releases/tag/v1.0.0

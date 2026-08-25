@@ -27,12 +27,13 @@ Clicking the badge cycles this list. In `drawLanguageSelection`, add a display
 name for the preview mode (`case "ES": languageName = "Spanish"`). The badge
 chip fits labels up to four letters as-is.
 
-## 3. The runtime validation — `patches/ctrlspeak-1.8.0/hotkeys.py`
+## 3. The runtime validation — `patches/ctrlspeak-1.8.0/utils/localvoice_config.py`
 
-In `_apply_language`, extend the accepted set:
+Extend the one set every consumer (badge clicks, the config file, the
+installer's Python step) validates against:
 
 ```python
-if language not in {"de", "en", "es", "auto"}:
+VALID_LANGUAGES = {"de", "en", "es", "auto"}
 ```
 
 ## 4. The installer — `install.sh`
@@ -51,7 +52,7 @@ the Python patches live *outside* the app bundle:
 ```bash
 xcrun swiftc src/ctrlspeak-overlay.swift -o /opt/homebrew/bin/ctrlspeak-overlay
 install -m 644 patches/ctrlspeak-1.8.0/models/whisper_mlx.py /opt/homebrew/opt/ctrlspeak/libexec/models/whisper_mlx.py
-install -m 644 patches/ctrlspeak-1.8.0/hotkeys.py /opt/homebrew/opt/ctrlspeak/libexec/hotkeys.py
+install -m 644 patches/ctrlspeak-1.8.0/utils/localvoice_config.py /opt/homebrew/opt/ctrlspeak/libexec/utils/localvoice_config.py
 ./scripts/restart.sh
 ```
 

@@ -33,6 +33,56 @@ logger = logging.getLogger("ctrlspeak.audio")
 SAMPLE_RATE = 16000  # NeMo expects 16kHz
 CHANNELS = 1
 
+# Device names that identify a Mac's internal microphone. Substring matched
+# against CoreAudio names, which localized systems keep the model name in
+# ("MacBook Pro-Mikrofon"), so the model prefix is the stable part.
+_BUILT_IN_MARKERS = ("macbook", "built-in", "imac", "mac mini", "mac studio")
+
+
+def resolve_input_device(setting):
+    """Map the config's microphone setting to a capture device.
+
+    Returns the full CoreAudio device *name* rather than a PortAudio index:
+    indices shift whenever a Bluetooth device comes or goes, while the name is
+    re-resolved by sounddevice each time the capture process opens — so a
+    setting keeps pointing at the same physical microphone across replugs.
+
+    'system' -> None (whatever macOS considers the default input — with
+    AirPods connected, that is the AirPods, which also drags audio output down
+    into the phone-call profile while the mic is open). 'built-in' -> the
+    Mac's internal microphone. Anything else -> case-insensitive substring
+    match on the input devices' names. Unresolvable settings warn and fall
+    back to the system default, so dictation keeps working either way.
+    """
+    setting = str(setting or "system").strip()
+    lowered = setting.lower()
+    if lowered == "system":
+        return None
+
+    try:
+        inputs = [
+            device["name"]
+            for device in sd.query_devices()
+            if device["max_input_channels"] > 0
+        ]
+    except Exception as exc:
+        logger.warning(f"Could not list input devices ({exc}); using the system default.")
+        return None
+
+    if lowered == "built-in":
+        for name in inputs:
+            if any(marker in name.lower() for marker in _BUILT_IN_MARKERS):
+                return name
+        logger.warning("No built-in microphone found; using the system default input.")
+        return None
+
+    for name in inputs:
+        if lowered in name.lower():
+            return name
+
+    logger.warning(f"No input device matches '{setting}'; using the system default input.")
+    return None
+
 class AudioManager:
     """Class to manage audio recording and state.
 
