@@ -13,6 +13,13 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Added
 
+- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
+  jargon, handed to Whisper as its initial prompt so it reuses their exact
+  spelling — verified with synthesized audio containing an invented name.
+  Applies from the next recording; Whisper reads at most the last ~224
+  tokens of the list. The list is parsed defensively: inline ` # ` comments
+  and Whisper special-token strings are stripped, and fullwidth/ideographic
+  commas separate entries just like ASCII ones.
 - Live transcript in the recording pill (`live-preview = on`, off by
   default): confirmed phrases appear in full ink after each pause, and a
   dimmed guess of the phrase being spoken updates about once a second. The
@@ -23,15 +30,31 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Changed
 
+- Quieter result pills: regular-weight 12.5 pt text instead of semibold
+  14 pt, a smaller status icon, and a capsule that hugs its text. The
+  transcription state drops its spinner and "Transcribing" label — a small
+  capsule with the pulsing dot row is all a one-second state needs.
 - The language pill wears the same quiet styling as the result pills —
   small icon, regular-weight text, a capsule sized to its content — instead
   of the abandoned bold look.
+- Transcription conditions on previously decoded text again (Whisper's
+  default): the vocabulary bias now carries past the first 30-second window
+  of a long take, reinforced by the correctly spelled text itself. Safe now
+  that the temperature-fallback ladder resets the prompt after any
+  high-temperature retry, which is what kept this disabled before.
 
 ### Fixed
 
 - The pill now morphs between sizes as one motion. The capsule used to snap
   to its final size while only the window animated, which read as a jump, a
   sideways slide, then another jump on every stop.
+- With a `vocabulary` configured, near-silent audio could make the decoder
+  emit the word list over and over — and paste it. Three layers now stand in
+  the way: the standard temperature-fallback ladder (its compression-ratio
+  retry is what breaks greedy decoding's loops), dropping segments the model
+  itself scores as probable non-speech, and an echo suppressor that collapses
+  stuttered vocabulary words and refuses a transcript consisting of nothing
+  but the word list read back.
 
 ## [1.2.0] — 2026-08-23
 
@@ -87,10 +110,6 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   could report as stale. The stamp sits outside the bundle deliberately:
   writing inside a signed bundle changes its signature, and under ad-hoc
   signing that means losing the macOS permissions. ([#7])
-- Quieter result pills: regular-weight 12.5 pt text instead of semibold
-  14 pt, a smaller status icon, and a tighter capsule. The transcription
-  state drops its spinner and "Transcribing" label — a small capsule with
-  the pulsing dot row is all a one-second state needs.
 
 ### Removed
 
@@ -102,14 +121,6 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   process that owned the stream. A fresh capture process per recording
   re-runs `Pa_Initialize` and cannot deadlock the parent, so both are
   superseded rather than dropped.
-
-### Added (post-1.2.0 branch)
-
-- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
-  jargon, handed to Whisper as its initial prompt so it reuses their exact
-  spelling — verified with synthesized audio containing an invented name.
-  Applies from the next recording; Whisper reads at most the last ~224
-  tokens of the list.
 
 ### Fixed
 
