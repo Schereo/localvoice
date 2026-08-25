@@ -21,6 +21,18 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   pipeline was already doing, plus low-priority guess decodes that never
   delay it.
 
+### Changed
+
+- The language pill wears the same quiet styling as the result pills —
+  small icon, regular-weight text, a capsule sized to its content — instead
+  of the abandoned bold look.
+
+### Fixed
+
+- The pill now morphs between sizes as one motion. The capsule used to snap
+  to its final size while only the window animated, which read as a jump, a
+  sideways slide, then another jump on every stop.
+
 ## [1.2.0] — 2026-08-23
 
 ### Added
