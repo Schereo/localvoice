@@ -11,6 +11,16 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Fixed
+
+- With a `vocabulary` configured, near-silent audio could make the decoder
+  emit the word list over and over — and paste it. Three layers now stand in
+  the way: the standard temperature-fallback ladder (its compression-ratio
+  retry is what breaks greedy decoding's loops), dropping segments the model
+  itself scores as probable non-speech, and an echo suppressor that collapses
+  stuttered vocabulary words and refuses a transcript consisting of nothing
+  but the word list read back.
+
 ## [1.2.0] — 2026-08-23
 
 ### Added
