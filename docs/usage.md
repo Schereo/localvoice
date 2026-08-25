@@ -62,6 +62,17 @@ controls: microphone picker, language mode, compact pill, standby, open
 config, restart, quit. It writes to the same config file the service watches,
 so menu and file never disagree. Hide it with `menubar = off`.
 
+## Live preview
+
+With `live-preview = on`, the recording pill mirrors the transcript as it
+forms: phrases the pipeline has finished appear in full ink after each pause,
+and a dimmed guess of the phrase being spoken updates about once a second in
+between. The capsule grows upward around up to two lines; the oldest words
+scroll off behind an ellipsis. Off by default — the guess re-runs the model
+about once a second while you talk, which costs battery, and the inserted
+result is byte-for-byte the same either way. Details:
+[configuration.md](configuration.md#live-preview).
+
 ## Vocabulary
 
 Teach the transcriber your names and jargon: `vocabulary = Ada, ctrlSPEAK,
