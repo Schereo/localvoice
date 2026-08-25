@@ -14,6 +14,7 @@ config file when it is first created, so an upgrade keeps the user's settings.
 
 import logging
 import os
+import re
 from pathlib import Path
 
 logger = logging.getLogger("ctrlspeak.localvoice_config")
@@ -167,10 +168,37 @@ def hotkey():
     return parse_hotkey(effective("hotkey")) or parse_hotkey(DEFAULTS["hotkey"])
 
 
+# A Whisper special-token string in the vocabulary ("<|endoftext|>" and
+# friends) would make the tokenizer refuse the whole prompt — every recording
+# would fail with nothing pointing at the config line.
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^<>|]*\|>")
+
+
 def vocabulary():
-    """User-taught words the transcriber should spell correctly, as a list."""
+    """User-taught words the transcriber should spell correctly, as a list.
+
+    Parsed the way people actually write config lines: an inline " # ..."
+    annotation is dropped (a space before the # keeps words like "C#" safe),
+    fullwidth and ideographic commas separate entries like ASCII ones, and
+    Whisper special-token strings are stripped rather than crashing every
+    transcription.
+    """
     raw = str(effective("vocabulary") or "")
-    return [word.strip() for word in raw.split(",") if word.strip()]
+    raw = re.split(r"\s+#", raw, maxsplit=1)[0]
+
+    words = []
+    for entry in re.split(r"[,，、]", raw):
+        entry = entry.strip()
+        if not entry:
+            continue
+        cleaned = _SPECIAL_TOKEN_RE.sub("", entry).strip()
+        if cleaned != entry:
+            logger.warning(
+                f"Removed a Whisper special token from vocabulary entry {entry!r}."
+            )
+        if cleaned:
+            words.append(cleaned)
+    return words
 
 
 def ensure_config_file():

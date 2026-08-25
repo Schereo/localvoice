@@ -146,7 +146,14 @@ class WhisperMLXModel(BaseSTTModel):
                 language=language,
                 task="transcribe",
                 temperature=self.DECODE_TEMPERATURES,
-                condition_on_previous_text=False,
+                # Whisper's default, and what carries the vocabulary past the
+                # first 30-second window: the prompt buffer keeps the initial
+                # prompt plus the decoded text, so later windows still see the
+                # taught spellings — reinforced by the correctly spelled text
+                # itself. The repetition loops this used to risk are handled
+                # by the temperature ladder: any fallback above 0.5 makes
+                # mlx_whisper reset the prompt buffer for the next window.
+                condition_on_previous_text=True,
                 initial_prompt=initial_prompt,
                 verbose=None,
             )

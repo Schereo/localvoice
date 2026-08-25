@@ -11,6 +11,28 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Added
+
+- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
+  jargon, handed to Whisper as its initial prompt so it reuses their exact
+  spelling — verified with synthesized audio containing an invented name.
+  Applies from the next recording; Whisper reads at most the last ~224
+  tokens of the list. The list is parsed defensively: inline ` # ` comments
+  and Whisper special-token strings are stripped, and fullwidth/ideographic
+  commas separate entries just like ASCII ones.
+
+### Changed
+
+- Quieter result pills: regular-weight 12.5 pt text instead of semibold
+  14 pt, a smaller status icon, and a capsule that hugs its text. The
+  transcription state drops its spinner and "Transcribing" label — a small
+  capsule with the pulsing dot row is all a one-second state needs.
+- Transcription conditions on previously decoded text again (Whisper's
+  default): the vocabulary bias now carries past the first 30-second window
+  of a long take, reinforced by the correctly spelled text itself. Safe now
+  that the temperature-fallback ladder resets the prompt after any
+  high-temperature retry, which is what kept this disabled before.
+
 ### Fixed
 
 - With a `vocabulary` configured, near-silent audio could make the decoder
@@ -49,21 +71,6 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   device list), language mode, compact and standby toggles, open config,
   restart, quit. Every action writes to the config file the service already
   watches — menu and file are the same settings. `menubar = off` hides it.
-
-### Added (post-1.2.0 branch)
-
-- Custom vocabulary (`vocabulary` key): comma-separated names, brands and
-  jargon, handed to Whisper as its initial prompt so it reuses their exact
-  spelling — verified with synthesized audio containing an invented name.
-  Applies from the next recording; Whisper reads at most the last ~224
-  tokens of the list.
-
-### Changed
-
-- Quieter result pills: regular-weight 12.5 pt text instead of semibold
-  14 pt, a smaller status icon, and a tighter capsule. The transcription
-  state drops its spinner and "Transcribing" label — a small capsule with
-  the pulsing dot row is all a one-second state needs.
 
 ### Removed
 
