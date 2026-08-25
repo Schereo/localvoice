@@ -29,6 +29,14 @@ func loadCompactSetting() -> Bool {
     return compact
 }
 
+/// Corner radius for a capsule of the given height. Half the height up to
+/// the 56 pt status pill — the classic capsule — but capped beyond that: the
+/// recording pill grown around a live transcript reads as a rounded card,
+/// not a lozenge.
+func capsuleRadius(forHeight height: CGFloat) -> CGFloat {
+    min(height / 2, 28)
+}
+
 enum OverlayMode: String {
     case recording
     case processing
@@ -83,10 +91,26 @@ final class RecorderHUDView: NSView {
     private var displayedProgress: CGFloat = 0
     private var detailText = ""
 
+    // The live transcript, split into what is settled and what may still
+    // change: confirmed text is every phrase the model has finished, the
+    // partial is its current guess at the phrase being spoken. Only the
+    // recording state draws them; the capsule grows to fit up to two lines.
+    private var finalTranscript = ""
+    private var partialTranscript = ""
+    private var transcriptCacheKey = ""
+    private var transcriptCache: (text: NSAttributedString, lines: Int)?
+
+    // Recording chrome (dot, waveform, timer, badge) lives in the bottom
+    // 44 pt band. With no transcript the capsule *is* that band; with text
+    // the capsule grows upward while the band — and so the chrome — stays
+    // put on screen.
+    private static let controlBandHeight: CGFloat = 44
+    private var controlBandMidY: CGFloat { RecorderHUDView.controlBandHeight / 2 }
+
     // Right-aligned with the same 18 pt margin the recording dot gets on the
     // left, independent of the panel width the launch mode chose.
     private var languageBadgeRect: NSRect {
-        NSRect(x: bounds.width - 68, y: bounds.midY - 11, width: 50, height: 22)
+        NSRect(x: bounds.width - 68, y: controlBandMidY - 11, width: 50, height: 22)
     }
 
     override init(frame frameRect: NSRect) {
@@ -126,6 +150,90 @@ final class RecorderHUDView: NSView {
         needsDisplay = true
     }
 
+    /// Update one half of the live transcript; nil leaves that half alone.
+    func setTranscript(final: String?, partial: String?) {
+        if let final { finalTranscript = final }
+        if let partial { partialTranscript = partial }
+        transcriptCache = nil
+        transcriptCacheKey = ""
+        needsDisplay = true
+    }
+
+    private var hasTranscript: Bool {
+        !finalTranscript.isEmpty || !partialTranscript.isEmpty
+    }
+
+    private static let transcriptFont = NSFont.systemFont(ofSize: 11.5, weight: .regular)
+
+    private var transcriptLineHeight: CGFloat {
+        let font = RecorderHUDView.transcriptFont
+        return ceil(font.ascender - font.descender + font.leading) + 1
+    }
+
+    /// The suffix of the transcript that fits `maxLines` at `width`, with the
+    /// confirmed part in full ink and the live guess dimmed. Old words fall
+    /// off the front (marked by an ellipsis) so the newest are always visible.
+    private func fittedTranscript(width: CGFloat, maxLines: Int) -> (text: NSAttributedString, lines: Int)? {
+        guard hasTranscript, width > 40 else { return nil }
+
+        let cacheKey = "\(width)|\(isDarkAppearance)|\(finalTranscript)\u{1}\(partialTranscript)"
+        if cacheKey == transcriptCacheKey, let cached = transcriptCache {
+            return cached
+        }
+
+        var words: [(text: Substring, isFinal: Bool)] = []
+        words.append(contentsOf: finalTranscript.split(separator: " ").map { ($0, true) })
+        words.append(contentsOf: partialTranscript.split(separator: " ").map { ($0, false) })
+        guard !words.isEmpty else { return nil }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.lineBreakMode = .byWordWrapping
+
+        func attributed(droppingFirst dropped: Int) -> NSAttributedString {
+            let visible = words[dropped...]
+            let result = NSMutableAttributedString()
+            for (index, word) in visible.enumerated() {
+                var piece = index == 0 && dropped > 0 ? "…" + word.text : String(word.text)
+                if index < visible.count - 1 { piece += " " }
+                result.append(NSAttributedString(string: piece, attributes: [
+                    .font: RecorderHUDView.transcriptFont,
+                    .foregroundColor: ink.withAlphaComponent(word.isFinal ? 0.90 : 0.42),
+                    .paragraphStyle: paragraph,
+                ]))
+            }
+            return result
+        }
+
+        func lineCount(_ text: NSAttributedString) -> Int {
+            let bounds = text.boundingRect(
+                with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin]
+            )
+            return max(1, Int((bounds.height / transcriptLineHeight).rounded()))
+        }
+
+        // Binary search for the fewest dropped words that still fit: the
+        // transcript of a long dictation is measured O(log n) times per
+        // update instead of once per word.
+        var low = 0
+        var high = words.count - 1
+        while low < high {
+            let middle = (low + high) / 2
+            if lineCount(attributed(droppingFirst: middle)) <= maxLines {
+                high = middle
+            } else {
+                low = middle + 1
+            }
+        }
+
+        let text = attributed(droppingFirst: low)
+        let fitted = (text: text, lines: min(maxLines, lineCount(text)))
+        transcriptCacheKey = cacheKey
+        transcriptCache = fitted
+        return fitted
+    }
+
     static func resultTitle(_ mode: OverlayMode) -> String? {
         switch mode {
         case .success: return "Text inserted"
@@ -143,7 +251,17 @@ final class RecorderHUDView: NSView {
     func desiredSize() -> NSSize? {
         switch mode {
         case .recording:
-            return NSSize(width: hideLanguageBadge ? 240 : 300, height: 44)
+            guard hasTranscript else {
+                return NSSize(width: hideLanguageBadge ? 240 : 300, height: 44)
+            }
+            // With live text the capsule widens for a readable line and grows
+            // upward: 44 pt control band + text lines + 10 pt top inset.
+            let width: CGFloat = hideLanguageBadge ? 340 : 380
+            let lines = fittedTranscript(width: width - 48, maxLines: 2)?.lines ?? 1
+            return NSSize(
+                width: width,
+                height: RecorderHUDView.controlBandHeight + CGFloat(lines) * transcriptLineHeight + 10
+            )
         case .processing:
             // Just the dots: transcription takes about a second, too short
             // for a label to earn its width.
@@ -263,8 +381,20 @@ final class RecorderHUDView: NSView {
 
     // The pulsing red dot alone marks the live recording; a "RECORDING"
     // label would say the same thing again and cost 90 pt of pill width.
+    // Chrome sits in the bottom control band; the live transcript, when
+    // there is one, fills the space the capsule grew above it.
     private func drawRecording() {
-        let centerY = bounds.midY
+        let centerY = controlBandMidY
+
+        if hasTranscript {
+            let textRect = NSRect(
+                x: 24,
+                y: RecorderHUDView.controlBandHeight,
+                width: bounds.width - 48,
+                height: bounds.height - RecorderHUDView.controlBandHeight - 10
+            )
+            fittedTranscript(width: textRect.width, maxLines: 2)?.text.draw(in: textRect)
+        }
 
         // Soft pulse plus crisp live dot.
         // The dot sits on the same icon column (center x 27) as the spinner
@@ -299,7 +429,7 @@ final class RecorderHUDView: NSView {
             x: dotRightEdge + gap,
             y: 8,
             width: timerX - gap - (dotRightEdge + gap),
-            height: bounds.height - 16
+            height: RecorderHUDView.controlBandHeight - 16
         ))
 
         drawCenteredText(
@@ -322,7 +452,7 @@ final class RecorderHUDView: NSView {
     // hairline carrying that dual-glint gradient, and a faint sheen across
     // the upper face of the capsule.
     private func drawGlassRim() {
-        let radius = bounds.height / 2
+        let radius = capsuleRadius(forHeight: bounds.height)
 
         func ring(_ outerInset: CGFloat, _ innerInset: CGFloat) -> NSBezierPath {
             let outerRect = bounds.insetBy(dx: outerInset, dy: outerInset)
@@ -810,7 +940,7 @@ final class OverlayController: NSObject {
         // the blur the way the native dictation HUD lets it. The rim is drawn
         // by the HUD view as a lit glass edge instead of a flat layer border.
         visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = capsuleSize.height / 2
+        visualEffect.layer?.cornerRadius = capsuleRadius(forHeight: capsuleSize.height)
         visualEffect.layer?.masksToBounds = true
         visualEffect.layer?.backgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.07).cgColor
         effectView = visualEffect
@@ -836,8 +966,8 @@ final class OverlayController: NSObject {
         containerView.layer?.shadowOffset = CGSize(width: 0, height: -5)
         containerView.layer?.shadowPath = CGPath(
             roundedRect: visualEffect.frame,
-            cornerWidth: capsuleSize.height / 2,
-            cornerHeight: capsuleSize.height / 2,
+            cornerWidth: capsuleRadius(forHeight: capsuleSize.height),
+            cornerHeight: capsuleRadius(forHeight: capsuleSize.height),
             transform: nil
         )
 
@@ -891,20 +1021,21 @@ final class OverlayController: NSObject {
     /// different width. Height changes need a fresh mask (the radius is tied
     /// to it), which resizePanel takes care of.
     private static func capsuleMask(size: NSSize) -> NSImage {
+        let radius = capsuleRadius(forHeight: size.height)
         let mask = NSImage(size: size, flipped: false) { rect in
             NSColor.black.setFill()
             NSBezierPath(
                 roundedRect: rect,
-                xRadius: rect.height / 2,
-                yRadius: rect.height / 2
+                xRadius: radius,
+                yRadius: radius
             ).fill()
             return true
         }
         mask.capInsets = NSEdgeInsets(
             top: 0,
-            left: size.height / 2 + 1,
+            left: radius + 1,
             bottom: 0,
-            right: size.height / 2 + 1
+            right: radius + 1
         )
         mask.resizingMode = .stretch
         return mask
@@ -922,7 +1053,7 @@ final class OverlayController: NSObject {
 
         if abs(current.height - wanted.height) > 1 {
             effectView.maskImage = OverlayController.capsuleMask(size: wanted)
-            effectView.layer?.cornerRadius = wanted.height / 2
+            effectView.layer?.cornerRadius = capsuleRadius(forHeight: wanted.height)
         }
 
         let margin = OverlayController.shadowMargin
@@ -935,8 +1066,8 @@ final class OverlayController: NSObject {
         containerView.interactiveFrame = effectView.frame
         containerView.layer?.shadowPath = CGPath(
             roundedRect: effectView.frame,
-            cornerWidth: wanted.height / 2,
-            cornerHeight: wanted.height / 2,
+            cornerWidth: capsuleRadius(forHeight: wanted.height),
+            cornerHeight: capsuleRadius(forHeight: wanted.height),
             transform: nil
         )
 
@@ -1026,6 +1157,12 @@ final class OverlayController: NSObject {
             hudView.setProgress(parts.count == 2 ? Double(parts[1]) : nil)
         case "detail":
             hudView.setDetail(parts.count == 2 ? parts[1] : "")
+        case "final":
+            hudView.setTranscript(final: parts.count == 2 ? parts[1] : "", partial: nil)
+            syncPanelSize()
+        case "partial":
+            hudView.setTranscript(final: nil, partial: parts.count == 2 ? parts[1] : "")
+            syncPanelSize()
         case "quit":
             close()
         default:
