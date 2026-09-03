@@ -45,6 +45,14 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Fixed
 
+- A decoder loop ("TN, TN, TN, ..." to the token cap) no longer lands in
+  the inserted text. Whisper flags such a window as too repetitive and
+  retries at higher temperatures, but when every retry fails, mlx_whisper
+  returns the last attempt as if it had succeeded — typically for a
+  one-second breath between sentences whose language detection was a
+  coin toss. Windows that failed the repetition check on every rung are
+  now dropped, and any word or short phrase looped four or more times
+  in a row collapses to a single copy as a second line of defense.
 - The pill now morphs between sizes as one motion. The capsule used to snap
   to its final size while only the window animated, which read as a jump, a
   sideways slide, then another jump on every stop.

@@ -27,6 +27,18 @@ class WhisperMLXModel(BaseSTTModel):
     # perfectly confident decode of nothing.
     NO_SPEECH_MAX = 0.6
 
+    # Whisper's own "too repetitive" verdict (gzip ratio of the decoded text).
+    # The temperature ladder retries any window above this; when every rung
+    # fails, mlx_whisper hands back the last attempt regardless — which is how
+    # a one-second breath between sentences once landed as "TN, TN, TN, ..."
+    # decoded to the token cap. A window that failed the check at all six
+    # temperatures never held speech worth keeping.
+    COMPRESSION_RATIO_MAX = 2.4
+
+    # A word or short phrase this many times in a row is a decoder loop, not
+    # dictation. Catches the milder runs that stay under the ratio above.
+    REPEAT_RUN_MIN = 4
+
     def __init__(
         self,
         model_name="mlx-community/whisper-large-v3-turbo",
@@ -159,6 +171,14 @@ class WhisperMLXModel(BaseSTTModel):
             )
 
             text = self._clean_text(self._assemble_text(result))
+            collapsed = self._collapse_repetition(text)
+            if collapsed != text:
+                logger.info(
+                    "Collapsed repetition loop in transcript: %r -> %r",
+                    text[:120],
+                    collapsed[:120],
+                )
+            text = collapsed
             suppressed = self._suppress_prompt_echo(text, vocabulary)
             if suppressed != text:
                 logger.info(
@@ -171,11 +191,14 @@ class WhisperMLXModel(BaseSTTModel):
         return transcriptions
 
     def _assemble_text(self, result):
-        """Join the result's segments, dropping probable non-speech.
+        """Join the result's segments, dropping non-speech and failed decodes.
 
-        result["text"] would include every segment; filtering here catches the
-        case where a stray noise burst decodes — confidently — into words that
-        were never spoken.
+        result["text"] would include every segment; filtering here catches
+        two cases. A stray noise burst that decodes — confidently — into
+        words that were never spoken. And a window whose every fallback
+        temperature still tripped Whisper's repetition check: mlx_whisper
+        returns that last attempt as if it had succeeded, and its text is
+        the decoder looping until the token budget ran out.
         """
         segments = result.get("segments")
         if not segments:
@@ -183,17 +206,48 @@ class WhisperMLXModel(BaseSTTModel):
 
         kept = []
         for segment in segments:
+            text = str(segment.get("text", "")).strip()
             no_speech = float(segment.get("no_speech_prob") or 0.0)
             if no_speech > self.NO_SPEECH_MAX:
                 logger.info(
                     "Dropped non-speech segment (no_speech_prob=%.2f): %r",
                     no_speech,
-                    str(segment.get("text", ""))[:80],
+                    text[:80],
                 )
                 continue
-            kept.append(str(segment.get("text", "")).strip())
+            ratio = float(segment.get("compression_ratio") or 0.0)
+            if ratio > self.COMPRESSION_RATIO_MAX:
+                logger.info(
+                    "Dropped repetitive segment (compression_ratio=%.2f, "
+                    "temperature=%.1f): %r",
+                    ratio,
+                    float(segment.get("temperature") or 0.0),
+                    text[:80],
+                )
+                continue
+            kept.append(text)
 
         return " ".join(part for part in kept if part)
+
+    @classmethod
+    def _collapse_repetition(cls, text):
+        """Collapse a word or short phrase looped many times to one copy.
+
+        Independent of the vocabulary: the loop can be any token the decoder
+        latches onto. Phrases up to four words are matched so "das ist das
+        ist das ist ..." folds too. Three repeats stay untouched — "nein,
+        nein, nein" is real dictation.
+        """
+        if not text:
+            return text
+        pattern = re.compile(
+            r"(?<![\w])"
+            r"((?:[^\s,.;:!?]+)(?:\s+[^\s,.;:!?]+){0,3}?)"
+            rf"(?:[\s,.;:!?]+\1){{{cls.REPEAT_RUN_MIN - 1},}}"
+            r"(?![\w])",
+            flags=re.IGNORECASE,
+        )
+        return pattern.sub(r"\1", text)
 
     @staticmethod
     def _suppress_prompt_echo(text, vocabulary):
