@@ -27,6 +27,19 @@ class WhisperMLXModel(BaseSTTModel):
     # perfectly confident decode of nothing.
     NO_SPEECH_MAX = 0.6
 
+    # Whisper's own "too repetitive" verdict (gzip ratio of the decoded text).
+    # The temperature ladder retries any window above this; when every rung
+    # fails, mlx_whisper hands back the last attempt regardless — which is how
+    # a one-second breath between sentences once landed as "TN, TN, TN, ..."
+    # decoded to the token cap, and a dictation got "Will" 300 times. Such a
+    # segment is re-decoded rather than dropped: it usually opens with real
+    # speech, and the loop ate the budget for everything said after it.
+    COMPRESSION_RATIO_MAX = 2.4
+
+    # A word or short phrase this many times in a row is a decoder loop, not
+    # dictation. Catches the milder runs that stay under the ratio above.
+    REPEAT_RUN_MIN = 4
+
     def __init__(
         self,
         model_name="mlx-community/whisper-large-v3-turbo",
@@ -158,7 +171,16 @@ class WhisperMLXModel(BaseSTTModel):
                 verbose=None,
             )
 
+            self._repair_looped_segments(result, audio_path, language)
             text = self._clean_text(self._assemble_text(result))
+            collapsed = self._collapse_repetition(text)
+            if collapsed != text:
+                logger.info(
+                    "Collapsed repetition loop in transcript: %r -> %r",
+                    text[:120],
+                    collapsed[:120],
+                )
+            text = collapsed
             suppressed = self._suppress_prompt_echo(text, vocabulary)
             if suppressed != text:
                 logger.info(
@@ -175,7 +197,9 @@ class WhisperMLXModel(BaseSTTModel):
 
         result["text"] would include every segment; filtering here catches the
         case where a stray noise burst decodes — confidently — into words that
-        were never spoken.
+        were never spoken. Looped segments have already been re-decoded by
+        _repair_looped_segments; whatever repetition is left is collapsed later
+        in transcribe(), never dropped, so the real words around it survive.
         """
         segments = result.get("segments")
         if not segments:
@@ -183,17 +207,114 @@ class WhisperMLXModel(BaseSTTModel):
 
         kept = []
         for segment in segments:
+            text = str(segment.get("text", "")).strip()
             no_speech = float(segment.get("no_speech_prob") or 0.0)
             if no_speech > self.NO_SPEECH_MAX:
                 logger.info(
                     "Dropped non-speech segment (no_speech_prob=%.2f): %r",
                     no_speech,
-                    str(segment.get("text", ""))[:80],
+                    text[:80],
                 )
                 continue
-            kept.append(str(segment.get("text", "")).strip())
+            kept.append(text)
 
         return " ".join(part for part in kept if part)
+
+    def _is_looped(self, segment):
+        ratio = float(segment.get("compression_ratio") or 0.0)
+        no_speech = float(segment.get("no_speech_prob") or 0.0)
+        return ratio > self.COMPRESSION_RATIO_MAX and no_speech <= self.NO_SPEECH_MAX
+
+    def _repair_looped_segments(self, result, audio_path, language):
+        """Re-decode every segment that failed the repetition check.
+
+        A looped segment is not empty: it usually starts with real speech, and
+        the loop then burned the token budget for the rest of its window, so
+        whatever was said after it never got decoded at all. Dropping it loses
+        both; keeping it keeps the loop. Instead, only that time span is
+        decoded again from scratch — without the previous window's text and
+        without the vocabulary prompt, the two things a loop latches onto.
+
+        The retry is trusted as the better reading of that audio, including
+        when it finds only silence. If the retry loops as well, its text is
+        kept and the repetition collapsed later; if it fails outright, the
+        original text is kept the same way. Nothing is thrown away here.
+        """
+        segments = result.get("segments") or []
+        if not any(self._is_looped(segment) for segment in segments):
+            return
+
+        import mlx_whisper
+
+        repaired = []
+        for segment in segments:
+            if not self._is_looped(segment):
+                repaired.append(segment)
+                continue
+
+            start = float(segment.get("start") or 0.0)
+            end = float(segment.get("end") or 0.0)
+            original = str(segment.get("text", "")).strip()
+            if end <= start:
+                repaired.append(segment)
+                continue
+
+            try:
+                retry = mlx_whisper.transcribe(
+                    audio_path,
+                    path_or_hf_repo=self.model_name,
+                    language=language,
+                    task="transcribe",
+                    temperature=self.DECODE_TEMPERATURES,
+                    condition_on_previous_text=False,
+                    initial_prompt=None,
+                    clip_timestamps=[start, end],
+                    verbose=None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Re-decoding looped segment %.1f-%.1fs failed (%s); keeping "
+                    "it with the repetition collapsed.",
+                    start,
+                    end,
+                    exc,
+                )
+                repaired.append(segment)
+                continue
+
+            retry_segments = retry.get("segments") or []
+            logger.info(
+                "Re-decoded looped segment %.1f-%.1fs (compression_ratio=%.2f): "
+                "%r -> %r",
+                start,
+                end,
+                float(segment.get("compression_ratio") or 0.0),
+                original[:80],
+                " ".join(str(s.get("text", "")).strip() for s in retry_segments)[:120],
+            )
+            repaired.extend(retry_segments)
+
+        result["segments"] = repaired
+
+    @classmethod
+    def _collapse_repetition(cls, text):
+        """Collapse a word or short phrase looped many times to one copy.
+
+        Independent of the vocabulary: the loop can be any token the decoder
+        latches onto. Phrases up to four words are matched so "das ist das
+        ist das ist ..." folds too. Three repeats stay untouched — "nein,
+        nein, nein" is real dictation.
+        """
+        if not text:
+            return text
+        pattern = re.compile(
+            r"(?<![\w])"
+            r"((?:[^\s,.;:!?]+)(?:\s+[^\s,.;:!?]+){0,3}?)"
+            rf"(?:[\s,.;:!?]+\1){{{cls.REPEAT_RUN_MIN - 1},}}"
+            r"(?![\w])",
+            flags=re.IGNORECASE,
+        )
+        return pattern.sub(r"\1", text)
 
     @staticmethod
     def _suppress_prompt_echo(text, vocabulary):
