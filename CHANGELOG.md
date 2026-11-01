@@ -45,6 +45,10 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Fixed
 
+- Memory no longer creeps up while the service sits in the background: MLX's
+  GPU buffer cache is emptied after every transcription. Measured after three
+  weeks of uptime, the service held 5.2 GB for a 1.5-GB model; it now stays
+  at about 1.8 GB, with no measurable change in decode speed.
 - A decoder loop ("TN, TN, TN, ..." to the token cap) no longer lands in
   the inserted text. Whisper flags such a window as too repetitive and
   retries at higher temperatures, but when every retry fails, mlx_whisper

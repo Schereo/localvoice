@@ -114,7 +114,23 @@ class WhisperMLXModel(BaseSTTModel):
         target_lang: str = "de",
         **kwargs,
     ) -> List[str]:
-        """Transcribe audio with German, English, or automatic decoding."""
+        """Transcribe audio, then hand MLX's buffer cache back to the system.
+
+        MLX keeps every freed GPU buffer for reuse, and decodes of varying
+        lengths and temperature retries never quite hit the same sizes, so
+        the cache only grows: after three weeks the service held 4.7 GB of
+        GPU memory for a 1.5-GB model. Emptying it after each call costs
+        nothing measurable — 0.65 s per decode with or without — while the
+        weights themselves stay loaded, so the next dictation starts as fast.
+        """
+        import mlx.core as mx
+
+        try:
+            return self._transcribe_batch(audio_paths, source_lang, target_lang)
+        finally:
+            mx.clear_cache()
+
+    def _transcribe_batch(self, audio_paths, source_lang, target_lang):
         if not audio_paths:
             return []
 
