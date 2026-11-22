@@ -20,11 +20,15 @@ With `live-preview` on, the recording pill shows the transcript as it forms. The
 
 The guess costs extra decodes, so it is built to never compete with the real pipeline: about once a second, and only while the transcription queue is idle, a snapshot of the still-open segment (at most its last 15 s) is queued as a preview job for the same worker thread the real segments use — MLX streams are thread-local, so there is exactly one decoding thread. Each snapshot is stamped with the segment counter; once the audio manager finalizes that audio into a real segment, the stamp no longer matches and the stale guess is dropped instead of racing the confirmed line. The inserted result is byte-for-byte the same with the preview on or off.
 
-## First launch and downloads
+Whisper receives mono PCM directly from the queue for both preview and final jobs; it does not write temporary audio files.
 
-On a cold model cache the service wrapper opens the download pill immediately — the Python service needs 20+ seconds of imports before it can report anything — and feeds it through a FIFO that the Python side later adopts: one pill, no gap, no flicker. If the service dies, the pill sees EOF and closes itself.
+## First Launch and Downloads
 
-Download progress is measured from the Hugging Face blob directory. Xet, the hub's storage backend, materialises files in large chunk batches, so the pill shows a modelled counter: it advances at the estimated rate (a 20-second window with an EMA on top), is gently pulled toward each measurement, never runs backward, and never gets more than a few seconds ahead of the evidence.
+The private app opens the Model Library independently of the dictation service. It lists verified LocalVoice and Hugging Face cache entries without contacting the network. An explicit download writes only the pinned files to staging, reports bytes received, and publishes the directory after verification. Cancelling removes incomplete files. Shared Hugging Face assets are reused in place and cannot be removed from LocalVoice.
+
+Model activation is separate from download. Switching is allowed only between recording sessions; the launcher stops the previous service before loading the candidate and saves the selection only after the hotkey listener is ready. If the candidate fails to start, the launcher attempts to restore the previous model. The service receives a verified local path and does not download weights.
+
+The explicit legacy Homebrew install still starts the Hub download from the service on a cold cache and reports it in the recording pill.
 
 ## The microphone indicator
 
@@ -46,4 +50,4 @@ Two mechanisms used to eat word onsets: audio arriving before the recording flag
 
 ## Naming
 
-The app appears everywhere as **LocalVoice** (`com.localvoice.app`). The engine underneath is [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), installed and patched via Homebrew — which is why its config lives in `~/.config/ctrlspeak` and the helper binaries keep their `ctrlspeak-*` names. Patched files replace their upstream counterparts at install time; originals are backed up and restored on uninstall.
+The app appears everywhere as **LocalVoice** (`com.localvoice.app`). The engine underneath is [ctrlSPEAK](https://github.com/patelnav/ctrlspeak). The private app stages its own patched copy and runtime without using Homebrew. Helpers retain their `ctrlspeak-*` names. LocalVoice preferences are in `~/.config/localvoice/config`; the private app keeps its selections, owned models, and bounded service logs under `~/Library/Application Support/LocalVoice`.

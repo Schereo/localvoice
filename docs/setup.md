@@ -1,6 +1,42 @@
 # Setup in detail
 
-## What the installer does
+## Private App
+
+The private build keeps the upstream Python code, runtime and native helpers in `LocalVoice.app`. It does not install a Homebrew formula, patch another app, or write a LaunchAgent. To build it:
+
+1. Use [`scripts/build-runtime.sh --help`](../scripts/build-runtime.sh) to prepare the relocatable ARM64 runtime archive from local, checksum-pinned inputs. `--check-inputs` checks the archives, wheel lock and license inputs without executing the runtime.
+2. Build the [NVIDIA Core ML worker](development-checks.md#nvidia-providers) with `scripts/build-parakeet.sh`. Pass its executable and license to `scripts/build-app.sh`, along with the produced runtime archive and digest, the pinned ctrlSPEAK source archive and a deployment target.
+3. Run `scripts/build-app.sh --verify /path/to/LocalVoice.app` on the staged bundle. Signing, notarization and a run on the oldest supported macOS are separate release checks.
+
+The build commands do not fetch inputs. If upgrading from the legacy Homebrew install, quit its menu-bar service before testing the private app; don't run both at once.
+
+The app exposes these actions in its menu:
+
+| Action | What it does |
+|---|---|
+| **Settings…** | Configures the hotkey, microphone, live preview, microphone standby, and media pause. |
+| **Models…** | Shows model source and size, and remembers the language choice for each model that accepts one. Downloads are explicit. Existing verified Hugging Face snapshots are reused in place; only LocalVoice-owned copies can be removed. **Use** starts the new model and leaves the previous selection intact if loading fails. |
+| **Set Up Permissions…** | Shows live checks for Microphone, Accessibility and Input Monitoring. Each permission has its own request or Settings button. |
+| **Launch at Login** | Registers the app with macOS only if enabled. |
+
+The app keeps owned models in `~/Library/Application Support/LocalVoice/Models`. It does not write dictated text to logs or to an existing ctrlSPEAK history database. To uninstall, turn off **Launch at Login**, quit, and move the app to Trash. Model files and preferences are not removed with the app.
+
+If access is missing, the checklist opens without requesting anything. It refreshes after the microphone prompt and when you return to LocalVoice. For **Accessibility** and **Input Monitoring**, **Open Settings…** opens the matching list and a floating **Add LocalVoice** panel. Drag the app icon into the list, then turn it on. If macOS doesn’t accept the drop, use **+**; **Show App in Finder** reveals the exact app to add. Use the Dock, Cmd–Tab, or **Set Up Permissions…** in the menu bar to return to the checklist. If macOS offers **Quit & Reopen**, choose it.
+
+## Local Test App
+
+On Apple Silicon with macOS 15+, Command Line Tools and Python 3.11:
+
+```sh
+python3 -B scripts/build-dev-app.py
+open build/dev/LocalVoice.app
+```
+
+The build downloads development dependencies and pinned upstream source, not model weights. It uses an isolated virtual environment and ad-hoc signing; no Developer ID or Homebrew installer is needed. Keep the app and `build/dev/venv` where the build put them. Add `--worker /path/to/localvoice-parakeet` to reuse an existing worker. This is a local test build, not a redistributable app.
+
+## Legacy Homebrew Installer
+
+`./install.sh --plan` previews the legacy installer without changing anything. `./install.sh --legacy-homebrew` opts into the changes below. Do not run the legacy installer or uninstaller against an independent ctrlSPEAK installation you want to preserve.
 
 1. Installs ctrlSPEAK 1.8.0 and FFmpeg through Homebrew.
 2. Builds the native ARM64 recording pill from Swift source.
@@ -33,11 +69,11 @@ Manual fallback: open **System Settings → Privacy & Security**, add `~/Applica
 
 ## Code signing
 
-The installer signs `LocalVoice.app` ad-hoc by default. If a **Developer ID Application** certificate is in your keychain, it is picked up automatically — permissions then attach to your team and bundle id and survive rebuilds. Create one via Xcode → Settings → Accounts → your team → *Manage Certificates…*, then re-run `./install.sh` and grant the permissions once more. Force a specific identity with `CTRLSPEAK_SIGN_IDENTITY="Developer ID Application: …" ./install.sh`.
+The legacy installer signs `LocalVoice.app` ad-hoc by default. A **Developer ID Application** signature lets permissions attach to the team and bundle ID instead of an individual rebuild. To use a specific identity, run `CTRLSPEAK_SIGN_IDENTITY="Developer ID Application: …" ./install.sh --legacy-homebrew`.
 
 ## Upgrading
 
-`git pull && ./install.sh`. The installer records the version it deployed in `~/.config/ctrlspeak/installed-version`, which is what `./scripts/doctor.sh` compares against this checkout.
+`git pull && ./install.sh --legacy-homebrew`. The legacy installer records the version in `~/.config/ctrlspeak/installed-version`, which is what `./scripts/doctor.sh` compares against this checkout.
 
 One caveat with ad-hoc signing: the version is written into the app bundle's `Info.plist`, the bundle is signed, and its signature *is* its identity as far as macOS permissions are concerned. So a version bump produces a new identity, and the three permissions have to be granted once more — the installer clears the stale rows and re-runs the wizard for you, but it is a minute of clicking per release. A **Developer ID Application** certificate removes this entirely: permissions then attach to your team and bundle id and survive every rebuild. See [Code signing](#code-signing).
 
@@ -53,12 +89,11 @@ Logs: `~/Library/Logs/ctrlspeak.log` and `ctrlspeak.error.log`. If the service i
 ## Uninstalling
 
 ```bash
-./uninstall.sh                              # keeps model cache and Homebrew formula
-./uninstall.sh --remove-model --remove-brew # removes everything
+./uninstall.sh --legacy-homebrew # keeps model cache and Homebrew formula
 ```
 
-Restores ctrlSPEAK's original files from the backups the installer made and clears the app's privacy-pane entries via `tccutil`.
+Restores legacy backups and clears the app's privacy-pane entries. Logs, the Hugging Face cache and Homebrew are kept by default.
 
 ## Homebrew upgrades
 
-A future `brew upgrade ctrlspeak` can replace the patched files. Re-run `./install.sh` afterward — it deliberately stops when the installed ctrlSPEAK version differs from the verified one rather than applying incompatible patches silently.
+A future `brew upgrade ctrlspeak` can replace the patched files. The legacy installer stops when the installed ctrlSPEAK version differs from the verified one.

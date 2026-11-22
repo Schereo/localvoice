@@ -21,6 +21,36 @@ fail() {
   exit 1
 }
 
+case "${1:---help}" in
+  -h|--help)
+    printf '%s\n' \
+      'For a private LocalVoice app bundle, use scripts/build-app.sh --help.' \
+      '  --plan              Show what the legacy Homebrew install would change.' \
+      '  --legacy-homebrew   Run the legacy installer (modifies shared ctrlSPEAK).'
+    exit 0
+    ;;
+  --plan)
+    [[ $# -eq 1 ]] || fail "--plan takes no additional arguments."
+    cat <<'PLAN'
+Legacy Homebrew installation (preview only; no changes)
+
+Sources: patelnav/ctrlspeak Homebrew tap, Homebrew FFmpeg, PyPI MLX Whisper.
+Shared files: ctrlSPEAK keg and Python environment; Homebrew helper binaries.
+User files: ~/Applications/LocalVoice.app, ~/Library/LaunchAgents, LocalVoice config.
+Permissions: prompts for microphone, accessibility and input monitoring;
+             an ad-hoc install resets existing LocalVoice grants.
+First service start: may download the 1.61 GB Whisper Turbo model.
+
+Use --legacy-homebrew only if you want these changes.
+PLAN
+    exit 0
+    ;;
+  --legacy-homebrew)
+    [[ $# -eq 1 ]] || fail "--legacy-homebrew takes no additional arguments."
+    ;;
+  *) fail "Unknown option: $1 (see --help)." ;;
+esac
+
 # LocalVoice's version, single-sourced from VERSION so the app bundle, the
 # changelog and the git tag cannot drift apart. The bundle used to report
 # SUPPORTED_CTRLSPEAK_VERSION, which made every install claim to be 1.8.0.
@@ -96,14 +126,14 @@ TRUST
         fail "Homebrew could not install ctrlSPEAK and FFmpeg. See the output above."
       fi
     else
-      echo "Not trusted. Run ./install.sh again when you are ready." >&2
+      echo "Not trusted. Run ./install.sh --legacy-homebrew again when you are ready." >&2
       exit 1
     fi
   else
     # No terminal to ask on (CI, piped input) — leave the manual commands.
     echo "Run these, then run this installer again:" >&2
     echo "  brew trust --formula patelnav/ctrlspeak/ctrlspeak" >&2
-    echo "  ./install.sh" >&2
+    echo "  ./install.sh --legacy-homebrew" >&2
     exit 1
   fi
 fi
