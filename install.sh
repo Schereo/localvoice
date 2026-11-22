@@ -242,8 +242,10 @@ install -m 755 "$BUILD_DIR/ctrlspeak-local" "$WRAPPER_PATH"
 # named "ctrlSPEAK".
 echo "Building the LocalVoice app bundle..."
 xcrun swiftc \
+  -parse-as-library \
   -module-cache-path "$BUILD_DIR/module-cache" \
   "$PROJECT_DIR/src/ctrlspeak-launcher.swift" \
+  "$PROJECT_DIR/src/localvoice-model-library.swift" \
   -o "$BUILD_DIR/LocalVoice-launcher"
 
 xcrun swiftc \
