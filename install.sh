@@ -162,6 +162,7 @@ backup_and_install "$PATCH_DIR/utils/keyboard_shortcuts.py" "$CTRLSPEAK_LIBEXEC/
 backup_and_install "$PATCH_DIR/utils/audio.py" "$CTRLSPEAK_LIBEXEC/utils/audio.py" 644
 backup_and_install "$PATCH_DIR/utils/localvoice_config.py" "$CTRLSPEAK_LIBEXEC/utils/localvoice_config.py" 644
 backup_and_install "$PATCH_DIR/utils/media_pause.py" "$CTRLSPEAK_LIBEXEC/utils/media_pause.py" 644
+backup_and_install "$PATCH_DIR/utils/localvoice_vad.py" "$CTRLSPEAK_LIBEXEC/utils/localvoice_vad.py" 644
 
 "$CTRLSPEAK_PYTHON" -m py_compile \
   "$CTRLSPEAK_LIBEXEC/hotkeys.py" \
@@ -180,7 +181,8 @@ backup_and_install "$PATCH_DIR/utils/media_pause.py" "$CTRLSPEAK_LIBEXEC/utils/m
   "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py" \
   "$CTRLSPEAK_LIBEXEC/utils/audio.py" \
   "$CTRLSPEAK_LIBEXEC/utils/localvoice_config.py" \
-  "$CTRLSPEAK_LIBEXEC/utils/media_pause.py"
+  "$CTRLSPEAK_LIBEXEC/utils/media_pause.py" \
+  "$CTRLSPEAK_LIBEXEC/utils/localvoice_vad.py"
 
 WRAPPER_PATH="$BREW_PREFIX/bin/ctrlspeak-local"
 cat > "$BUILD_DIR/ctrlspeak-local" <<EOF

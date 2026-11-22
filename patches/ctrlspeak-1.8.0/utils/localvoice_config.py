@@ -36,7 +36,7 @@ DEFAULTS = {
     "mic-standby": "off",
     "microphone": "built-in",
     "menubar": "on",
-    "pause-media": "on",
+    "pause-media": "off",
     "vocabulary": "",
     "live-preview": "off",
 }
@@ -63,13 +63,11 @@ _KEY_BLOCKS = {
 # Modifier: ctrl, cmd, alt or shift. Taps: 2-4. Example: cmd,2 = double-tap Cmd.
 """,
     "language": """\
-# Transcription language: de, en or auto (detects German vs English per
-# recording). Clicking the pill's language badge cycles this and writes the
-# choice back here.
+# Legacy installs only: de, en or auto. LocalVoice.app saves language
+# choices per model in the Model Library.
 """,
     "compact": """\
-# Compact recording pill: "on" hides the language badge, leaving only the
-# dot, waveform and timer. Set the language above instead.
+# Legacy installs only: "on" hides the recording pill's language badge.
 """,
     "mic-standby": """\
 # Keep the microphone stream open while idle: instant recording starts, at
@@ -155,6 +153,15 @@ def language():
     return value if value in VALID_LANGUAGES else DEFAULTS["language"]
 
 
+def model_language(model_id):
+    """Read a managed model's preference; Parakeet does not accept a hint."""
+    if model_id in {"whisper-turbo-fp16", "whisper-turbo-q4", "nemotron-streaming"}:
+        value = str(effective(f"language.{model_id}") or "").lower()
+        if value in VALID_LANGUAGES:
+            return value
+    return "auto"
+
+
 def parse_hotkey(raw):
     """Parse '<modifier>,<taps>' into (modifier, taps), or None if invalid."""
     if not raw:
@@ -199,9 +206,7 @@ def vocabulary():
             continue
         cleaned = _SPECIAL_TOKEN_RE.sub("", entry).strip()
         if cleaned != entry:
-            logger.warning(
-                f"Removed a Whisper special token from vocabulary entry {entry!r}."
-            )
+            logger.warning("Removed a Whisper special token from the vocabulary.")
         if cleaned:
             words.append(cleaned)
     return words

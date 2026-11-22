@@ -6,6 +6,7 @@ Handles triple-tap Ctrl activation and routes to either:
 - Queue mode: For models that use batch transcription (e.g., Parakeet, Canary)
 """
 
+import fcntl
 import logging
 import math
 import os
@@ -14,21 +15,19 @@ import subprocess
 import threading
 import time
 import state
+from state import TranscriptionJob
 from utils import localvoice_config
 from utils import media_pause
 from utils.clipboard import copy_to_clipboard, paste_from_clipboard, type_text
 from utils.player import play_start_beep, play_stop_beep
 from utils.history import get_history_manager
-import streaming
+from transcription import discard_pending_jobs, quiet_content_logger
 
 logger = logging.getLogger("ctrlspeak.hotkeys")
 
-# Track which mode we're in for the current recording session
-_current_session_streaming = False
+_streaming_model = None
 
-# Set while an Esc-cancel is tearing the session down, so the transcript that
-# still comes out of the worker is thrown away instead of pasted.
-_session_cancelled = False
+_session_lock_handle = None
 
 _OVERLAY_PATH = os.environ.get(
     "CTRLSPEAK_OVERLAY_PATH",
@@ -58,17 +57,6 @@ _command_name = None
 # Generous enough for a long recording's transcription (a 30 s clip decodes
 # in about a second), short enough that a wedge does not cost the morning.
 WATCHDOG_TIMEOUT_S = 90.0
-
-# How long the microphone stays open after a recording. Zero — release it at
-# once, so the macOS indicator tracks dictation exactly. The delay existed to
-# avoid cycling CoreAudio's teardown, where the HAL deadlocks; capture now
-# lives in a child process and releasing is a kill, so there is nothing left
-# to avoid. Raise it only to shave the ~0.15 s respawn off back-to-back
-# dictations, at the cost of an indicator that outstays its recording.
-MIC_IDLE_CLOSE_S = 0.0
-_mic_close_timer = None
-_mic_timer_lock = threading.Lock()
-
 
 def _announce_restart():
     """Put a pill on screen explaining the imminent hard exit.
@@ -126,8 +114,8 @@ def _worker():
         _command_started_at = time.monotonic()
         try:
             handler()
-        except Exception as exc:
-            logger.error(f"Hotkey command '{name}' failed: {exc}", exc_info=True)
+        except Exception:
+            logger.error("Hotkey command '%s' failed.", name)
         finally:
             _command_started_at = None
             _command_name = None
@@ -156,52 +144,13 @@ def _dispatch(name, handler):
     return True
 
 
-def _cancel_mic_close():
-    """Stop a pending teardown, so a new recording reuses the open stream."""
-    global _mic_close_timer
-
-    with _mic_timer_lock:
-        if _mic_close_timer is not None:
-            _mic_close_timer.cancel()
-            _mic_close_timer = None
-
-
-def _schedule_mic_close():
-    """Release the microphone: at once, or after the configured idle time."""
-    global _mic_close_timer
-
-    if MIC_IDLE_CLOSE_S <= 0:
-        state.audio_manager.close_input_stream()
-        return
-
-    def _close_if_idle():
-        global _mic_close_timer
-
-        with _mic_timer_lock:
-            _mic_close_timer = None
-
-        if is_recording():
-            return
-
-        logger.info("Microphone idle; releasing the input stream.")
-        state.audio_manager.close_input_stream()
-
-    with _mic_timer_lock:
-        if _mic_close_timer is not None:
-            _mic_close_timer.cancel()
-
-        _mic_close_timer = threading.Timer(MIC_IDLE_CLOSE_S, _close_if_idle)
-        _mic_close_timer.name = "ctrlspeak-mic-idle-close"
-        _mic_close_timer.daemon = True
-        _mic_close_timer.start()
-
-
 class _OverlaySession:
     """Own a persistent recorder HUD and feed it microphone levels."""
 
-    def __init__(self, language):
+    def __init__(self, language, initial_mode="recording"):
         self.language = language
-        self.commands = queue.Queue()
+        self.initial_mode = initial_mode
+        self.commands = queue.SimpleQueue()
         self.thread = threading.Thread(
             target=self._run,
             name="ctrlspeak-overlay",
@@ -229,6 +178,17 @@ class _OverlaySession:
     def close(self):
         self.commands.put("quit")
 
+    def discard(self):
+        # Capture is already frozen: no worker can enqueue another preview.
+        while True:
+            try:
+                self.commands.get_nowait()
+            except queue.Empty:
+                break
+        self.set_final_text("")
+        self.set_partial_text("")
+        self.set_state("cancelled")
+
     @staticmethod
     def _normalized_level():
         """Convert ctrlSPEAK's RMS value to a perceptual 0...1 meter."""
@@ -254,12 +214,12 @@ class _OverlaySession:
 
     def _run(self):
         process = None
-        mode = "recording"
+        mode = self.initial_mode
         terminal_deadline = None
 
         try:
             process = subprocess.Popen(
-                [_OVERLAY_PATH, "recording", self.language],
+                [_OVERLAY_PATH, self.initial_mode, self.language],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -326,6 +286,14 @@ def _start_recording_overlay():
         _overlay_session.start()
 
 
+def _show_start_error(detail):
+    # Use the existing short-lived status, not the watchdog-only restart mode.
+    overlay = _OverlaySession(state.source_lang, initial_mode="empty")
+    overlay.set_detail(detail)
+    overlay.set_state("empty")
+    overlay.start()
+
+
 def _set_overlay_state(overlay_state):
     """Transition the current overlay without recreating its window."""
     with _overlay_session_lock:
@@ -359,9 +327,11 @@ def _apply_language(language, persist=True):
     persist=False is for changes that already come *from* the config file;
     writing them back would touch its mtime and ping the watcher again.
     """
+    if getattr(state.stt_model, "supports_forced_language", True) is False:
+        return
     language = language.lower()
     if language not in localvoice_config.VALID_LANGUAGES:
-        logger.warning(f"Ignoring unsupported language from recorder overlay: {language}")
+        logger.warning("Ignoring unsupported language from recorder overlay.")
         return
 
     with _language_lock:
@@ -422,45 +392,35 @@ PREVIEW_MAX_WINDOW_S = 15.0
 PREVIEW_MIN_AUDIO_S = 0.6
 
 
-def _live_preview_ticker():
+def _live_preview_ticker(manager, recording_id):
     """Feed snapshots of the open segment to the worker while recording."""
     import numpy as np
     from utils.audio import SAMPLE_RATE
 
-    while state.live_preview_active and is_recording():
+    while True:
         time.sleep(PREVIEW_INTERVAL_S)
-        if not (state.live_preview_active and is_recording()):
-            break
-
-        # Real segments always win: only ask for a guess while the pipeline
-        # is idle, so the preview can never delay a confirmed phrase.
-        if state.transcription_queue.unfinished_tasks > 0:
-            continue
-
-        manager = state.audio_manager
-        # Snapshot under the GIL; the callback thread only appends, and the
-        # buffer is swapped wholesale when a segment closes.
-        chunks = list(manager.audio_buffer)
-        if not chunks:
-            continue
-        try:
-            audio = np.concatenate(chunks)
-        except ValueError:
-            continue
-        if len(audio) < int(PREVIEW_MIN_AUDIO_S * SAMPLE_RATE):
-            continue
-
-        max_samples = int(PREVIEW_MAX_WINDOW_S * SAMPLE_RATE)
-        if len(audio) > max_samples:
-            audio = audio[-max_samples:]
-
-        import transcription
-
-        state.transcription_queue.put(
-            (transcription.PREVIEW_JOB, audio, manager.segments_queued)
-        )
-
-    logger.debug("Live preview ticker finished.")
+        with manager.capture_lock:
+            if not (
+                state.live_preview_active and manager.is_collecting
+                and manager.recording_id == recording_id
+            ):
+                return
+            # Real segments win. Only copy the tail, and make enqueue atomic
+            # with freeze so Stop/Esc cannot miss a late producer.
+            if state.transcription_queue.unfinished_tasks or not manager.audio_buffer:
+                continue
+            remaining = int(PREVIEW_MAX_WINDOW_S * SAMPLE_RATE)
+            chunks = []
+            for chunk in reversed(manager.audio_buffer):
+                chunks.append(chunk[-remaining:])
+                remaining -= len(chunks[-1])
+                if remaining <= 0:
+                    break
+            audio = np.concatenate(chunks[::-1])
+            if len(audio) >= int(PREVIEW_MIN_AUDIO_S * SAMPLE_RATE):
+                state.transcription_queue.put(
+                    TranscriptionJob(recording_id, "preview", audio, manager.segments_queued)
+                )
 
 
 def _start_live_preview():
@@ -470,37 +430,57 @@ def _start_live_preview():
         return
 
     threading.Thread(
-        target=_live_preview_ticker, name="ctrlspeak-live-preview", daemon=True
+        target=_live_preview_ticker,
+        args=(state.audio_manager, state.audio_manager.recording_id),
+        name="ctrlspeak-live-preview",
+        daemon=True,
     ).start()
     logger.info("Live transcript preview enabled for this session.")
 
 
-def _start_queue_recording():
-    """Start recording in queue-based mode (original behavior)."""
-    logger.info("Starting queue-based recording session...")
-
+def _clear_transcript():
     state.transcribed_chunks.clear()
-    logger.info("Cleared previous transcribed chunks.")
-
-    # Reset accumulated text for UI
-    if hasattr(state, 'app_state_ref') and state.app_state_ref:
+    if getattr(state, "app_state_ref", None):
         state.app_state_ref.accumulated_text = ""
 
-    state.audio_manager.start_recording()
+
+def _start_streaming_recording(manager, model):
+    def on_chunk(audio, is_final=False):
+        # Preserve the old queue's bounded backlog, but never drop the tail.
+        if is_final or state.transcription_queue.qsize() < 50:
+            state.transcription_queue.put(
+                TranscriptionJob(
+                    manager.recording_id, "stream", audio, is_final=is_final, backend=model
+                )
+            )
+
+    with manager.capture_lock:
+        manager.start_streaming(getattr(model, "chunk_size_ms", 1120), on_chunk)
+        state.transcription_queue.put(
+            TranscriptionJob(manager.recording_id, "stream-start", backend=model)
+        )
 
 
-def _stop_queue_recording():
-    """Stop queue-based recording and wait for transcription."""
-    logger.info("Stopping queue-based recording session...")
+def _acquire_session_lock():
+    path = os.environ.get("LOCALVOICE_SESSION_LOCK")
+    if not path:
+        return None
+    # A separate handle for each session. Do not truncate or unlink the inode:
+    # the launcher must always be locking the same file.
+    handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        os.close(handle)
+        raise
+    return handle
 
-    state.audio_manager.stop_recording()
 
-    logger.info("Waiting for transcription worker to finish processing queue...")
-    state.transcription_queue.join()
-    logger.info("Transcription queue processed.")
-
-    final_text = " ".join(state.transcribed_chunks).strip()
-    return final_text
+def _release_session_lock():
+    global _session_lock_handle
+    handle, _session_lock_handle = _session_lock_handle, None
+    if handle is not None:
+        os.close(handle)
 
 
 def is_recording():
@@ -508,194 +488,200 @@ def is_recording():
     return state.audio_manager is not None and state.audio_manager.is_collecting
 
 
-def cancel_recording():
-    """Queue a discard of the running session (called from the event tap)."""
-    if not is_recording():
+def _request_end(name, *, discard=False):
+    manager = state.audio_manager
+    if manager is None:
         return True
+    recording_id = manager.recording_id
+    if not manager.is_collecting:
+        return True
+    return _dispatch(name, lambda: _end_recording(recording_id, discard=discard))
 
-    return _dispatch("cancel", _perform_cancel)
 
-
-def _perform_cancel():
-    global _session_cancelled
-
-    if not is_recording():
-        return
-
-    logger.info("Recording cancelled via Esc.")
-    _session_cancelled = True
-    try:
-        _set_overlay_state("cancelled")
-        # The audio pipeline still runs to completion so the worker queue
-        # stays consistent; _perform_activate sees the flag and drops the text.
-        _perform_activate()
-    finally:
-        _session_cancelled = False
+def cancel_recording():
+    """Queue a discard for this recording, never for a later recording."""
+    return _request_end("cancel", discard=True)
 
 
 def finish_recording():
     """Queue a stop-and-insert (called from the event tap)."""
-    if not is_recording():
-        return True
-
-    logger.info("Recording finished via Enter.")
-    return _dispatch("finish", _perform_activate)
+    return _request_end("finish")
 
 
 def on_activate():
     """Queue a hotkey activation (called from the event tap)."""
-    return _dispatch("activate", _perform_activate)
+    if is_recording():
+        return _request_end("finish")
+    return _dispatch("activate", _start_recording)
 
 
-def _perform_activate():
-    """Start or stop a recording session.
+def _start_recording():
+    global _streaming_model, _session_lock_handle
+    manager = state.audio_manager
+    if manager is None or manager.is_collecting:
+        return
+    if getattr(state, "app_state_ref", None) and state.app_state_ref.is_loading_model:
+        state.console.print("[yellow]Please wait for model to finish loading...[/yellow]")
+        return
+    if not state.model_loaded:
+        state.console.print("[yellow]Model is still loading. Please wait...[/yellow]")
+        return
 
-    Runs on the hotkey worker thread, never on the event tap.
-    """
-    global _current_session_streaming
+    try:
+        _session_lock_handle = _acquire_session_lock()
+    except BlockingIOError:
+        logger.info("Recording deferred while the launcher holds the session lock.")
+        _show_start_error("Model is changing — try again in a moment")
+        return
+    except OSError:
+        logger.error("Could not acquire the recording session lock.")
+        _show_start_error("Recording is temporarily unavailable")
+        return
 
-    if not state.audio_manager.is_collecting:
-        # =================================================================
-        # START RECORDING
-        # =================================================================
-
-        # Check if model is being swapped
-        if hasattr(state, 'app_state_ref') and state.app_state_ref:
-            if state.app_state_ref.is_loading_model:
-                logger.warning("Cannot record while model is loading")
-                state.console.print("[yellow]Please wait for model to finish loading...[/yellow]")
-                return
-
-        if not state.model_loaded:
-            state.console.print("[bold yellow]Model is still loading. Please wait...[/bold yellow]")
-            return
-
-        # Silence the room first: a playing Spotify or Music is paused before
-        # the microphone opens, so no music tail leaks into the recording and
-        # nothing competes with the dictation. Resumed on stop.
+    opened_on_demand = False
+    started = False
+    try:
+        if model_id := os.environ.get("LOCALVOICE_MODEL_ID"):
+            # Apply a preference at the recording boundary, including for
+            # Nemotron's streaming prompt. Never change it mid-recording.
+            state.source_lang = state.target_lang = localvoice_config.model_language(model_id)
         if localvoice_config.as_bool("pause-media"):
             media_pause.pause_playing()
-
-        # On-demand microphone: open the stream for this session, so the
-        # macOS mic indicator lights up around recordings rather than always.
-        # A pending idle teardown is cancelled first — reusing a still-open
-        # stream is both faster and one less trip through CoreAudio's teardown.
-        if not state.mic_standby:
-            _cancel_mic_close()
-            try:
-                state.audio_manager.open_input_stream()
-            except Exception as exc:
-                logger.error(f"Could not open the microphone stream: {exc}")
-                state.console.print("[bold red]Could not open the microphone.[/bold red]")
-                _set_overlay_detail("Microphone unavailable")
-                _set_overlay_state("empty")
-                media_pause.resume_paused()
-                return
-
-        # Track recording start time for history (stored in state for thread safety)
-        state.recording_start_time = time.time()
-
-        # Recording starts before the beep: the beep is a "go" signal, and
-        # anything said while it plays is already being captured.
-        if streaming.is_model_streaming_capable():
-            logger.info("Using STREAMING mode (model supports streaming)")
-            _current_session_streaming = True
-            state.live_preview_active = False
-            streaming.start_streaming()
-        else:
-            logger.info("Using QUEUE mode (batch transcription)")
-            _current_session_streaming = False
-            _start_queue_recording()
+        with manager.input_stream_lock:
+            if not state.mic_standby:
+                opened_on_demand = True
+                manager.open_input_stream()
+            state.recording_start_time = time.monotonic()
+            _clear_transcript()
+            model = state.stt_model
+            _streaming_model = model if getattr(model, "supports_streaming", False) else None
+            state.live_preview_active = (_streaming_model is not None
+                                         and localvoice_config.as_bool("live-preview"))
+            if _streaming_model is not None:
+                _start_streaming_recording(manager, _streaming_model)
+            else:
+                manager.start_recording()
 
         play_start_beep()
         _start_recording_overlay()
-        if not _current_session_streaming:
+        if _streaming_model is None:
             _start_live_preview()
+        started = True
+    except Exception:
+        logger.error("Could not start recording.")
+        _show_start_error("Could not start recording")
+    finally:
+        if not started:
+            if manager.is_collecting:
+                _end_recording(manager.recording_id, discard=True)
+            else:
+                try:
+                    with manager.input_stream_lock:
+                        if opened_on_demand and not state.mic_standby:
+                            manager.close_input_stream()
+                finally:
+                    _resume_playback()
+                    state.recording_start_time = None
+                    _streaming_model = None
+                    _release_session_lock()
 
-    else:
-        # =================================================================
-        # STOP RECORDING
-        # =================================================================
 
-        logger.info("Stop activated. Stopping audio recording...")
-        play_stop_beep()
-        # The session is over: the ticker stops feeding snapshots, and any
-        # preview still in the queue is skipped by the worker's staleness check.
-        state.live_preview_active = False
-        # Music comes back right away, not after transcription: the recording
-        # is over the moment the stop beep plays.
+def _resume_playback():
+    try:
         media_pause.resume_paused()
-        if not _session_cancelled:
-            _set_overlay_state("processing")
+    except Exception:
+        logger.warning("Could not resume playback.")
 
-        # Use the mode we started with
-        if _current_session_streaming:
-            final_text = streaming.stop_streaming()
-        else:
-            final_text = _stop_queue_recording()
 
-        if not state.mic_standby:
-            _schedule_mic_close()
+def _end_recording(recording_id, *, discard=False):
+    global _streaming_model
+    manager = state.audio_manager
+    if manager is None or not manager.is_collecting or recording_id != manager.recording_id:
+        return
 
-        if _session_cancelled:
-            # The pill already shows "cancelled"; the transcript is discarded.
-            logger.info("Session was cancelled; discarding transcription result.")
-            state.transcribed_chunks.clear()
-            state.recording_start_time = None
-            _current_session_streaming = False
+    playback_resumed = False
+    try:
+        if not manager.freeze_recording(discard=discard):
+            return
+        state.live_preview_active = False
+        with manager.input_stream_lock:
+            if not state.mic_standby:
+                manager.close_input_stream()
+
+        if discard:
+            # The worker may already be decoding. It owns task_done for that
+            # job; the invalidated recording ID prevents it publishing.
+            discard_pending_jobs(state.transcription_queue)
+            _clear_transcript()
+            manager.discard_recording()
+            with _overlay_session_lock:
+                if _overlay_session is not None:
+                    _overlay_session.discard()
             return
 
-        # Handle final text
-        if final_text:
-            # Calculate recording duration
-            duration_seconds = 0.0
-            if state.recording_start_time:
-                duration_seconds = time.time() - state.recording_start_time
-                state.recording_start_time = None  # Reset for next recording
+        _set_overlay_state("processing")
+        try:
+            play_stop_beep()
+        except Exception:
+            logger.warning("Could not play the stop sound.")
+        _resume_playback()
+        playback_resumed = True
 
-            logger.info(f"Final text ({len(final_text)} chars): {final_text[:100]}...")
-            copied = copy_to_clipboard(final_text)
-            # Pasting means pressing Cmd+V, which would deliver whatever the
-            # clipboard still held from before — so only paste what we put there.
-            pasted = paste_from_clipboard() if copied else False
-
-            if copied:
-                # No text field in focus: the transcript is on the clipboard,
-                # and the pill says so instead of claiming an insertion that
-                # never was.
-                _set_overlay_state("success" if pasted else "clipboard")
-            elif type_text(final_text):
-                # Clipboard unreachable, but the text still got there. Say how,
-                # because the paste-vs-typed distinction matters in apps that
-                # mangle synthetic keystrokes.
-                _set_overlay_detail("Typed — clipboard unavailable")
-                _set_overlay_state("success")
-            else:
-                # Nothing could take the text. Name the reason and pick a state
-                # that dismisses itself; a pill left standing is what made this
-                # look like a dead app before. The transcript is still written
-                # to the log and to history below.
-                _set_overlay_detail("Clipboard unavailable")
-                _set_overlay_state("empty")
-
-            state.console.print("\n[bold cyan]Transcription:[/bold cyan]")
-            state.console.print(final_text)
-
-            # Save to history (if enabled)
-            if state.history_enabled:
-                try:
-                    history = get_history_manager(state.history_db_path)
-                    history.add_entry(
-                        text=final_text,
-                        model=state.model_type,
-                        duration_seconds=duration_seconds,
-                        language=state.source_lang
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to save to history: {e}", exc_info=True)
+        if _streaming_model is not None:
+            manager.finish_streaming()
+            state.transcription_queue.put(
+                TranscriptionJob(recording_id, "stream-finish", backend=_streaming_model)
+            )
         else:
-            state.console.print("[yellow]No transcription result[/yellow]")
-            _set_overlay_state("empty")
+            manager.finish_recording()
+        state.transcription_queue.join()
 
-        # Reset session state
-        _current_session_streaming = False
+        final_text = " ".join(state.transcribed_chunks).strip()
+        if final_text:
+            duration = time.monotonic() - state.recording_start_time if state.recording_start_time else 0.0
+            _deliver_transcript(final_text, duration)
+            if state.failed_recording_id == recording_id:
+                _set_overlay_detail("Some audio could not be transcribed")
+        elif state.failed_recording_id == recording_id:
+            _set_overlay_state("failed")
+        else:
+            _set_overlay_state("empty")
+    finally:
+        if not playback_resumed:
+            _resume_playback()
+        state.recording_start_time = None
+        _streaming_model = None
+        _release_session_lock()
+
+
+def _deliver_transcript(text, duration):
+    copied = False
+    try:
+        copied = copy_to_clipboard(text)
+        if copied:
+            # Never send Cmd+V unless the new transcript reached the clipboard.
+            _set_overlay_state("success" if paste_from_clipboard() else "clipboard")
+        elif type_text(text):
+            _set_overlay_detail("Typed — clipboard unavailable")
+            _set_overlay_state("success")
+        else:
+            _set_overlay_detail("Clipboard unavailable")
+            _set_overlay_state("empty")
+    except Exception:
+        logger.warning("Could not insert the transcript.")
+        _set_overlay_state("clipboard" if copied else "empty")
+
+    # History is an explicit storage surface, independent of generic output.
+    if state.history_enabled:
+        try:
+            # The upstream helper logs raw database exceptions and result
+            # lengths; neither is needed to report a failed save.
+            with quiet_content_logger(logging.getLogger("ctrlspeak.history")):
+                entry = get_history_manager(state.history_db_path).add_entry(
+                    text=text, model=state.model_type,
+                    duration_seconds=duration, language=state.source_lang,
+                )
+            if entry is None:
+                logger.error("Failed to save to history.")
+        except Exception:
+            logger.error("Failed to save to history.")

@@ -41,6 +41,8 @@ def copy_to_clipboard(text):
             text=True,
             check=True,
             timeout=CLIPBOARD_TIMEOUT_S,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         return True
     except subprocess.TimeoutExpired:
@@ -50,8 +52,8 @@ def copy_to_clipboard(text):
             "this: killall pboard"
         )
         return False
-    except (subprocess.SubprocessError, OSError) as exc:
-        logger.error(f"Could not copy to the clipboard: {exc}")
+    except (subprocess.SubprocessError, OSError, UnicodeError):
+        logger.error("Could not copy to the clipboard.")
         return False
 
 
@@ -122,11 +124,11 @@ def type_text(text):
     time.sleep(0.1)
     try:
         kb.type(text)
-    except Exception as exc:
-        logger.error(f"Could not type the transcript: {exc}")
+    except Exception:
+        logger.error("Could not type the transcript.")
         return False
 
-    logger.info(f"Typed the transcript directly ({len(text)} chars).")
+    logger.info("Typed the transcript directly.")
     return True
 
 
