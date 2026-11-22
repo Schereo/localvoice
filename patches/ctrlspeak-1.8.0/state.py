@@ -1,5 +1,6 @@
 
 import queue
+from typing import NamedTuple
 from rich.console import Console
 
 # Global variables
@@ -43,9 +44,19 @@ model_type = "parakeet"
 model_loaded = False
 
 transcribed_chunks = []
+failed_recording_id = None
 transcription_queue = queue.Queue()
 transcription_worker_thread = None
 main_loop_active = True
+
+
+class TranscriptionJob(NamedTuple):
+    recording_id: int
+    kind: str = "batch"
+    audio: object = None
+    preview_segment: int = -1
+    is_final: bool = False
+    backend: object = None
 
 keyboard_manager = None
 
@@ -59,10 +70,6 @@ target_lang = "en"
 # even though idle audio is discarded. Standby buys instant starts and the
 # pre-tap part of the onset roll for those who opt in.
 mic_standby = False
-
-# Language the model actually decoded with. Differs from source_lang only in
-# automatic mode, where the pill reports it back after transcription.
-last_detected_language = None
 
 # Whether this recording session shows the live transcript in the pill.
 # Read from the config once per session start, so a mid-recording edit of

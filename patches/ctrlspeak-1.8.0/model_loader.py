@@ -1,9 +1,7 @@
 
 import time
-import traceback
 import logging
 import state
-from models.factory import ModelFactory
 
 logger = logging.getLogger("ctrlspeak")
 
@@ -12,7 +10,24 @@ class ModelLoadError(Exception):
     pass
 
 
-def get_model():
+class ManagedModelUnavailable(ModelLoadError):
+    """The selected model is not available in the verified local store."""
+
+
+def resolve_managed_model(model_id):
+    """Verify the installed model without importing an inference backend."""
+    try:
+        from localvoice_models import resolve_model
+
+        path = resolve_model(model_id)
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError("model store did not return an existing absolute directory")
+        return path
+    except Exception as exc:
+        raise ManagedModelUnavailable(f"{model_id!r}: {exc}") from exc
+
+
+def get_model(*, managed_model_path=None):
     """
     Load model with progress tracking.
 
@@ -23,8 +38,30 @@ def get_model():
         ModelLoadError: If model fails to load, with user-friendly error message
     """
 
+    if managed_model_path is not None:
+        from models.parakeet_coreml import NEMOTRON, NemotronCoreMLModel, ParakeetCoreMLModel, VARIANTS
+
+        if state.model_type in VARIANTS or state.model_type == NEMOTRON:
+            from localvoice_models import parakeet_worker_path
+
+            model_class = NemotronCoreMLModel if state.model_type == NEMOTRON else ParakeetCoreMLModel
+            state.stt_model = model_class(
+                state.model_type, managed_model_path, worker=parakeet_worker_path(state.model_type)
+            )
+        else:
+            # Never pass the stable ID (or a Hub repo ID) to Whisper.
+            from models.whisper_mlx import WhisperMLXModel
+
+            state.stt_model = WhisperMLXModel(
+                model_name=str(managed_model_path), verbose=state.DEBUG_MODE
+            )
+        state.model_loaded = False
+        return state.stt_model
+
     if state.stt_model is not None:
         return state.stt_model
+
+    from models.factory import ModelFactory
 
     state.console.print("\n[bold yellow]Loading model... please wait[/bold yellow]")
     start_time = time.time()

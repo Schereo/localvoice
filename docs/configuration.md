@@ -1,23 +1,18 @@
 # Configuration reference
 
-All user-facing settings live in one plain-text file:
+Use **Settings…** in the LocalVoice menu for the hotkey, microphone, live
+preview, standby, and media pause. Set the dictation language per model in
+**Models…**. These choices are stored in one plain-text file:
 
 ```
 ~/.config/localvoice/config
 ```
 
-The service creates it on first start. Three ways to open it:
-
-- **Cmd+, while the recording pill is on screen** — opens the file in your
-  default text editor. The recording keeps running; Esc discards it, Enter
-  inserts it, as always.
-- `open -t ~/.config/localvoice/config` from a terminal.
-- Any editor, any time — it is just a text file.
+The service creates it on first start. For advanced edits, open it in your
+editor or run `open -t ~/.config/localvoice/config`.
 
 **Edits apply within a couple of seconds, no restart needed.** The service
-watches the file: hotkey, language and mic-standby changes take effect
-immediately; `compact` is read by each pill as it appears, so it shows up on
-the next recording.
+watches the file: hotkey and mic-standby changes take effect immediately.
 
 ## Format
 
@@ -26,10 +21,8 @@ keys are ignored. Invalid values fall back to the default rather than breaking
 anything.
 
 ```ini
-# Example: double-tap Cmd, auto-detect DE/EN, minimal pill
+# Example: double-tap Cmd, open the microphone only for dictation
 hotkey = cmd,2
-language = auto
-compact = on
 mic-standby = off
 ```
 
@@ -38,12 +31,13 @@ mic-standby = off
 | Key | Values | Default | Effect |
 |---|---|---|---|
 | `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture |
-| `language` | `de` · `en` · `auto` | `de` | Transcription language |
-| `compact` | `on` · `off` | `off` | Hide the language badge in the pill |
+| `language` | `de` · `en` · `auto` | `de` | Legacy installs only: transcription language |
+| `language.<model-id>` | `auto` · `de` · `en` | `auto` | Dictation language for Whisper or Nemotron |
+| `compact` | `on` · `off` | `off` | Legacy installs only: hide the language badge |
 | `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
 | `microphone` | `built-in` · `system` · name | `built-in` | Which microphone records |
 | `menubar` | `on` · `off` | `on` | Show the menu bar icon |
-| `pause-media` | `on` · `off` | `on` | Pause Spotify/Music while recording |
+| `pause-media` | `on` · `off` | `off` | Pause Spotify/Music while recording |
 | `vocabulary` | comma-separated words | empty | Words the transcriber should spell correctly |
 | `live-preview` | `on` · `off` | `off` | Show the transcript in the pill while you speak |
 
@@ -61,21 +55,27 @@ Siri.
 
 ### `language`
 
+LocalVoice.app defaults to **Automatic**. Whisper chooses between German and
+English; Nemotron and Parakeet use their own automatic modes. Choices for
+Whisper and Nemotron are stored per model (for example,
+`language.whisper-turbo-q4 = de`) and apply to the next dictation. Parakeet
+does not accept a language hint. The old global `language` key is used only
+by legacy installs and remains untouched.
+
+Legacy installs still support:
+
 - `de` / `en` — transcribe everything as German / English.
 - `auto` — Whisper detects the language per recording, deliberately restricted
   to the German/English pair (the full 99-language ranking readily mistakes
   German for Dutch).
 
-Clicking the pill's language badge cycles the mode **and writes the choice
-back to this file** — badge and config are the same setting. Want a third
-language? See [adding-a-language.md](adding-a-language.md).
+In legacy installs, clicking the pill's language badge cycles the mode and
+writes the choice back to this file.
 
 ### `compact`
 
-`on` strips the recording pill down to the dot, the waveform and the timer —
-no language badge. Meant for people who leave the language fixed (typically
-`language = auto`) and don't need per-recording switching; while compact is
-on, the language can still be changed right here in the config.
+LocalVoice.app does not show a language badge. In legacy installs, `on`
+strips the pill down to the dot, waveform and timer.
 
 ### `microphone`
 
@@ -89,7 +89,7 @@ Which device records:
   microphone in the room. With `built-in`, connected AirPods stay untouched.
 - `system` — follow the macOS default input, whatever it is.
 - anything else — a case-insensitive match on the device name, e.g.
-  `microphone = Shure MV7`. The menu bar icon lists the devices currently
+  `microphone = Shure MV7`. Settings lists the devices currently
   attached; the setting stores the *name*, so it keeps pointing at the same
   physical device across unplugs and replugs.
 
@@ -99,15 +99,13 @@ default, so dictation keeps working. Changes apply from the next recording
 
 ### `menubar`
 
-`on` (default) shows the LocalVoice icon in the menu bar: a microphone picker
-built from the currently attached devices, the language mode, toggles for the
-compact pill and standby, and Open Config / Restart / Quit. Every menu action
-is just a write to this config file — menu and file are the same settings.
+`on` (default) shows the LocalVoice icon in the menu bar, with Settings, Models,
+permission setup, restart, and quit.
 `off` hides the icon; like everything here it takes effect within seconds.
 
 ### `pause-media`
 
-`on` (default) pauses media players when a recording starts and resumes them
+`on` pauses media players when a recording starts and resumes them
 the moment it stops. Only players that were actually *playing* are paused,
 and only those are resumed — music that was not running is never started.
 Covered players: Spotify and Apple Music (scriptable over Apple Events;
@@ -164,7 +162,7 @@ the price of an always-lit indicator. Idle audio is held only as a rolling
 
 The installer accepts environment variables and writes them into the config
 file: `CTRLSPEAK_LANGUAGE=de|en|auto`, `CTRLSPEAK_HOTKEY=cmd,2`,
-`CTRLSPEAK_MIC_STANDBY=on|off` — e.g. `CTRLSPEAK_HOTKEY=cmd,2 ./install.sh`.
+`CTRLSPEAK_MIC_STANDBY=on|off` — e.g. `CTRLSPEAK_HOTKEY=cmd,2 ./install.sh --legacy-homebrew`.
 
 ## Migration from pre-1.2 versions
 

@@ -9,12 +9,16 @@ MODEL_REPO="models--mlx-community--whisper-large-v3-turbo"
 KEEP_BREW=1
 REMOVE_MODEL=0
 ASSUME_YES=0
+LEGACY_HOMEBREW=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./uninstall.sh [options]
+Usage: ./uninstall.sh --legacy-homebrew [options]
 
-Removes this local dictation setup: the LaunchAgent, the LocalVoice app bundle,
+For a private app bundle, quit LocalVoice, disable Launch at Login, and
+move the app to Trash. This script is only for the legacy Homebrew install.
+
+Removes the legacy dictation setup: the LaunchAgent, LocalVoice app bundle,
 the recording pill, the wrapper, and the patches applied to ctrlSPEAK (the
 original files are restored from the backups install.sh made).
 
@@ -32,6 +36,7 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --legacy-homebrew) LEGACY_HOMEBREW=1 ;;
     --remove-model) REMOVE_MODEL=1 ;;
     --remove-brew) KEEP_BREW=0 ;;
     --yes | -y) ASSUME_YES=1 ;;
@@ -40,6 +45,11 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ "$LEGACY_HOMEBREW" -ne 1 ]]; then
+  usage
+  exit 0
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This uninstaller only supports macOS." >&2
@@ -50,6 +60,12 @@ CURRENT_UID="$(id -u)"
 APP_PATH="$HOME/Applications/LocalVoice.app"
 LAUNCH_AGENT_PATH="$HOME/Library/LaunchAgents/$SERVICE_LABEL.plist"
 LEGACY_AGENT_PATH="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
+
+if [[ -f "$APP_PATH/Contents/Resources/launch.conf" ]] &&
+   grep -qx 'managed_models=1' "$APP_PATH/Contents/Resources/launch.conf"; then
+  echo "Refusing to remove a private LocalVoice app with the legacy uninstaller." >&2
+  exit 1
+fi
 
 BREW_PREFIX=""
 CTRLSPEAK_LIBEXEC=""
@@ -80,9 +96,7 @@ fi
 echo "Stopping the background service..."
 launchctl bootout "gui/$CURRENT_UID/$SERVICE_LABEL" 2>/dev/null || true
 launchctl bootout "gui/$CURRENT_UID/$LEGACY_LABEL" 2>/dev/null || true
-# Instances started outside launchd (a double-clicked app) survive bootout.
-pkill -f "libexec/ctrlspeak.py" 2>/dev/null || true
-pkill -f "LocalVoice.app/Contents/MacOS/LocalVoice" 2>/dev/null || true
+# Quit any manually opened legacy app from its menu before uninstalling.
 rm -f "$LAUNCH_AGENT_PATH" "$LEGACY_AGENT_PATH"
 
 echo "Removing the app bundle..."
@@ -147,9 +161,10 @@ fi
 
 if [[ "$KEEP_BREW" -eq 0 ]] && command -v brew >/dev/null 2>&1; then
   echo "Uninstalling the ctrlspeak formula..."
-  brew uninstall ctrlspeak || true
-  # Installed outside the keg by the formula, so it survives brew uninstall.
-  rm -rf "$BREW_PREFIX/var/ctrlspeak"
+  HOMEBREW_NO_AUTOREMOVE=1 brew uninstall ctrlspeak || {
+    echo "Homebrew could not remove ctrlSPEAK. Its Python environment was left intact." >&2
+    exit 1
+  }
 fi
 
 echo

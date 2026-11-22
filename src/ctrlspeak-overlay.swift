@@ -1,5 +1,7 @@
 import AppKit
 
+private let managedApp = ProcessInfo.processInfo.environment["LOCALVOICE_MODEL_ID"] != nil
+
 /// Whether the config asks for the compact recording pill (no language badge).
 ///
 /// Read from the same key = value file the Python service uses; only this one
@@ -48,6 +50,7 @@ enum OverlayMode: String {
     case cancelled
     case clipboard
     case error
+    case failed
 }
 
 final class RecorderHUDView: NSView {
@@ -238,6 +241,7 @@ final class RecorderHUDView: NSView {
         switch mode {
         case .success: return "Text inserted"
         case .empty: return "No speech detected"
+        case .failed: return "Transcription failed"
         case .cancelled: return "Recording discarded"
         case .clipboard: return "Copied to clipboard"
         case .error: return "LocalVoice is restarting"
@@ -368,7 +372,7 @@ final class RecorderHUDView: NSView {
                 color: NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1),
                 symbol: "checkmark"
             )
-        case .empty:
+        case .empty, .failed:
             drawResult(
                 title: RecorderHUDView.resultTitle(mode)!,
                 color: NSColor(calibratedRed: 0.95, green: 0.62, blue: 0.15, alpha: 1),
@@ -923,7 +927,7 @@ final class OverlayController: NSObject {
         // sit in the flatter capsule; status modes keep the taller panel
         // their two text lines need. The configured compact pill drops the
         // badge as well and shrinks the capsule accordingly.
-        let hideBadge = loadCompactSetting()
+        let hideBadge = managedApp || loadCompactSetting()
         let recordingCapsule = launchMode == "recording" || launchMode == "preview"
         let capsuleSize: NSSize
         if recordingCapsule {
@@ -1201,7 +1205,7 @@ final class OverlayController: NSObject {
             switch newMode {
             case .success:
                 close(after: 1.35)
-            case .empty:
+            case .empty, .failed:
                 close(after: 1.8)
             case .cancelled:
                 close(after: 1.2)

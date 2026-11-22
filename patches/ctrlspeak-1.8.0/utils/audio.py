@@ -15,6 +15,8 @@ from collections import deque
 from queue import Queue
 import soundfile as sf
 import torch
+from state import TranscriptionJob
+from utils.localvoice_vad import load_local_vad
 from rich.console import Console
 import time as timer_module
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
@@ -96,6 +98,11 @@ class AudioManager:
         self.is_running = True
         self.is_collecting = False
         self.audio_buffer = []
+        # Serialize frame processing, freezing capture, and result publication.
+        # Never hold this lock during transcription or playback.
+        self.capture_lock = threading.RLock()
+        self.input_stream_lock = threading.RLock()
+        self.recording_id = 0
 
         # Counts the segments handed to the transcription queue this session.
         # The live preview stamps each snapshot of the open segment with this
@@ -149,6 +156,8 @@ class AudioManager:
         self._vad_buffer = []  # Buffer to accumulate 512 samples for VAD
         self.VAD_CHUNK_SAMPLES = 512  # Silero requires exactly 512 samples at 16kHz
         self.VAD_THRESHOLD = 0.5  # Speech probability threshold
+        self.FALLBACK_RMS_THRESHOLD = 0.012
+        self.FALLBACK_SEGMENT_S = 30
         self._load_vad_model()
     
     def set_debug_mode(self, debug_mode):
@@ -158,19 +167,17 @@ class AudioManager:
     def _load_vad_model(self):
         """Load Silero VAD model for speech detection."""
         try:
-            logger.info("Loading Silero VAD model...")
-            self._vad_model, _ = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                force_reload=False,
-                onnx=False,
-                trust_repo=True
-            )
+            self._vad_model = load_local_vad(torch)
             logger.info("Silero VAD model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load Silero VAD model: {e}")
-            logger.warning("VAD model unavailable - speech detection disabled")
-            self._vad_model = None
+        except Exception:
+            self._use_rms_fallback()
+
+    def _use_rms_fallback(self):
+        # Disable the failed model for this process, rather than retrying and
+        # warning on every 32 ms block.
+        self._vad_model = None
+        self._vad_buffer.clear()
+        logger.warning("Local speech detector unavailable; using microphone level detection.")
 
     def _get_speech_probability(self, audio_chunk: np.ndarray) -> float:
         """Get speech probability from Silero VAD for a 512-sample chunk.
@@ -187,9 +194,11 @@ class AudioManager:
         try:
             chunk_tensor = torch.from_numpy(audio_chunk).float()
             speech_prob = self._vad_model(chunk_tensor, SAMPLE_RATE).item()
+            if not 0.0 <= speech_prob <= 1.0:
+                raise ValueError("Invalid speech probability")
             return speech_prob
-        except Exception as e:
-            logger.error(f"VAD inference error: {e}")
+        except Exception:
+            self._use_rms_fallback()
             return -1.0
 
     def set_input_device(self, device_id):
@@ -203,7 +212,7 @@ class AudioManager:
         if value:
             self.recording_start_time = time.time()
             # Start the live display for recording status
-            if self.live_display is None:
+            if sys.stdout.isatty() and self.live_display is None:
                 self.live_display = Live(
                     self._render_recording_status(),
                     refresh_per_second=4,  # Update 4 times per second
@@ -246,7 +255,10 @@ class AudioManager:
         self.is_potentially_speaking = False
         # Reset VAD model state for clean start
         if self._vad_model is not None:
-            self._vad_model.reset_states()
+            try:
+                self._vad_model.reset_states()
+            except Exception:
+                self._use_rms_fallback()
         logger.debug("AudioManager: Cleared audio buffer, VAD buffer, and silence state.")
     
     def is_collecting_func(self):
@@ -262,6 +274,10 @@ class AudioManager:
         self.is_running = value
     
     def audio_callback(self, indata, frames, time_info, status):
+        with self.capture_lock:
+            self._collect_audio(indata, frames, time_info, status)
+
+    def _collect_audio(self, indata, frames, time_info, status):
         """Callback function to process audio input.
 
         Routes to either:
@@ -295,20 +311,20 @@ class AudioManager:
         # Calculate RMS for UI feedback (keeping this for visualization)
         try:
             rms = np.sqrt(np.mean(chunk_flat**2))
-            logger.debug(f"RMS: {rms:.6f}")
             self.last_rms = rms
 
             # Update app_state if available (for Textual UI)
             if self.app_state:
                 self.app_state.current_rms = rms
                 self.app_state.buffer_size_samples = len(self.audio_buffer)
-        except Exception as e:
-            logger.error(f"Error calculating RMS: {e}")
+        except Exception:
+            logger.error("Error calculating microphone level.")
             rms = 0
 
         # --- VAD-based speech detection ---
         # Accumulate samples in VAD buffer and process 512-sample chunks
-        self._vad_buffer.extend(chunk_flat.tolist())
+        if self._vad_model is not None:
+            self._vad_buffer.extend(chunk_flat.tolist())
 
         # Determine if this chunk contains speech using VAD
         is_speech_chunk = False
@@ -326,7 +342,11 @@ class AudioManager:
                 speech_prob = max(speech_prob, prob)
                 if prob >= self.VAD_THRESHOLD:
                     is_speech_chunk = True
-                    logger.debug(f"VAD: speech detected (prob={prob:.2f})")
+
+        if self._vad_model is None:
+            is_speech_chunk = rms >= self.FALLBACK_RMS_THRESHOLD
+            if self.app_state:
+                self.app_state.current_vad_prob = float(is_speech_chunk)
 
         # Update app_state with smoothed VAD probability (only when we ran VAD)
         if self.app_state and ran_vad:
@@ -343,8 +363,6 @@ class AudioManager:
                 self._flush_onset_into_buffer()
             # Speech detected by VAD
             self.audio_buffer.append(chunk) # Buffer this chunk
-            if not self.is_potentially_speaking:
-                 logger.debug(f"Speech detected (VAD prob={speech_prob:.2f})")
             # Reset silence duration because we heard sound
             self.current_silence_s = 0.0 
             self.is_potentially_speaking = True
@@ -352,7 +370,6 @@ class AudioManager:
         elif self.is_potentially_speaking:
             # Silence detected *after* we were potentially speaking
             self.current_silence_s += current_chunk_duration_s
-            logger.debug(f"Silence accumulating: {self.current_silence_s:.2f}s / {self.SILENCE_DURATION_S}s")
 
             # Update app_state with current silence
             if self.app_state:
@@ -360,7 +377,6 @@ class AudioManager:
             
             # Check if silence duration threshold is met
             if self.current_silence_s >= self.SILENCE_DURATION_S:
-                logger.info(f"Silence threshold reached ({self.current_silence_s:.2f}s). Segmenting audio.")
                 
                 # We have enough silence. Process the buffered speech *before* this silence.
                 if self.audio_buffer:
@@ -370,16 +386,7 @@ class AudioManager:
 
                     # Check minimum length for transcription
                     if segment_duration_s >= self.MIN_CHUNK_DURATION_S:
-                         logger.info(f"Queueing segment of {segment_duration_s:.2f}s for transcription.")
-                         try:
-                             self.transcription_queue.put(segment_data)
-                             self.segments_queued += 1
-                         except Exception as q_e:
-                             logger.error(f"Error putting segment onto queue: {q_e}")
-                    else:
-                         logger.info(f"Skipping short segment ({segment_duration_s:.2f}s) below minimum duration {self.MIN_CHUNK_DURATION_S}s.")
-                else:
-                    logger.debug("Silence threshold reached, but audio buffer was empty. Skipping queue.")
+                        self._queue_segment(segment_data)
 
                 # Reset buffer and state for the next speech segment
                 self.audio_buffer = []
@@ -395,6 +402,13 @@ class AudioManager:
             # which is exactly where soft word onsets died. Keep it rolling
             # so the next speech onset can reclaim it.
             self._buffer_onset(chunk)
+
+        if (
+            self._vad_model is None
+            and len(self.audio_buffer) * frames >= self.FALLBACK_SEGMENT_S * SAMPLE_RATE
+        ):
+            self._queue_segment(np.concatenate(self.audio_buffer))
+            self.audio_buffer = []
 
         # Update live display (if using)
         if self.live_display and int(timer_module.time() * 4) % 2 == 0: 
@@ -424,50 +438,66 @@ class AudioManager:
 
     def start_recording(self):
         """Start recording audio (Phase 3)"""
+        with self.capture_lock:
+            self.reset_collected_audio()
+            self.recording_id += 1
+            self.segments_queued = 0
+            self.set_is_collecting(True)
+
+        if not sys.stdout.isatty():
+            return
         self.console.line()
         self.console.print(Panel.fit(
             "[bold green]Started recording...[/bold green]\n[dim]Tap Ctrl key 3 times quickly to stop[/dim]",
             border_style="green"
         ))
         
-        # Phase 3: Reset buffer and silence state
-        self.reset_collected_audio() # Now resets buffer and silence state
-        self.segments_queued = 0
-        self.set_is_collecting(True) # This also starts the timer/live display
-        # Beep now played in ctrlspeak.py
+    def freeze_recording(self, *, discard=False):
+        """Stop accepting session audio, waiting only for the current frame."""
+        with self.capture_lock:
+            if not self.is_collecting:
+                return False
+            self.is_collecting = False
+            self._onset_buffer.clear()
+            self._onset_samples = 0
+            if discard:
+                # Invalidate any decode that has already left the queue.
+                self.recording_id += 1
+            return True
+
+    def _queue_segment(self, audio):
+        self.segments_queued += 1
+        self.transcription_queue.put(TranscriptionJob(self.recording_id, audio=audio))
     
     def stop_recording(self):
-        """Stop recording and queue the FINAL collected audio segment (Phase 3)"""
-        if not self.is_collecting:
-            logger.warning("stop_recording called but not collecting.")
-            return
+        """Freeze and finalize (also used by the shutdown path)."""
+        if self.freeze_recording():
+            self.finish_recording()
             
-        logger.info("AudioManager: Stopping recording. Processing final segment...")
-        self.set_is_collecting(False) 
-        self.console.line()
+    def finish_recording(self):
+        """Queue the last segment after capture has been frozen."""
+        self.set_is_collecting(False)
         
         # Process any remaining audio in the buffer as the last segment
         if self.audio_buffer:
-            logger.info(f"AudioManager: Concatenating final {len(self.audio_buffer)} audio chunks...")
             try:
                 segment_data = np.concatenate(self.audio_buffer)
                 segment_duration_s = len(segment_data) / SAMPLE_RATE
-                logger.info(f"AudioManager: Final segment duration: {segment_duration_s:.2f}s")
 
                 # Check minimum length for the final segment
                 if segment_duration_s >= self.MIN_CHUNK_DURATION_S:
-                    logger.info(f"Queueing final segment of {segment_duration_s:.2f}s for transcription.")
-                    self.transcription_queue.put(segment_data)
-                    self.segments_queued += 1
-                else:
-                    logger.info(f"Skipping short final segment ({segment_duration_s:.2f}s) below minimum duration {self.MIN_CHUNK_DURATION_S}s.")
+                    self._queue_segment(segment_data)
                     
-            except Exception as e:
-                logger.error(f"AudioManager: Error concatenating or queueing final audio segment: {e}", exc_info=True)
-        else:
-            logger.warning("AudioManager: No final audio segment in buffer to process.")
+            except Exception:
+                logger.error("Could not queue the final audio segment.")
 
         # Clear buffer and reset state after stopping
+        self.reset_collected_audio()
+
+    def discard_recording(self):
+        """Drop buffered audio without passing it to any decoder."""
+        self.set_is_collecting(False)
+        self._reset_streaming_buffer()
         self.reset_collected_audio()
 
     # =========================================================================
@@ -494,17 +524,17 @@ class AudioManager:
         logger.info(f"Starting streaming mode (chunk size: {chunk_size_ms}ms)")
 
         # Configure streaming
-        self._streaming_mode = True
-        self._streaming_callback = on_chunk_callback
-        self._streaming_chunk_size_samples = int(SAMPLE_RATE * chunk_size_ms / 1000)
-        self._streaming_buffer = []
+        with self.capture_lock:
+            self._streaming_mode = True
+            self._streaming_callback = on_chunk_callback
+            self._streaming_chunk_size_samples = int(SAMPLE_RATE * chunk_size_ms / 1000)
+            self._streaming_buffer = []
+            self.reset_collected_audio()
+            self.recording_id += 1
+            self.set_is_collecting(True)
 
-        # Reset standard buffer and state
-        self.reset_collected_audio()
-
-        # Start collection (reuses existing live display logic)
-        self.set_is_collecting(True)
-
+        if not sys.stdout.isatty():
+            return
         self.console.line()
         self.console.print(Panel.fit(
             "[bold green]Started streaming recording...[/bold green]\n"
@@ -513,22 +543,13 @@ class AudioManager:
         ))
 
     def stop_streaming(self) -> None:
-        """Stop streaming recording and process any remaining audio.
+        """Freeze and finalize streaming audio."""
+        if self.freeze_recording():
+            self.finish_streaming()
 
-        Returns any text from processing the final buffer.
-        """
-        if not self.is_collecting:
-            logger.warning("stop_streaming called but not collecting.")
-            return
-
-        if not self._streaming_mode:
-            logger.warning("stop_streaming called but not in streaming mode. Use stop_recording() instead.")
-            self.stop_recording()
-            return
-
-        logger.info("Stopping streaming recording...")
+    def finish_streaming(self):
+        """Queue any remaining streaming audio after capture has frozen."""
         self.set_is_collecting(False)
-        self.console.line()
 
         # Process any remaining audio in the streaming buffer
         if self._streaming_buffer and self._streaming_callback:
@@ -536,27 +557,19 @@ class AudioManager:
             if remaining_samples > 0:
                 # Concatenate remaining buffer
                 remaining_audio = np.concatenate(self._streaming_buffer).flatten()
-                duration_ms = len(remaining_audio) / SAMPLE_RATE * 1000
-                logger.info(f"[AUDIO_STOP] Final buffer: {len(remaining_audio)} samples ({duration_ms:.0f}ms)")
                 try:
-                    logger.debug(f"[AUDIO_STOP] Calling streaming callback with final buffer (is_final=True)...")
                     self._streaming_callback(remaining_audio, is_final=True)
-                    logger.debug(f"[AUDIO_STOP] Final streaming callback completed")
-                except Exception as e:
-                    logger.error(f"Error in final streaming callback: {e}")
-            else:
-                logger.info("[AUDIO_STOP] No remaining samples in buffer")
-        else:
-            logger.info(f"[AUDIO_STOP] No final buffer to process (buffer={bool(self._streaming_buffer)}, callback={bool(self._streaming_callback)})")
+                except Exception:
+                    logger.error("Could not queue the final streaming audio.")
 
-        # Reset streaming state
+        self._reset_streaming_buffer()
+        self.reset_collected_audio()
+
+    def _reset_streaming_buffer(self):
         self._streaming_mode = False
         self._streaming_callback = None
         self._streaming_buffer = []
         self._streaming_chunk_size_samples = 0
-
-        # Clear standard buffer and state
-        self.reset_collected_audio()
 
     def _streaming_audio_callback(self, chunk: np.ndarray, frames: int):
         """Internal callback for streaming mode audio processing.
@@ -583,8 +596,8 @@ class AudioManager:
             self.last_rms = rms
             if self.app_state:
                 self.app_state.current_rms = rms
-        except Exception as e:
-            logger.debug(f"Error calculating RMS in streaming mode: {e}")
+        except Exception:
+            logger.debug("Error calculating microphone level in streaming mode.")
 
         # Check if we have enough samples for a chunk
         if total_samples >= self._streaming_chunk_size_samples:
@@ -608,11 +621,9 @@ class AudioManager:
             # Call the streaming callback
             if self._streaming_callback:
                 try:
-                    duration_ms = len(chunk_samples) / SAMPLE_RATE * 1000
-                    logger.debug(f"[AUDIO_CHUNK] Sending chunk: {len(chunk_samples)} samples ({duration_ms:.0f}ms)")
                     self._streaming_callback(chunk_samples, is_final=False)
-                except Exception as e:
-                    logger.error(f"Error in streaming callback: {e}")
+                except Exception:
+                    logger.error("Could not queue streaming audio.")
 
         # Update live display
         if self.live_display and int(timer_module.time() * 4) % 2 == 0:
@@ -629,6 +640,10 @@ class AudioManager:
 
     def open_input_stream(self):
         """Start capturing, in a child process that owns the microphone."""
+        with self.input_stream_lock:
+            self._open_input_stream()
+
+    def _open_input_stream(self):
         if self._mic_process is not None and self._mic_process.poll() is None:
             return
 
@@ -685,14 +700,14 @@ class AudioManager:
             data = stream.read(block_bytes)
             if not data or len(data) < block_bytes:
                 return
-            if process is not self._mic_process:
-                return  # superseded by a newer capture process
-
             try:
                 chunk = np.frombuffer(data, dtype=np.float32).reshape(-1, CHANNELS)
-                self.audio_callback(chunk, self.MIC_BLOCKSIZE, None, None)
-            except Exception as exc:
-                logger.error(f"Error handling captured audio: {exc}", exc_info=True)
+                with self.capture_lock:
+                    if process is not self._mic_process:
+                        return  # superseded by a newer capture process
+                    self._collect_audio(chunk, self.MIC_BLOCKSIZE, None, None)
+            except Exception:
+                logger.error("Error handling captured audio.")
 
     @staticmethod
     def _kill_mic_process(process):
@@ -714,15 +729,17 @@ class AudioManager:
         is not: the kernel releases the device immediately, and the macOS
         microphone indicator goes out with it.
         """
-        process = self._mic_process
-        self._mic_process = None
+        with self.input_stream_lock:
+            self._close_input_stream()
+
+    def _close_input_stream(self):
+        with self.capture_lock:
+            process = self._mic_process
+            self._mic_process = None
+            self._onset_buffer.clear()
+            self._onset_samples = 0
         if process is None:
             return
-
-        # Stale pre-roll from the session that just ended must not leak into
-        # the next one.
-        self._onset_buffer.clear()
-        self._onset_samples = 0
 
         self._kill_mic_process(process)
         for pipe in (process.stdout, process.stderr):
@@ -742,14 +759,15 @@ class AudioManager:
         """
         logger.info(f"AudioManager: Restarting capture with device {new_device_id}...")
 
-        was_capturing = self._mic_process is not None
-        self.close_input_stream()
-        self.input_device = new_device_id
+        with self.input_stream_lock:
+            was_capturing = self._mic_process is not None
+            self._close_input_stream()
+            self.input_device = new_device_id
 
-        if was_capturing:
-            self.open_input_stream()
+            if was_capturing:
+                self._open_input_stream()
 
-        return self._mic_process
+            return self._mic_process
 
 
 # Remove standalone functions if they are no longer used elsewhere
@@ -779,4 +797,4 @@ def check_microphone_permissions():
         else:
             logger.error(f"Error accessing microphone: {e}")
             console.print(f"[bold red]✗ Error accessing microphone: {e}[/bold red]")
-            return False 
+            return False

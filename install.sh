@@ -21,6 +21,36 @@ fail() {
   exit 1
 }
 
+case "${1:---help}" in
+  -h|--help)
+    printf '%s\n' \
+      'For a private LocalVoice app bundle, use scripts/build-app.sh --help.' \
+      '  --plan              Show what the legacy Homebrew install would change.' \
+      '  --legacy-homebrew   Run the legacy installer (modifies shared ctrlSPEAK).'
+    exit 0
+    ;;
+  --plan)
+    [[ $# -eq 1 ]] || fail "--plan takes no additional arguments."
+    cat <<'PLAN'
+Legacy Homebrew installation (preview only; no changes)
+
+Sources: patelnav/ctrlspeak Homebrew tap, Homebrew FFmpeg, PyPI MLX Whisper.
+Shared files: ctrlSPEAK keg and Python environment; Homebrew helper binaries.
+User files: ~/Applications/LocalVoice.app, ~/Library/LaunchAgents, LocalVoice config.
+Permissions: prompts for microphone, accessibility and input monitoring;
+             an ad-hoc install resets existing LocalVoice grants.
+First service start: may download the 1.61 GB Whisper Turbo model.
+
+Use --legacy-homebrew only if you want these changes.
+PLAN
+    exit 0
+    ;;
+  --legacy-homebrew)
+    [[ $# -eq 1 ]] || fail "--legacy-homebrew takes no additional arguments."
+    ;;
+  *) fail "Unknown option: $1 (see --help)." ;;
+esac
+
 # LocalVoice's version, single-sourced from VERSION so the app bundle, the
 # changelog and the git tag cannot drift apart. The bundle used to report
 # SUPPORTED_CTRLSPEAK_VERSION, which made every install claim to be 1.8.0.
@@ -96,14 +126,14 @@ TRUST
         fail "Homebrew could not install ctrlSPEAK and FFmpeg. See the output above."
       fi
     else
-      echo "Not trusted. Run ./install.sh again when you are ready." >&2
+      echo "Not trusted. Run ./install.sh --legacy-homebrew again when you are ready." >&2
       exit 1
     fi
   else
     # No terminal to ask on (CI, piped input) — leave the manual commands.
     echo "Run these, then run this installer again:" >&2
     echo "  brew trust --formula patelnav/ctrlspeak/ctrlspeak" >&2
-    echo "  ./install.sh" >&2
+    echo "  ./install.sh --legacy-homebrew" >&2
     exit 1
   fi
 fi
@@ -162,6 +192,7 @@ backup_and_install "$PATCH_DIR/utils/keyboard_shortcuts.py" "$CTRLSPEAK_LIBEXEC/
 backup_and_install "$PATCH_DIR/utils/audio.py" "$CTRLSPEAK_LIBEXEC/utils/audio.py" 644
 backup_and_install "$PATCH_DIR/utils/localvoice_config.py" "$CTRLSPEAK_LIBEXEC/utils/localvoice_config.py" 644
 backup_and_install "$PATCH_DIR/utils/media_pause.py" "$CTRLSPEAK_LIBEXEC/utils/media_pause.py" 644
+backup_and_install "$PATCH_DIR/utils/localvoice_vad.py" "$CTRLSPEAK_LIBEXEC/utils/localvoice_vad.py" 644
 
 "$CTRLSPEAK_PYTHON" -m py_compile \
   "$CTRLSPEAK_LIBEXEC/hotkeys.py" \
@@ -180,7 +211,8 @@ backup_and_install "$PATCH_DIR/utils/media_pause.py" "$CTRLSPEAK_LIBEXEC/utils/m
   "$CTRLSPEAK_LIBEXEC/utils/keyboard_shortcuts.py" \
   "$CTRLSPEAK_LIBEXEC/utils/audio.py" \
   "$CTRLSPEAK_LIBEXEC/utils/localvoice_config.py" \
-  "$CTRLSPEAK_LIBEXEC/utils/media_pause.py"
+  "$CTRLSPEAK_LIBEXEC/utils/media_pause.py" \
+  "$CTRLSPEAK_LIBEXEC/utils/localvoice_vad.py"
 
 WRAPPER_PATH="$BREW_PREFIX/bin/ctrlspeak-local"
 cat > "$BUILD_DIR/ctrlspeak-local" <<EOF
@@ -240,8 +272,10 @@ install -m 755 "$BUILD_DIR/ctrlspeak-local" "$WRAPPER_PATH"
 # named "ctrlSPEAK".
 echo "Building the LocalVoice app bundle..."
 xcrun swiftc \
+  -parse-as-library \
   -module-cache-path "$BUILD_DIR/module-cache" \
   "$PROJECT_DIR/src/ctrlspeak-launcher.swift" \
+  "$PROJECT_DIR/src/localvoice-model-library.swift" \
   -o "$BUILD_DIR/LocalVoice-launcher"
 
 xcrun swiftc \
