@@ -100,7 +100,8 @@ private enum ModelLibraryMetrics {
 }
 
 // Layer-backed views that pick their colours up again when the appearance changes.
-private class ModelLibraryLayerView: NSView {
+// Shared with the permission window in the launcher.
+class ModelLibraryLayerView: NSView {
     var fill: NSColor? { didSet { needsDisplay = true } }
     var stroke: NSColor? { didSet { needsDisplay = true } }
     var radius: CGFloat = 0 { didSet { needsDisplay = true } }
@@ -125,7 +126,7 @@ private class ModelLibraryLayerView: NSView {
     }
 }
 
-private final class ModelLibrarySeparator: ModelLibraryLayerView {
+final class ModelLibrarySeparator: ModelLibraryLayerView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         fill = .separatorColor
@@ -137,7 +138,7 @@ private final class ModelLibrarySeparator: ModelLibraryLayerView {
     required init?(coder: NSCoder) { nil }
 }
 
-private extension NSColor {
+extension NSColor {
     static let modelLibraryCard = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 1, alpha: 0.05) : NSColor(white: 1, alpha: 1)
@@ -149,7 +150,7 @@ private extension NSColor {
 }
 
 @MainActor
-private func modelLibraryLabel(_ text: String = "", size: CGFloat, weight: NSFont.Weight = .regular,
+func modelLibraryLabel(_ text: String = "", size: CGFloat, weight: NSFont.Weight = .regular,
                                color: NSColor = .labelColor) -> NSTextField {
     let label = NSTextField(labelWithString: text)
     label.font = .systemFont(ofSize: size, weight: weight)

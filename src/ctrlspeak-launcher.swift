@@ -6,6 +6,7 @@ import CoreGraphics
 import Foundation
 import IOKit.hid
 import OSLog
+import Security
 import ServiceManagement
 
 // Native entry point for LocalVoice.app.
@@ -97,6 +98,445 @@ func inputMonitoringState() -> PermissionState {
 
 // MARK: - Permission checklist
 
+enum PermissionKind: Int, CaseIterable {
+    case microphone, accessibility, inputMonitoring
+
+    var title: String {
+        switch self {
+        case .microphone: "Microphone"
+        case .accessibility: "Accessibility"
+        case .inputMonitoring: "Input Monitoring"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .microphone: "Records your voice while you dictate."
+        case .accessibility: "Types your words into the app you’re using."
+        case .inputMonitoring: "Notices when you tap \(hotkeyDescription())."
+        }
+    }
+
+    var symbol: NSImage? {
+        switch self {
+        case .microphone:
+            NSImage(systemSymbolName: "mic", accessibilityDescription: nil)
+        case .accessibility:
+            // "accessibility" exists from macOS 14, "figure.stand" from macOS 11.
+            NSImage(systemSymbolName: "accessibility", accessibilityDescription: nil)
+                ?? NSImage(systemSymbolName: "figure.stand", accessibilityDescription: nil)
+        case .inputMonitoring:
+            NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil)
+        }
+    }
+
+    var pane: String {
+        switch self {
+        case .microphone: "Privacy_Microphone"
+        case .accessibility: "Privacy_Accessibility"
+        case .inputMonitoring: "Privacy_ListenEvent"
+        }
+    }
+
+    var tccService: String {
+        switch self {
+        case .microphone: "Microphone"
+        case .accessibility: "Accessibility"
+        case .inputMonitoring: "ListenEvent"
+        }
+    }
+
+    var ledgerKey: String {
+        switch self {
+        case .microphone: "permissions.grantedBy.microphone"
+        case .accessibility: "permissions.grantedBy.accessibility"
+        case .inputMonitoring: "permissions.grantedBy.inputMonitoring"
+        }
+    }
+
+    var step: Int { rawValue + 1 }
+}
+
+/// "Command twice" for `hotkey = cmd,2`; the service's default is Control three times.
+func hotkeyDescription() -> String {
+    let parts = (readConfigValue("hotkey") ?? "ctrl,3").lowercased().split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+    let modifiers = ["ctrl": "Control", "cmd": "Command", "alt": "Option", "shift": "Shift"]
+    let taps = ["2": "twice", "3": "three times", "4": "four times"]
+    guard parts.count == 2, let modifier = modifiers[parts[0]], let count = taps[parts[1]] else {
+        return "Control three times"
+    }
+    return "\(modifier) \(count)"
+}
+
+func bundleDisplayName() -> String {
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalVoice"
+}
+
+/// One read of the three permissions. Every call here is a check, never a prompt.
+struct PermissionSnapshot: Equatable {
+    var microphone: PermissionState
+    var accessibility: Bool
+    var inputMonitoring: Bool
+    // IOHIDCheckAccess is only a hint (for "reopen needed"); granted means the CG check.
+    var listenAccess: IOHIDAccessType
+
+    func isGranted(_ kind: PermissionKind) -> Bool {
+        switch kind {
+        case .microphone: microphone == .granted
+        case .accessibility: accessibility
+        case .inputMonitoring: inputMonitoring
+        }
+    }
+
+    var allGranted: Bool { PermissionKind.allCases.allSatisfy(isGranted) }
+    var grantedCount: Int { PermissionKind.allCases.filter(isGranted).count }
+}
+
+@MainActor
+protocol PermissionProbe: AnyObject {
+    func read() -> PermissionSnapshot
+}
+
+@MainActor
+final class LivePermissionProbe: PermissionProbe {
+    func read() -> PermissionSnapshot {
+        PermissionSnapshot(microphone: microphoneState(), accessibility: AXIsProcessTrusted(),
+                           inputMonitoring: CGPreflightListenEventAccess(),
+                           listenAccess: IOHIDCheckAccess(kIOHIDRequestTypeListenEvent))
+    }
+}
+
+/// The running build's code identity. Under ad-hoc signing macOS keys permissions to
+/// the cdhash, so every rebuild is a new identity and earlier grants stop applying.
+struct BuildIdentity: Sendable {
+    let cdhash: String?
+    let isAdhoc: Bool
+
+    static let current: BuildIdentity = {
+        let none = BuildIdentity(cdhash: nil, isAdhoc: false)
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return none }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return none }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, [], &info) == errSecSuccess,
+              let dictionary = info as? [String: Any],
+              let unique = dictionary[kSecCodeInfoUnique as String] as? Data else { return none }
+        let flags = (dictionary[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
+        return BuildIdentity(cdhash: unique.map { String(format: "%02x", $0) }.joined(),
+                             isAdhoc: flags & SecCodeSignatureFlags.adhoc.rawValue != 0)
+    }()
+}
+
+/// What the setup window remembers across launches and rebuilds (UserDefaults of the app).
+struct PermissionLedger {
+    let store: UserDefaults
+    static let resumeWindow: TimeInterval = 600
+
+    static var standard: PermissionLedger { PermissionLedger(store: .standard) }
+
+    func grantedBy(_ kind: PermissionKind) -> String? { store.string(forKey: kind.ledgerKey) }
+
+    func setGrantedBy(_ kind: PermissionKind, _ value: String?) {
+        if let value { store.set(value, forKey: kind.ledgerKey) } else { store.removeObject(forKey: kind.ledgerKey) }
+    }
+
+    var reopenedFor: String? {
+        get { store.string(forKey: "permissions.reopenedFor") }
+        nonmutating set { store.set(newValue, forKey: "permissions.reopenedFor") }
+    }
+
+    // Set while setup is unfinished; survives Quit & Reopen so the relaunch can resume.
+    var resumeIsFresh: Bool {
+        guard let date = store.object(forKey: "setup.resumeAt") as? Date else { return false }
+        let age = Date().timeIntervalSince(date)
+        return age >= 0 && age < Self.resumeWindow
+    }
+
+    func stampResume() { store.set(Date(), forKey: "setup.resumeAt") }
+    func clearResume() { store.removeObject(forKey: "setup.resumeAt") }
+}
+
+enum SetupServiceState: Equatable {
+    case needsModel, starting(String), ready, stopped
+}
+
+/// Removes this app's entry for one service. Runs off the main thread, 5 s at most.
+func resetPermission(service: String, bundle: String) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+    process.arguments = ["reset", service, bundle]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do { try process.run() } catch { return false }
+    let deadline = Date().addingTimeInterval(5)
+    while process.isRunning && Date() < deadline { usleep(50_000) }
+    if process.isRunning {
+        process.terminate()
+        return false
+    }
+    return process.terminationStatus == 0
+}
+
+private enum PermissionRowState: Equatable {
+    case granted, restricted, clearing, pending, reopening, waiting, relaunchDetected, oldEntry,
+         relaunchReturned, needsAttention, off, notSetUp
+
+    var showsSpinner: Bool { [.clearing, .pending, .reopening, .waiting].contains(self) }
+    var isOpen: Bool { self != .granted && self != .restricted }
+
+    func status(for kind: PermissionKind) -> (word: String, note: String) {
+        switch self {
+        case .granted: ("Allowed", "")
+        case .restricted: ("Managed", "By your organization")
+        case .clearing: ("Clearing…", "Removing old entry")
+        case .pending: ("Waiting…", "Answer the dialog")
+        case .reopening: ("Reopening…", "Starting a fresh copy")
+        case .waiting: ("Waiting…", "In System Settings")
+        case .relaunchDetected: ("Reopen needed", "Applies after reopening")
+        case .oldEntry: ("Old entry", "From an earlier build")
+        case .relaunchReturned: ("Not detected", "Reopen if switched on")
+        case .needsAttention: ("Not on yet", "Old entries can block it")
+        case .off: ("Off", "Switch on in Settings")
+        case .notSetUp: ("Not set up", kind == .microphone ? "macOS asks once" : "Touch ID or password")
+        }
+    }
+
+    var statusColor: NSColor {
+        self == .oldEntry || self == .relaunchDetected ? .systemOrange : .labelColor
+    }
+
+    func button(for kind: PermissionKind) -> (title: String, enabled: Bool)? {
+        switch self {
+        case .granted, .restricted: nil
+        case .clearing: ("Re-add…", false)
+        case .pending: ("Allow…", false)
+        case .reopening: ("Reopen", false)
+        case .waiting, .off: ("Open Settings…", true)
+        case .relaunchDetected, .relaunchReturned: ("Reopen", true)
+        case .oldEntry: ("Re-add…", true)
+        case .needsAttention: ("Try Again…", true)
+        case .notSetUp: (kind == .microphone ? "Allow…" : "Open Settings…", true)
+        }
+    }
+}
+
+private enum PermissionMetrics {
+    static let inset: CGFloat = 20
+    static let badge: CGFloat = 22
+    static let textX: CGFloat = 54
+    static let statusWidth: CGFloat = 136
+    static let actionWidth: CGFloat = 132
+    static let buttonWidth: CGFloat = 124
+    static let gap: CGFloat = 16
+    static let headerHeight: CGFloat = 38
+    static let rowHeight: CGFloat = 58
+    static let cardWidth: CGFloat = 644
+    static var statusTrailing: CGFloat { inset + actionWidth + gap }
+}
+
+/// Remembers when the mouse went down, so an action can be matched to the activation that
+/// the same click caused (the action itself only fires on mouse-up).
+private final class PressTimedButton: NSButton {
+    private(set) var pressedAt: TimeInterval?
+
+    override func mouseDown(with event: NSEvent) {
+        pressedAt = event.timestamp
+        super.mouseDown(with: event)
+    }
+
+    func takePressTime() -> TimeInterval? {
+        defer { pressedAt = nil }
+        return pressedAt
+    }
+}
+
+@MainActor
+private final class PermissionSetupRow: ModelLibraryLayerView {
+    let kind: PermissionKind
+    let button = PressTimedButton(title: "", target: nil, action: nil)
+    private let badge = ModelLibraryLayerView()
+    private let badgeNumber = NSTextField(labelWithString: "")
+    private let icon = NSImageView()
+    private let title = modelLibraryLabel(size: 13, weight: .medium)
+    private let explanation = modelLibraryLabel(size: 12, color: .secondaryLabelColor)
+    private let spinner = NSProgressIndicator()
+    private let status = modelLibraryLabel(size: 13)
+    private let note = modelLibraryLabel(size: 11, color: .tertiaryLabelColor)
+    private let statusColumn = NSStackView()
+    private let allowed = NSStackView()
+    private var shown: (PermissionRowState, Bool)?
+    /// The state the row currently displays; its button acts on this, matching its label.
+    var shownState: PermissionRowState? { shown?.0 }
+
+    init(kind: PermissionKind, separator: Bool, target: AnyObject, action: Selector) {
+        self.kind = kind
+        super.init(frame: .zero)
+        let M = PermissionMetrics.self
+        translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+
+        badge.radius = M.badge / 2
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badge.setAccessibilityElement(false)
+        badgeNumber.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        badgeNumber.alignment = .center
+        badgeNumber.stringValue = "\(kind.step)"
+        badgeNumber.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(badgeNumber)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.setAccessibilityElement(false)
+
+        title.stringValue = kind.title
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        explanation.stringValue = kind.explanation
+        explanation.toolTip = kind.explanation
+        explanation.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let text = NSStackView(views: [title, explanation])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.setAccessibilityElement(false)
+        let statusLine = NSStackView(views: [spinner, status])
+        statusLine.spacing = 5
+        statusLine.alignment = .centerY
+        statusLine.detachesHiddenViews = true
+        statusColumn.setViews([statusLine, note], in: .leading)
+        statusColumn.orientation = .vertical
+        statusColumn.alignment = .leading
+        statusColumn.spacing = 1
+        statusColumn.translatesAutoresizingMaskIntoConstraints = false
+
+        button.bezelStyle = .push
+        button.target = target
+        button.action = action
+        button.tag = kind.rawValue
+        button.translatesAutoresizingMaskIntoConstraints = false
+
+        let check = NSImageView(image: NSImage(systemSymbolName: "checkmark.circle.fill",
+                                               accessibilityDescription: nil) ?? NSImage())
+        check.contentTintColor = .systemGreen
+        check.symbolConfiguration = .init(pointSize: 13, weight: .medium)
+        let allowedLabel = modelLibraryLabel("Allowed", size: 13, weight: .medium, color: .systemGreen)
+        allowed.setViews([check, allowedLabel], in: .leading)
+        allowed.spacing = 5
+        allowed.alignment = .centerY
+        allowed.translatesAutoresizingMaskIntoConstraints = false
+
+        let rule = ModelLibrarySeparator()
+        rule.isHidden = !separator
+        for view in [rule, badge, icon, text, statusColumn, button, allowed] { addSubview(view) }
+        let height = heightAnchor.constraint(equalToConstant: M.rowHeight)
+        height.priority = .defaultHigh - 1
+        NSLayoutConstraint.activate([
+            height,
+            heightAnchor.constraint(greaterThanOrEqualToConstant: M.rowHeight),
+            rule.topAnchor.constraint(equalTo: topAnchor),
+            rule.leadingAnchor.constraint(equalTo: leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: trailingAnchor),
+
+            badge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: M.inset),
+            badge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            badge.widthAnchor.constraint(equalToConstant: M.badge),
+            badge.heightAnchor.constraint(equalToConstant: M.badge),
+            badgeNumber.centerXAnchor.constraint(equalTo: badge.centerXAnchor),
+            badgeNumber.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+            icon.centerXAnchor.constraint(equalTo: badge.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+
+            text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: M.textX),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: statusColumn.leadingAnchor, constant: -M.gap),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 10),
+
+            statusColumn.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -M.statusTrailing),
+            statusColumn.widthAnchor.constraint(equalToConstant: M.statusWidth),
+            statusColumn.centerYAnchor.constraint(equalTo: centerYAnchor),
+            statusColumn.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 8),
+
+            button.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -M.inset),
+            button.centerYAnchor.constraint(equalTo: centerYAnchor),
+            button.widthAnchor.constraint(equalToConstant: M.buttonWidth),
+            allowed.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            allowed.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func update(_ state: PermissionRowState, highlighted: Bool, appName: String) {
+        let changed = shown.map { $0.0 != state || $0.1 != highlighted } ?? true
+        shown = (state, highlighted)
+        guard changed else { return }
+
+        fill = highlighted ? .modelLibraryHighlight : nil
+        let done = state == .granted
+        badge.isHidden = done || state == .restricted
+        if highlighted {
+            badge.fill = .controlAccentColor
+            badge.stroke = nil
+            badgeNumber.textColor = .white
+            badgeNumber.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        } else {
+            badge.fill = nil
+            badge.stroke = .tertiaryLabelColor
+            badgeNumber.textColor = .tertiaryLabelColor
+            badgeNumber.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        }
+        if done {
+            icon.image = kind.symbol
+            icon.symbolConfiguration = .init(pointSize: 15, weight: .regular)
+            icon.contentTintColor = .secondaryLabelColor
+        } else if state == .restricted {
+            icon.image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil)
+            icon.symbolConfiguration = .init(pointSize: 13, weight: .regular)
+            icon.contentTintColor = .tertiaryLabelColor
+        }
+        icon.isHidden = !(done || state == .restricted)
+
+        let (word, detail) = state.status(for: kind)
+        statusColumn.isHidden = done
+        status.stringValue = word
+        status.textColor = state.statusColor
+        note.stringValue = detail
+        note.isHidden = detail.isEmpty
+        if state.showsSpinner { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        spinner.isHidden = !state.showsSpinner
+
+        allowed.isHidden = !done
+        if let action = state.button(for: kind) {
+            button.isHidden = false
+            button.title = action.title
+            button.isEnabled = action.enabled
+            button.setAccessibilityLabel(accessibilityTitle(action.title, appName: appName))
+        } else {
+            button.isHidden = true
+        }
+
+        setAccessibilityLabel(done
+            ? "\(kind.title), allowed, \(kind.explanation)"
+            : "\(kind.title), step \(kind.step) of 3, \(word), \(kind.explanation)")
+    }
+
+    private func accessibilityTitle(_ title: String, appName: String) -> String {
+        switch title {
+        case "Allow…": "Allow \(kind.title)…"
+        case "Open Settings…": "Open Settings for \(kind.title)…"
+        case "Try Again…": "Try Again for \(kind.title)…"
+        case "Re-add…": "Re-add \(kind.title)…"
+        case "Reopen": "Reopen \(appName)"
+        default: title
+        }
+    }
+}
+
 @MainActor
 private final class AppBundleDragView: NSView, NSDraggingSource {
     private let appURL: URL
@@ -158,40 +598,164 @@ private final class AppBundleDragView: NSView, NSDraggingSource {
         -> NSDragOperation { .copy }
 }
 
+/// Floats beside System Settings while a step happens there: says what to do, offers the
+/// draggable app, then confirms the grant and offers the next step without leaving Settings.
 @MainActor
-private final class PermissionDragPanel: NSPanel {
-    init(permission: String) {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 326, height: 104),
+private final class PermissionGuidePanel: NSPanel {
+    enum Content: Equatable {
+        case step(PermissionKind, instruction: String, tile: Bool, extra: String?)
+        case success(text: String, detail: String?, button: String, enabled: Bool)
+    }
+
+    private let headerIcon = NSImageView()
+    private let header = modelLibraryLabel(size: 11, color: .secondaryLabelColor)
+    private let headerRow = NSStackView()
+    private let instruction = NSTextField(wrappingLabelWithString: "")
+    private let tile: AppBundleDragView
+    private let footnote = NSTextField(wrappingLabelWithString: "")
+    private let extra = NSTextField(wrappingLabelWithString: "")
+    private let finder = NSButton(title: "Show in Finder", target: nil, action: nil)
+    private let successIcon = NSImageView()
+    private let successText = NSTextField(wrappingLabelWithString: "")
+    private let successDetail = NSTextField(wrappingLabelWithString: "")
+    private let successButton = NSButton(title: "", target: nil, action: nil)
+    private let successButtonRow = NSStackView()
+    private let successRow = NSStackView()
+    private let stack = NSStackView()
+    private(set) var content: Content?
+    var onReveal: (() -> Void)?
+    var onSuccess: (() -> Void)?
+
+    static let width: CGFloat = 320
+
+    init(appName: String) {
+        tile = AppBundleDragView(appURL: Bundle.main.bundleURL, appName: appName)
+        super.init(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 160),
                    styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel],
                    backing: .buffered, defer: false)
-        title = "Add LocalVoice"
+        title = "LocalVoice Setup"
         isReleasedWhenClosed = false
         isFloatingPanel = true
         level = .floating
         hidesOnDeactivate = false
 
-        let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalVoice"
-        let intro = NSTextField(labelWithString: "Drag into \(permission).")
-        let tile = AppBundleDragView(appURL: Bundle.main.bundleURL, appName: name)
-        let stack = NSStackView(views: [intro, tile])
+        headerIcon.symbolConfiguration = .init(pointSize: 12, weight: .regular)
+        headerIcon.contentTintColor = .secondaryLabelColor
+        headerRow.setViews([headerIcon, header], in: .leading)
+        headerRow.spacing = 5
+        headerRow.alignment = .centerY
+        instruction.font = .systemFont(ofSize: 13, weight: .medium)
+        instruction.maximumNumberOfLines = 2
+        for label in [footnote, extra, successDetail] {
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+        }
+        footnote.stringValue = "macOS may ask for Touch ID or your password. Can’t drop it? Click + under the list."
+        finder.isBordered = false
+        finder.font = .systemFont(ofSize: 11)
+        finder.contentTintColor = .linkColor
+        finder.attributedTitle = NSAttributedString(string: "Show in Finder", attributes: [
+            .foregroundColor: NSColor.linkColor, .font: NSFont.systemFont(ofSize: 11),
+        ])
+        finder.target = self
+        finder.action = #selector(reveal)
+
+        successIcon.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
+        successIcon.symbolConfiguration = .init(pointSize: 20, weight: .regular)
+        successIcon.contentTintColor = .systemGreen
+        successIcon.setAccessibilityElement(false)
+        successText.font = .systemFont(ofSize: 13, weight: .medium)
+        successRow.setViews([successIcon, successText], in: .leading)
+        successRow.spacing = 8
+        successRow.alignment = .centerY
+        successButton.bezelStyle = .push
+        successButton.keyEquivalent = "\r"
+        successButton.target = self
+        successButton.action = #selector(performSuccess)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        successButtonRow.setViews([spacer, successButton], in: .leading)
+
         stack.orientation = .vertical
+        stack.setViews([headerRow, instruction, tile, footnote, extra, finder, successRow, successDetail,
+                        successButtonRow], in: .top)
         stack.alignment = .leading
-        stack.spacing = 9
+        stack.spacing = 8
+        stack.detachesHiddenViews = true
         stack.translatesAutoresizingMaskIntoConstraints = false
         let view = NSView()
         view.addSubview(stack)
         NSLayoutConstraint.activate([
+            view.widthAnchor.constraint(equalToConstant: Self.width),
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
             stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
-            intro.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+            instruction.widthAnchor.constraint(equalTo: stack.widthAnchor),
             tile.widthAnchor.constraint(equalTo: stack.widthAnchor),
             tile.heightAnchor.constraint(equalToConstant: 54),
+            footnote.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            extra.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            successDetail.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            successButtonRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            successText.widthAnchor.constraint(lessThanOrEqualToConstant: Self.width - 28 - 28),
         ])
         contentView = view
+        stack.setCustomSpacing(12, after: successDetail)
+        stack.setCustomSpacing(12, after: successRow)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    func show(_ content: Content) {
+        guard content != self.content else { return }
+        self.content = content
+        switch content {
+        case let .step(kind, text, showsTile, extraLine):
+            headerIcon.image = kind.symbol
+            header.stringValue = "Step \(kind.step) of 3 · \(kind.title)"
+            instruction.stringValue = text
+            extra.stringValue = extraLine ?? ""
+            set(step: true, tile: showsTile, extra: extraLine != nil)
+            instruction.setAccessibilityLabel(text)
+        case let .success(text, detail, button, enabled):
+            successText.stringValue = text
+            successDetail.stringValue = detail ?? ""
+            successButton.title = button
+            successButton.isEnabled = enabled
+            set(step: false, tile: false, extra: false)
+            successDetail.isHidden = detail == nil
+        }
+        refit()
+    }
+
+    private func set(step: Bool, tile showsTile: Bool, extra showsExtra: Bool) {
+        headerRow.isHidden = !step
+        instruction.isHidden = !step
+        tile.isHidden = !(step && showsTile)
+        footnote.isHidden = !(step && showsTile)
+        finder.isHidden = !(step && showsTile)
+        extra.isHidden = !(step && showsExtra)
+        successRow.isHidden = step
+        successDetail.isHidden = step
+        successButtonRow.isHidden = step
+    }
+
+    // Keep the top edge where it is when the content changes height.
+    private func refit() {
+        guard let view = contentView else { return }
+        view.layoutSubtreeIfNeeded()
+        let size = NSSize(width: Self.width, height: view.fittingSize.height)
+        let top = frame.maxY
+        setContentSize(size)
+        if isVisible { setFrameTopLeftPoint(NSPoint(x: frame.minX, y: top)) }
+        if case .success = content {
+            stack.setCustomSpacing(12, after: successDetail.isHidden ? successRow : successDetail)
+        }
+    }
+
+    @objc private func reveal() { onReveal?() }
+    @objc private func performSuccess() { onSuccess?() }
 
     static let settingsID = "com.apple.systempreferences"
 
@@ -240,99 +804,68 @@ private final class PermissionDragPanel: NSPanel {
     }
 }
 
+/// The permission window: one card in the model library's style with a numbered row per
+/// permission. The first open row is highlighted and holds the only default button; the
+/// status updates live while the user is in System Settings.
 @MainActor
 private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
-    private struct Step {
-        let name: String
-        let explanation: String
-        let pane: String
-        let state: () -> PermissionState
-    }
-
-    private let steps = [
-        Step(name: "Microphone", explanation: "Records audio when you start dictation.",
-             pane: "Privacy_Microphone", state: microphoneState),
-        Step(name: "Accessibility", explanation: "Inserts text into the app you’re using.",
-             pane: "Privacy_Accessibility", state: accessibilityState),
-        Step(name: "Input Monitoring", explanation: "Detects your global dictation shortcut.",
-             pane: "Privacy_ListenEvent", state: inputMonitoringState),
-    ]
-    private var statusLabels: [NSTextField] = []
-    private var actions: [NSButton] = []
+    private let probe: any PermissionProbe
+    private let identity: BuildIdentity
+    private let ledger: PermissionLedger
+    private let appName = bundleDisplayName()
+    private var snapshot: PermissionSnapshot
+    private var rows: [PermissionSetupRow] = []
+    private let heading = modelLibraryLabel(size: 17, weight: .semibold)
+    private let subtitle = NSTextField(wrappingLabelWithString: "")
+    private let footerTitle = modelLibraryLabel(size: 13, weight: .medium)
+    private let footerNote = modelLibraryLabel(size: 12, color: .secondaryLabelColor)
+    private let footerButton = NSButton(title: "", target: nil, action: nil)
     private var microphonePending = false
-    private var dragPanel: PermissionDragPanel?
-    private var dragStep: Int?
-    private var dragPlacement: Task<Void, Never>?
+    private var waiting: Set<PermissionKind> = []
+    private var visited: Set<PermissionKind> = []
+    private var returned: Set<PermissionKind> = []
+    private var clearing: Set<PermissionKind> = []
+    private var resetFailed: Set<PermissionKind> = []
+    private var retrying: Set<PermissionKind> = []
+    private var resetCompletions: [PermissionKind: (Bool) -> Void] = [:]
+    private var reopenFailed = false
+    private var reopening = false
+    private var activation: (time: TimeInterval, shown: [PermissionRowState?])?
+    private var reopenLaunched = false
+    private var successKind: PermissionKind?
+    private var listenDisagreement = 0
+    private var resumed = false
+    private var lastGranted: Set<PermissionKind>?
+    private var guide: PermissionGuidePanel?
+    private var guideKind: PermissionKind?
+    private var guidePlacement: Task<Void, Never>?
+    private var timer: Timer?
+    private var fastPolling: Bool?
+    private var activity: NSObjectProtocol?
     private var previousActivationPolicy: NSApplication.ActivationPolicy?
-    private var lastStatuses: [PermissionState] = []
+    private var lastLogged: String?
     private let log = Logger(subsystem: "com.localvoice", category: "permissions")
     private var wasReady = false
-    private let summary = NSTextField(wrappingLabelWithString: "")
-    private let done = NSButton(title: "Set Up Later", target: nil, action: nil)
     var onReady: (() -> Void)?
     var onClose: ((Bool) -> Void)?
+    var onQuit: (() -> Void)?
+    var serviceState: (() -> SetupServiceState)?
 
-    init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 410),
+    init(probe: (any PermissionProbe)? = nil, identity: BuildIdentity = .current,
+         ledger: PermissionLedger = .standard) {
+        let probe = probe ?? LivePermissionProbe()
+        self.probe = probe
+        self.identity = identity
+        self.ledger = ledger
+        snapshot = probe.read()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 385),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
         window.title = "LocalVoice Permissions"
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.delegate = self
-
-        let heading = NSTextField(labelWithString: "Set Up Permissions")
-        heading.font = .systemFont(ofSize: 23, weight: .semibold)
-        let intro = NSTextField(wrappingLabelWithString:
-            "LocalVoice checks access automatically. macOS only asks when you choose an action below.")
-        intro.textColor = .secondaryLabelColor
-        let content = NSStackView(views: [heading, intro])
-        content.orientation = .vertical
-        content.alignment = .leading
-        content.spacing = 14
-        intro.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-
-        for (index, step) in steps.enumerated() {
-            let title = NSTextField(labelWithString: step.name)
-            title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-            let explanation = NSTextField(labelWithString: step.explanation)
-            explanation.textColor = .secondaryLabelColor
-            let status = NSTextField(labelWithString: "")
-            status.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
-            let labels = NSStackView(views: [title, explanation, status])
-            labels.orientation = .vertical
-            labels.alignment = .leading
-            labels.spacing = 3
-            let button = NSButton(title: "Open Settings", target: self, action: #selector(handlePermission))
-            button.tag = index
-            let row = NSStackView(views: [labels, NSView(), button])
-            row.alignment = .centerY
-            content.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-            statusLabels.append(status)
-            actions.append(button)
-        }
-
-        summary.textColor = .secondaryLabelColor
-        content.addArrangedSubview(summary)
-        summary.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-        done.target = self
-        done.action = #selector(dismiss)
-        let reveal = NSButton(title: "Show App in Finder", target: self, action: #selector(revealApp))
-        let footer = NSStackView(views: [reveal, NSView(), done])
-        content.addArrangedSubview(footer)
-        footer.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-
-        let view = NSView()
-        content.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
-            content.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -24),
-        ])
-        window.contentView = view
+        buildContent(in: window)
         window.center()
         NotificationCenter.default.addObserver(
             self, selector: #selector(applicationActivated),
@@ -346,7 +879,122 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) { nil }
 
+    private var buildKey: String { identity.cdhash ?? "unknown" }
+
+    // MARK: Layout
+
+    private func buildContent(in window: NSWindow) {
+        let M = PermissionMetrics.self
+        heading.setAccessibilityRole(.staticText)
+        subtitle.font = .systemFont(ofSize: 12)
+        subtitle.maximumNumberOfLines = 2
+
+        let card = ModelLibraryLayerView()
+        card.fill = .modelLibraryCard
+        card.stroke = .separatorColor
+        card.radius = 12
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        let permissionHeader = modelLibraryLabel("Permission", size: 12, color: .secondaryLabelColor)
+        let statusHeader = modelLibraryLabel("Status", size: 12, color: .secondaryLabelColor)
+        header.addSubview(permissionHeader)
+        header.addSubview(statusHeader)
+        NSLayoutConstraint.activate([
+            header.heightAnchor.constraint(equalToConstant: M.headerHeight),
+            permissionHeader.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: M.textX),
+            permissionHeader.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            statusHeader.leadingAnchor.constraint(equalTo: header.trailingAnchor,
+                                                  constant: -(M.statusTrailing + M.statusWidth)),
+            statusHeader.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+        ])
+
+        var cardViews: [NSView] = [header, ModelLibrarySeparator()]
+        for kind in PermissionKind.allCases {
+            let row = PermissionSetupRow(kind: kind, separator: kind != .microphone,
+                                         target: self, action: #selector(rowAction))
+            rows.append(row)
+            cardViews.append(row)
+        }
+        cardViews.append(buildFooter())
+
+        let cardStack = NSStackView(views: cardViews)
+        cardStack.orientation = .vertical
+        cardStack.alignment = .leading
+        cardStack.spacing = 0
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(cardStack)
+        for view in cardViews { view.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([
+            card.widthAnchor.constraint(equalToConstant: M.cardWidth),
+            cardStack.topAnchor.constraint(equalTo: card.topAnchor),
+            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+
+        let content = NSStackView(views: [heading, subtitle, card])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 4
+        content.setCustomSpacing(16, after: subtitle)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        subtitle.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        let view = NSView()
+        view.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
+            content.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -24),
+        ])
+        window.contentView = view
+    }
+
+    private func buildFooter() -> NSView {
+        let M = PermissionMetrics.self
+        let footer = NSView()
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        let rule = ModelLibrarySeparator()
+        footerNote.lineBreakMode = .byWordWrapping
+        footerNote.maximumNumberOfLines = 2
+        footerNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        footerButton.bezelStyle = .push
+        footerButton.target = self
+        footerButton.action = #selector(dismiss)
+        footerButton.translatesAutoresizingMaskIntoConstraints = false
+        for view in [rule, footerTitle, footerNote, footerButton] { footer.addSubview(view) }
+        NSLayoutConstraint.activate([
+            rule.topAnchor.constraint(equalTo: footer.topAnchor),
+            rule.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: M.inset),
+            rule.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -M.inset),
+            footerTitle.topAnchor.constraint(equalTo: rule.bottomAnchor, constant: 14),
+            footerTitle.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: M.inset),
+            footerNote.topAnchor.constraint(equalTo: footerTitle.bottomAnchor, constant: 3),
+            footerNote.leadingAnchor.constraint(equalTo: footerTitle.leadingAnchor),
+            footerNote.trailingAnchor.constraint(lessThanOrEqualTo: footerButton.leadingAnchor, constant: -M.gap),
+            footerNote.bottomAnchor.constraint(equalTo: footer.bottomAnchor, constant: -16),
+            footerButton.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -M.inset),
+            footerButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor, constant: 1),
+            footerButton.widthAnchor.constraint(equalToConstant: M.buttonWidth),
+        ])
+        return footer
+    }
+
+    // MARK: Presentation
+
     func present() {
+        snapshot = probe.read()
+        if snapshot.listenAccess == kIOHIDAccessTypeGranted && !snapshot.inputMonitoring && listenDisagreement == 0 {
+            listenDisagreement = 1
+        }
+        if !snapshot.allGranted {
+            if !resumed && lastGranted == nil {
+                resumed = ledger.resumeIsFresh && (1...2).contains(snapshot.grantedCount)
+            }
+            ledger.stampResume()
+        }
         if previousActivationPolicy == nil {
             previousActivationPolicy = NSApp.activationPolicy()
             // A menu-bar app is absent from Cmd-Tab. Setup sends the user to
@@ -362,98 +1010,360 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
         refresh()
     }
 
-    @objc private func applicationActivated(_ notification: Notification) { refresh() }
+    var isPresented: Bool { previousActivationPolicy != nil }
+
+    /// The service started, became ready, stopped or failed.
+    func serviceDidChange() { refresh() }
+
+    @objc private func applicationActivated(_ notification: Notification) {
+        // If this activation came from clicking a row's button, that click should act on
+        // what the row showed before the activation changed it (see rowAction).
+        activation = (ProcessInfo.processInfo.systemUptime, rows.map(\.shownState))
+        // Back from System Settings: a step that was visited there now counts as returned.
+        for kind in waiting where visited.contains(kind) { returned.insert(kind) }
+        waiting.removeAll()
+        visited.removeAll()
+        closeGuide()
+        refresh()
+    }
 
     @objc private func workspaceActivated(_ notification: Notification) {
-        guard let dragPanel,
-              let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
         else { return }
-        if app.bundleIdentifier == PermissionDragPanel.settingsID {
-            if dragPlacement == nil && !dragPanel.isVisible { placeDragPanelWhenSettingsOpen() }
-        } else if app.bundleIdentifier != Bundle.main.bundleIdentifier {
-            dragPanel.orderOut(nil)
+        if app.bundleIdentifier == PermissionGuidePanel.settingsID {
+            visited.formUnion(waiting)
+            if let guide, guidePlacement == nil, !guide.isVisible { placeGuideWhenSettingsOpen() }
+        } else {
+            guide?.orderOut(nil)
         }
+        refresh()
     }
 
     func windowDidBecomeKey(_ notification: Notification) { refresh() }
 
     func windowWillClose(_ notification: Notification) {
-        if notification.object as? NSWindow === dragPanel {
-            dragPlacement?.cancel()
-            dragPlacement = nil
-            dragPanel = nil
-            dragStep = nil
+        if notification.object as? NSWindow === guide {
+            guidePlacement?.cancel()
+            guidePlacement = nil
+            guide = nil
+            guideKind = nil
+            successKind = nil
             return
         }
-        dragPanel?.close()
+        closeGuide()
+        stopPolling()
+        if !reopenLaunched { ledger.clearResume() }
+        resumed = false
+        lastGranted = nil
         if let previousActivationPolicy {
             self.previousActivationPolicy = nil
             NSApp.setActivationPolicy(previousActivationPolicy)
         }
-        onClose?(steps.allSatisfy { $0.state() == .granted })
+        onClose?(probe.read().allGranted)
     }
 
     @objc private func dismiss() { close() }
 
-    @objc private func revealApp() {
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    // MARK: State
+
+    private func isOldEntry(_ kind: PermissionKind) -> Bool {
+        guard identity.isAdhoc, let cdhash = identity.cdhash, !snapshot.isGranted(kind),
+              let earlier = ledger.grantedBy(kind), earlier != cdhash else { return false }
+        return kind != .microphone || snapshot.microphone == .denied
     }
 
-    private func showDragPanel(for index: Int) {
-        if dragStep != index || dragPanel == nil {
-            dragPanel?.close()
-            let panel = PermissionDragPanel(permission: steps[index].name)
-            panel.delegate = self
-            dragPanel = panel
-            dragStep = index
+    private func rowState(_ kind: PermissionKind) -> PermissionRowState {
+        if snapshot.isGranted(kind) { return .granted }
+        if kind == .microphone && snapshot.microphone == .restricted { return .restricted }
+        if clearing.contains(kind) { return .clearing }
+        if kind == .microphone && microphonePending { return .pending }
+        if kind == .inputMonitoring && reopening { return .reopening }
+        let reopened = ledger.reopenedFor == buildKey
+        if kind == .inputMonitoring && snapshot.listenAccess == kIOHIDAccessTypeGranted {
+            // Switched on, but not in effect for this process yet. Never a resetting state:
+            // the entry is right, it only needs a relaunch (debounced; once per build).
+            if listenDisagreement >= 2 && !reopened { return .relaunchDetected }
+            return waiting.contains(kind) ? .waiting : .relaunchReturned
+        }
+        if waiting.contains(kind) { return .waiting }
+        if isOldEntry(kind) { return .oldEntry }
+        let listenKnown = snapshot.listenAccess != kIOHIDAccessTypeUnknown
+        if kind == .inputMonitoring && returned.contains(kind) && listenKnown && !reopened { return .relaunchReturned }
+        if kind == .accessibility && returned.contains(kind) { return .needsAttention }
+        if kind == .inputMonitoring && listenKnown && reopened { return .needsAttention }
+        if kind == .microphone && snapshot.microphone == .denied { return .off }
+        if kind == .inputMonitoring && snapshot.listenAccess == kIOHIDAccessTypeDenied { return .off }
+        return .notSetUp
+    }
+
+    private func refresh() {
+        guard window?.isVisible == true else { return }
+        snapshot = probe.read()
+        if snapshot.listenAccess == kIOHIDAccessTypeGranted && !snapshot.inputMonitoring {
+            listenDisagreement += 1
+        } else {
+            listenDisagreement = 0
+        }
+        let granted = Set(PermissionKind.allCases.filter(snapshot.isGranted))
+        for kind in granted {
+            waiting.remove(kind)
+            returned.remove(kind)
+            retrying.remove(kind)
+            resetFailed.remove(kind)
+            if let cdhash = identity.cdhash, ledger.grantedBy(kind) != cdhash { ledger.setGrantedBy(kind, cdhash) }
+        }
+        let logLine = "microphone=\(snapshot.microphone.rawValue) accessibility=\(snapshot.accessibility ? "granted" : "denied") inputMonitoring=\(snapshot.inputMonitoring ? "granted" : "denied")"
+        if logLine != lastLogged {
+            log.notice("Permission status: \(logLine, privacy: .public)")
+            lastLogged = logLine
+        }
+
+        let states = PermissionKind.allCases.map(rowState)
+        let ready = snapshot.allGranted
+        let highlight = PermissionKind.allCases.first { states[$0.rawValue].isOpen }
+        for row in rows {
+            row.update(states[row.kind.rawValue], highlighted: row.kind == highlight, appName: appName)
+        }
+        updateText(states: states, ready: ready, highlight: highlight)
+        updateDefaultButton(ready: ready, highlight: highlight)
+
+        if let previous = lastGranted {
+            for kind in PermissionKind.allCases where granted.contains(kind) && !previous.contains(kind) {
+                announce(granted: kind, states: states)
+            }
+        }
+        lastGranted = granted
+        if let kind = guideKind, case .step = guide?.content,
+           snapshot.isGranted(kind) || (kind == .inputMonitoring && states[kind.rawValue] == .relaunchDetected) {
+            showGuideSuccess(after: kind, states: states)
+        } else if let kind = successKind, case .success = guide?.content {
+            showGuideSuccess(after: kind, states: states)
+        }
+
+        let newlyReady = ready && !wasReady
+        wasReady = ready
+        if newlyReady { onReady?() }
+        fitWindow()
+        updatePolling()
+    }
+
+    private func updateText(states: [PermissionRowState], ready: Bool, highlight: PermissionKind?) {
+        let service = serviceState?()
+        if ready {
+            heading.stringValue = service == .stopped ? "Permissions Are On" : "You’re All Set"
+        } else {
+            heading.stringValue = states.contains(.oldEntry) ? "Set Up LocalVoice Again" : "Set Up LocalVoice"
+        }
+
+        if let message = message(states: states) {
+            subtitle.stringValue = message
+            subtitle.textColor = .labelColor
+        } else {
+            subtitle.textColor = .secondaryLabelColor
+            let done = snapshot.grantedCount
+            let next = highlight?.title ?? ""
+            if ready {
+                subtitle.stringValue = "All three permissions are on."
+            } else if states.contains(.oldEntry) {
+                subtitle.stringValue = "This copy of \(appName) is new to macOS, so it needs your OK again."
+            } else if done == 0 {
+                subtitle.stringValue = "Allow three things in macOS, one at a time. Nothing is asked until you click."
+            } else {
+                subtitle.stringValue = "\(resumed ? "Welcome back. " : "")\(done) of 3 done. Next: \(next)."
+            }
+        }
+
+        if ready {
+            switch service {
+            case .needsModel:
+                footer("One more step", "Choose a speech model. It runs on this Mac.", "Choose Model…")
+            case let .starting(model):
+                footer("Starting dictation", "Loading \(model)…", "Done")
+            case .ready:
+                footer("Ready to dictate", "Tap \(hotkeyDescription()) in any app to start.", "Done")
+            case .stopped:
+                footer("Dictation didn’t start", "Open Models to try again or choose another model.", "Done")
+            case nil:
+                footer("Permissions are on", "You can close this window.", "Done")
+            }
+        } else {
+            footer("Dictation stays on this Mac",
+                   identity.isAdhoc ? "Test builds of LocalVoice need these again after each rebuild."
+                                    : "Change these anytime in System Settings › Privacy & Security.",
+                   states[PermissionKind.microphone.rawValue] == .restricted ? "Close" : "Set Up Later")
         }
     }
 
-    private func placeDragPanelWhenSettingsOpen() {
-        guard let dragPanel else { return }
-        dragPlacement?.cancel()
-        dragPlacement = Task { @MainActor [weak self, weak dragPanel] in
-            // A new Settings window may not exist yet when we open the pane.
-            for _ in 0..<16 {
-                try? await Task.sleep(for: .milliseconds(100))
-                guard !Task.isCancelled, let self, let dragPanel else { return }
-                if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == PermissionDragPanel.settingsID,
-                   let frame = PermissionDragPanel.settingsFrame() {
-                    dragPanel.place(beside: frame)
-                    dragPanel.orderFrontRegardless()
-                    self.dragPlacement = nil
-                    return
-                }
-            }
-            guard let self, let dragPanel else { return }
-            self.dragPlacement = nil
-            let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-            if frontmost == PermissionDragPanel.settingsID || frontmost == Bundle.main.bundleIdentifier {
-                if let frame = self.window?.frame { dragPanel.place(beside: frame) }
-                dragPanel.orderFrontRegardless()
-            }
-        }
+    private func footer(_ title: String, _ note: String, _ button: String) {
+        footerTitle.stringValue = title
+        footerNote.stringValue = note
+        footerButton.title = button
     }
 
-    @objc private func handlePermission(_ button: NSButton) {
-        let index = button.tag
-        let step = steps[index]
-        let status = step.state()
-        guard status != .granted, status != .restricted else { refresh(); return }
-        guard index == 0 && status == .undetermined else {
-            if index != 0 { showDragPanel(for: index) }
-            else { dragPanel?.close() }
-            openPrivacyPane(step.pane)
-            if index != 0 { placeDragPanelWhenSettingsOpen() }
+    private func message(states: [PermissionRowState]) -> String? {
+        let im = states[PermissionKind.inputMonitoring.rawValue]
+        let ax = states[PermissionKind.accessibility.rawValue]
+        if !resetFailed.isEmpty {
+            return "Couldn’t remove the old entry. In System Settings, select \(appName), click −, then add it again."
+        }
+        if reopenFailed { return "Couldn’t reopen \(appName). Quit it from the menu bar and open it again." }
+        if states[PermissionKind.microphone.rawValue] == .restricted {
+            return "Your organization manages the microphone on this Mac, so \(appName) can’t dictate."
+        }
+        if states.contains(.clearing) { return "Removing the entry an earlier build left behind…" }
+        if states.contains(.pending) { return "Choose Allow in the macOS dialog." }
+        if states.contains(.waiting) { return "Waiting for you in System Settings. This window updates by itself." }
+        if im == .relaunchDetected { return "Input Monitoring is on. Reopen \(appName) so it can use it." }
+        if im == .relaunchReturned { return "Switched on \(appName) under Input Monitoring? Reopen to apply it." }
+        if ax == .needsAttention {
+            return identity.isAdhoc
+                ? "Accessibility isn’t on yet. Try Again removes an old entry, then add \(appName) once more."
+                : "Accessibility isn’t on yet. Add \(appName) to the list and switch it on."
+        }
+        if im == .needsAttention {
+            return identity.isAdhoc
+                ? "Input Monitoring is still off. Try Again removes an old entry, then add \(appName) once more."
+                : "Input Monitoring is still off. Add \(appName) to the list and switch it on."
+        }
+        return nil
+    }
+
+    // Exactly one default button: the highlighted row's, or Done once everything is on.
+    private func updateDefaultButton(ready: Bool, highlight: PermissionKind?) {
+        for row in rows { row.button.keyEquivalent = "" }
+        if ready {
+            footerButton.keyEquivalent = "\r"
             return
         }
-        guard !microphonePending else { return }
+        footerButton.keyEquivalent = "\u{1b}"
+        guard !microphonePending, clearing.isEmpty, let highlight else { return }
+        let button = rows[highlight.rawValue].button
+        if !button.isHidden && button.isEnabled { button.keyEquivalent = "\r" }
+    }
+
+    private func announce(granted kind: PermissionKind, states: [PermissionRowState]) {
+        let next = PermissionKind.allCases.first { states[$0.rawValue].isOpen }
+        let text = next.map { "\(kind.title) allowed. Next: \($0.title)." } ?? "All permissions are on."
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [
+            .announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue,
+        ])
+    }
+
+    private func fitWindow() {
+        guard let window, let view = window.contentView else { return }
+        view.layoutSubtreeIfNeeded()
+        let height = view.fittingSize.height
+        guard abs(height - view.frame.height) > 0.5 else { return }
+        var frame = window.frame
+        let target = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 700, height: height))
+        frame.origin.y += frame.height - target.height
+        frame.size = target.size
+        let animate = window.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        window.setFrame(frame, display: true, animate: animate)
+    }
+
+    // MARK: Live status
+
+    private func updatePolling() {
+        guard window?.isVisible == true else { stopPolling(); return }
+        let settingsFront = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == PermissionGuidePanel.settingsID
+        let fast = !waiting.isEmpty || microphonePending || !clearing.isEmpty || settingsFront
+            || guide?.isVisible == true
+        if fast != fastPolling || timer == nil {
+            timer?.invalidate()
+            let timer = Timer(timeInterval: fast ? 0.5 : 2, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
+            timer.tolerance = 0.1
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+            fastPolling = fast
+        }
+        // A background app behind System Settings would otherwise be throttled by App Nap.
+        if fast && activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep, reason: "Watching for permission changes")
+        } else if !fast, let activity {
+            ProcessInfo.processInfo.endActivity(activity)
+            self.activity = nil
+        }
+    }
+
+    private func stopPolling() {
+        timer?.invalidate()
+        timer = nil
+        fastPolling = nil
+        if let activity {
+            ProcessInfo.processInfo.endActivity(activity)
+            self.activity = nil
+        }
+    }
+
+    // MARK: Actions
+
+    @objc private func rowAction(_ sender: NSButton) {
+        guard let kind = PermissionKind(rawValue: sender.tag) else { return }
+        let row = rows[kind.rawValue]
+        var state = row.shownState
+        // The click that brought LocalVoice forward was pressed on the label shown before
+        // activation; act on that, not on what the activation refresh turned it into.
+        // That click is pressed just before the activation it causes; a click pressed after
+        // the activation was made on the refreshed label.
+        if let pressed = row.button.takePressTime(), let activation,
+           pressed - activation.time < 0.1, activation.time - pressed < 0.5,
+           let before = activation.shown[kind.rawValue] {
+            state = before
+        }
+        perform(for: kind, as: state)
+    }
+
+    private func perform(for kind: PermissionKind, as shownState: PermissionRowState? = nil) {
+        snapshot = probe.read()
+        reopenFailed = false
+        let current = rowState(kind)
+        // Act on the label the user saw. If it no longer applies (granted meanwhile), do nothing.
+        let state = shownState ?? current
+        if current == .granted || current == .restricted { refresh(); return }
+        switch state {
+        case .notSetUp where kind == .microphone:
+            requestMicrophone()
+        case .notSetUp, .off, .waiting:
+            openSettings(kind)
+        case .needsAttention:
+            if identity.isAdhoc {
+                reset(kind) { [weak self] _ in
+                    self?.retrying.insert(kind)
+                    self?.openSettings(kind)
+                }
+            } else {
+                openSettings(kind)
+            }
+        case .oldEntry:
+            reset(kind) { [weak self] success in
+                guard let self else { return }
+                if kind == .microphone {
+                    if success && microphoneState() == .undetermined { self.requestMicrophone() }
+                    else { self.openSettings(kind) }
+                } else {
+                    self.retrying.insert(kind)
+                    self.openSettings(kind)
+                }
+            }
+        case .relaunchDetected, .relaunchReturned:
+            reopen()
+        case .granted, .restricted, .clearing, .pending, .reopening:
+            break
+        }
+        refresh()
+    }
+
+    private func requestMicrophone() {
+        guard window?.isVisible == true, !microphonePending, microphoneState() == .undetermined else { return }
         microphonePending = true
         Task { @MainActor [weak self] in
             _ = await AVCaptureDevice.requestAccess(for: .audio)
             self?.microphoneRequestFinished()
         }
-        refresh()
     }
 
     private func microphoneRequestFinished() {
@@ -464,51 +1374,237 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
         refresh()
     }
 
-    var isPresented: Bool { previousActivationPolicy != nil }
-
-    private func refresh() {
-        guard window?.isVisible == true else { return }
-        let statuses = steps.map { $0.state() }
-        if let dragStep, statuses[dragStep] == .granted { dragPanel?.close() }
-        if statuses != lastStatuses {
-            log.notice("Permission status: microphone=\(statuses[0].rawValue, privacy: .public) accessibility=\(statuses[1].rawValue, privacy: .public) inputMonitoring=\(statuses[2].rawValue, privacy: .public)")
-            lastStatuses = statuses
+    private func openSettings(_ kind: PermissionKind) {
+        ledger.stampResume()
+        waiting.insert(kind)
+        returned.remove(kind)
+        visited.remove(kind)
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == PermissionGuidePanel.settingsID {
+            visited.insert(kind)
         }
-        let ready = statuses.allSatisfy { $0 == .granted }
-        for (index, step) in steps.enumerated() {
-            let status = statuses[index]
-            let label = statusLabels[index]
-            let button = actions[index]
-            switch status {
-            case .granted: label.stringValue = "Granted"
-            case .restricted: label.stringValue = "Restricted by macOS"
-            case .undetermined: label.stringValue = "Not requested"
-            case .denied: label.stringValue = "Not granted"
+        showGuide(for: kind)
+        openPrivacyPane(kind.pane)
+        placeGuideWhenSettingsOpen()
+        refresh()
+    }
+
+    private func reset(_ kind: PermissionKind, then completion: @escaping (Bool) -> Void) {
+        ledger.stampResume()
+        let current = probe.read()
+        guard identity.isAdhoc, !current.isGranted(kind), let bundle = Bundle.main.bundleIdentifier,
+              !(kind == .inputMonitoring && current.listenAccess == kIOHIDAccessTypeGranted),
+              resetCompletions[kind] == nil else {
+            completion(false)
+            return
+        }
+        clearing.insert(kind)
+        resetFailed.remove(kind)
+        resetCompletions[kind] = completion
+        let service = kind.tccService
+        Task.detached {
+            let exited = resetPermission(service: service, bundle: bundle)
+            await MainActor.run { [weak self] in self?.resetFinished(kind, exited: exited) }
+        }
+        refresh()
+    }
+
+    private func resetFinished(_ kind: PermissionKind, exited: Bool) {
+        clearing.remove(kind)
+        snapshot = probe.read()
+        let cleared: Bool
+        switch kind {
+        case .microphone: cleared = snapshot.microphone == .undetermined
+        case .accessibility: cleared = true
+        case .inputMonitoring: cleared = snapshot.listenAccess == kIOHIDAccessTypeUnknown
+        }
+        let success = exited && cleared
+        if success { ledger.setGrantedBy(kind, nil) } else { resetFailed.insert(kind) }
+        let completion = resetCompletions.removeValue(forKey: kind)
+        // Setup was dismissed meanwhile: don't reopen Settings or prompt.
+        guard window?.isVisible == true else { return }
+        completion?(success)
+        refresh()
+    }
+
+    private func reopen() {
+        guard !reopening else { return }
+        reopening = true
+        reopenFailed = false
+        ledger.stampResume()
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { [weak self] app, error in
+            let launched = error == nil && (app?.processIdentifier ?? -1) > 0
+            Task { @MainActor [weak self] in self?.reopenFinished(launched) }
+        }
+        refresh()
+    }
+
+    private func reopenFinished(_ launched: Bool) {
+        if launched {
+            // Only now: the new copy exists and will read this as "already reopened once".
+            // Stay in Reopening… until this copy exits (it may still be stopping its service),
+            // and keep the stamp fresh: the new copy waits for our lock only while it is.
+            reopenLaunched = true
+            ledger.reopenedFor = buildKey
+            ledger.stampResume()
+            closeGuide()
+            window?.orderOut(nil)
+            onQuit?()
+        } else {
+            reopening = false
+            reopenFailed = true
+            refresh()
+        }
+    }
+
+    // MARK: Guide panel
+
+    private func guideInstruction(for kind: PermissionKind) -> (text: String, tile: Bool) {
+        if kind == .microphone { return ("Switch on \(appName) in the list.", false) }
+        if resetFailed.contains(kind) { return ("Select the old \(appName), click −, then drag this one in.", true) }
+        if retrying.contains(kind) { return ("Drag \(appName) into the list again, then switch it on.", true) }
+        if kind == .inputMonitoring && snapshot.listenAccess == kIOHIDAccessTypeDenied {
+            return ("Find \(appName) in the list and switch it on. Not there? Drag it in.", true)
+        }
+        return ("Drag \(appName) into the list, then make sure its switch is on.", true)
+    }
+
+    private func showGuide(for kind: PermissionKind) {
+        let panel: PermissionGuidePanel
+        if let guide {
+            panel = guide
+        } else {
+            panel = PermissionGuidePanel(appName: appName)
+            panel.delegate = self
+            panel.onReveal = { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+            guide = panel
+        }
+        guideKind = kind
+        panel.onSuccess = nil
+        successKind = nil
+        let (text, tile) = guideInstruction(for: kind)
+        panel.show(.step(kind, instruction: text, tile: tile,
+                         extra: kind == .inputMonitoring ? "If macOS offers Quit & Reopen, choose it." : nil))
+    }
+
+    private func showGuideSuccess(after kind: PermissionKind, states: [PermissionRowState]) {
+        guard let guide else { return }
+        let imState = states[PermissionKind.inputMonitoring.rawValue]
+        let needsRelaunch = kind == .inputMonitoring && [.relaunchDetected, .reopening].contains(imState)
+        // Switched off again: back to the step's instructions.
+        guard snapshot.isGranted(kind) || needsRelaunch else {
+            showGuide(for: kind)
+            return
+        }
+        guideKind = nil
+        successKind = kind
+        let done = "\(kind.title) is on."
+        let open = PermissionKind.allCases.filter { $0 != kind && states[$0.rawValue].isOpen }
+        if needsRelaunch && open.isEmpty {
+            let busy = imState == .reopening
+            guide.show(.success(text: "Input Monitoring is on.", detail: "\(appName) needs to reopen to use it.",
+                                button: busy ? "Reopening…" : "Reopen \(appName)", enabled: !busy))
+            guide.onSuccess = { [weak self] in self?.reopen() }
+            return
+        }
+        guard let next = open.first else {
+            guide.show(.success(text: "All set. \(appName) is ready.", detail: nil, button: "Back to \(appName)",
+                                enabled: true))
+            guide.onSuccess = { [weak self] in self?.backToApp() }
+            return
+        }
+        if next == .microphone && snapshot.microphone == .undetermined {
+            // The microphone dialog is better asked from the window.
+            guide.show(.success(text: done, detail: nil, button: "Back to \(appName)", enabled: true))
+            guide.onSuccess = { [weak self] in self?.backToApp() }
+            return
+        }
+        let nextState = states[next.rawValue]
+        let title: String
+        switch nextState {
+        case .relaunchDetected, .relaunchReturned, .reopening: title = "Reopen \(appName)"
+        case .needsAttention: title = "Try Again for \(next.title)…"
+        case .oldEntry: title = "Re-add \(next.title)…"
+        default: title = "Next: \(next.title)"
+        }
+        let enabled = ![.clearing, .pending, .reopening].contains(nextState)
+        guide.show(.success(text: done, detail: nil, button: title, enabled: enabled))
+        guide.onSuccess = { [weak self] in
+            guard let self else { return }
+            switch nextState {
+            case .notSetUp, .off, .waiting: self.openSettings(next)
+            default: self.perform(for: next, as: nextState)
             }
-            label.textColor = status == .granted ? .systemGreen : .secondaryLabelColor
-            button.isEnabled = status != .granted && status != .restricted && !(index == 0 && microphonePending)
-            switch status {
-            case .granted: button.title = "Allowed"
-            case .restricted: button.title = "Unavailable"
-            default:
-                if index == 0 && microphonePending {
-                    button.title = "Waiting for macOS…"
-                } else {
-                    button.title = index == 0 && status == .undetermined ? "Request Access…" : "Open Settings…"
+        }
+    }
+
+    private func backToApp() {
+        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
+        closeGuide()
+    }
+
+    private func closeGuide() {
+        guidePlacement?.cancel()
+        guidePlacement = nil
+        guide?.close()
+    }
+
+    private func placeGuideWhenSettingsOpen() {
+        guard let guide else { return }
+        guidePlacement?.cancel()
+        guidePlacement = Task { @MainActor [weak self, weak guide] in
+            // A new Settings window may not exist yet when we open the pane.
+            for _ in 0..<16 {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled, let self, let guide else { return }
+                if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == PermissionGuidePanel.settingsID,
+                   let frame = PermissionGuidePanel.settingsFrame() {
+                    guide.place(beside: frame)
+                    guide.orderFrontRegardless()
+                    self.guidePlacement = nil
+                    return
                 }
             }
-            button.setAccessibilityLabel("\(button.title) for \(step.name)")
+            guard let self, let guide else { return }
+            self.guidePlacement = nil
+            if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == PermissionGuidePanel.settingsID {
+                if let frame = self.window?.frame { guide.place(beside: frame) }
+                guide.orderFrontRegardless()
+            }
         }
-        let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalVoice"
-        summary.stringValue = ready
-            ? "All permissions are granted."
-            : "Enable \(name) in System Settings. If macOS offers Quit & Reopen, choose it."
-        done.title = ready ? "Done" : "Set Up Later"
-        done.keyEquivalent = ready ? "\r" : ""
-        let newlyReady = ready && !wasReady
-        wasReady = ready
-        if newlyReady { onReady?() }
     }
+
+#if PERMISSIONS_PREVIEW
+    /// Puts the window into one of the states the preview renders.
+    func previewConfigure(_ scenario: String) {
+        switch scenario {
+        case "waiting": waiting = [.accessibility]
+        case "attention": returned = [.accessibility]
+        case "relaunch": listenDisagreement = 1
+        case "resumed": resumed = true
+        default: break
+        }
+    }
+
+    func previewGuide(_ scenario: String) -> NSWindow? {
+        switch scenario {
+        case "panel":
+            showGuide(for: .accessibility)
+        case "panel-success":
+            showGuide(for: .accessibility)
+            showGuideSuccess(after: .accessibility, states: PermissionKind.allCases.map(rowState))
+        default:
+            return nil
+        }
+        if let guide, let frame = window?.frame { guide.place(beside: frame) }
+        guide?.orderFrontRegardless()
+        return guide
+    }
+#endif
 }
 
 // MARK: - Setup wizard
@@ -672,6 +1768,11 @@ private func runManagedSetup() -> Never {
     checklist.onClose = { granted in
         writeSetupStatus(granted ? "granted" : "deferred", managed: true)
         exit(granted ? 0 : 1)
+    }
+    // The relaunched copy runs as the normal managed service.
+    checklist.onQuit = {
+        writeSetupStatus("deferred", managed: true)
+        exit(1)
     }
     checklist.present()
     withExtendedLifetime(checklist) { app.run() }
@@ -1048,7 +2149,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(actionItem(title: "Models…", selector: #selector(openModels)))
         }
         if setupPermissions != nil {
-            menu.addItem(actionItem(title: "Set Up Permissions…", selector: #selector(openPermissions)))
+            let granted = microphoneState() == .granted && accessibilityState() == .granted
+                && inputMonitoringState() == .granted
+            menu.addItem(actionItem(title: granted ? "Permissions…" : "Finish Setup…",
+                                    selector: #selector(openPermissions)))
             let login = actionItem(title: "Launch at Login", selector: #selector(toggleLogin))
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             menu.addItem(login)
@@ -1301,6 +2405,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var menuTimer: Timer?
     private var child: Process?
+    private var childModel: String?
     private var runningModel: String?
     private var readyTimer: Timer?
     private var gate: Int32 = -1
@@ -1372,10 +2477,32 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         }
         if permissionsGranted {
             start(savedModel ?? Self.defaultModel)
-            if savedModel == nil { showModels() }
+            // Relaunched mid-setup (Quit & Reopen): finish on the setup window, which
+            // opens Models on Done if no model is chosen yet.
+            if PermissionLedger.standard.resumeIsFresh {
+                setupPermissions()
+            } else if savedModel == nil {
+                showModels()
+            }
         } else {
             setupPermissions()
         }
+    }
+
+    // System Settings' Quit & Reopen terminates through AppKit; stop the child first so
+    // the relaunched copy doesn't run beside an orphaned service.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        quit()
+        return .terminateLater
+    }
+
+    private var setupServiceState: SetupServiceState {
+        if savedModel == nil { return .needsModel }
+        if runningModel != nil { return .ready }
+        if let childModel {
+            return .starting(library?.models.first { $0.id == childModel }?.name ?? "the speech model")
+        }
+        return .stopped
     }
 
     private var permissionsGranted: Bool {
@@ -1454,6 +2581,8 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 if granted && self.savedModel == nil { self.showModels() }
             }
+            checklist.onQuit = { [weak self] in self?.quit() }
+            checklist.serviceState = { [weak self] in self?.setupServiceState ?? .stopped }
             permissionChecklist = checklist
         }
         waitingForPermissions = !permissionsGranted
@@ -1571,6 +2700,8 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             return
         }
         child = process
+        childModel = model
+        permissionChecklist?.serviceDidChange()
         let deadline = Date().addingTimeInterval(150)
         readyTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self, weak process] _ in
             DispatchQueue.main.async { [weak self, weak process] in
@@ -1608,12 +2739,14 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             operation.complete(!operation.recovering)
         }
         releaseGate()
+        permissionChecklist?.serviceDidChange()
     }
 
     private func ended(_ process: Process, model: String) {
         guard child === process else { return }
         let wasReady = runningModel == model
         child = nil
+        childModel = nil
         readyTimer?.invalidate()
         readyTimer = nil
         runningModel = nil
@@ -1629,6 +2762,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         } else {
             failedStart(model)
         }
+        permissionChecklist?.serviceDidChange()
     }
 
     private func failedStart(_ model: String) {
@@ -1646,6 +2780,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         library?.setLoadingModel(nil)
         library?.refresh()
         showModels()
+        permissionChecklist?.serviceDidChange()
     }
 
     func quit() {
@@ -1669,16 +2804,25 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
 
 @MainActor
 private func runManagedService(config: [String: String], arguments: [String]) -> Never {
-    let managed: ManagedService
-    do {
-        managed = try ManagedService(config: config, arguments: arguments)
-    } catch let error as POSIXError where error.code == .EWOULDBLOCK {
-        exit(0)
-    } catch {
-        fail("Could not create service state: \(error.localizedDescription)", code: 74)
-    }
+    // Check in with LaunchServices first: the old copy's openApplication completion (and
+    // with it the old copy's exit, which frees the lock) waits for this.
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
+    var instance: ManagedService?
+    // After Quit & Reopen or the setup window's Reopen, the old copy may still be
+    // stopping its service; wait for its lock instead of exiting (setup stamp only).
+    let deadline = Date().addingTimeInterval(12)
+    while instance == nil {
+        do {
+            instance = try ManagedService(config: config, arguments: arguments)
+        } catch let error as POSIXError where error.code == .EWOULDBLOCK {
+            guard PermissionLedger.standard.resumeIsFresh, Date() < deadline else { exit(0) }
+            usleep(100_000)
+        } catch {
+            fail("Could not create service state: \(error.localizedDescription)", code: 74)
+        }
+    }
+    guard let managed = instance else { exit(0) }
     app.delegate = managed
     let signals = [SIGTERM, SIGINT, SIGHUP].map { number in
         signal(number, SIG_IGN)
@@ -1694,10 +2838,9 @@ private func runManagedService(config: [String: String], arguments: [String]) ->
 
 // MARK: - Entry
 
-@main
-struct LocalVoiceLauncher {
+enum LocalVoiceLauncher {
     @MainActor
-    static func main() {
+    static func run() {
         let config = loadConfig()
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.contains("--setup") {
@@ -1712,3 +2855,94 @@ struct LocalVoiceLauncher {
         }
     }
 }
+
+#if PERMISSIONS_PREVIEW
+// Renders the permission window offscreen. Nothing here reads or changes real permissions:
+//   PERMISSIONS_PREVIEW_SCENARIO = fresh | resumed | waiting | attention | relaunch | oldentry |
+//                                  restricted | complete | complete-model | panel | panel-success
+//   PERMISSIONS_PREVIEW_SNAPSHOT = <path without .png>   (omit to keep the window open)
+//   PERMISSIONS_PREVIEW_APPEARANCE = light | dark
+@MainActor
+private final class PreviewPermissionProbe: PermissionProbe {
+    let snapshot: PermissionSnapshot
+    init(_ snapshot: PermissionSnapshot) { self.snapshot = snapshot }
+    func read() -> PermissionSnapshot { snapshot }
+}
+
+@MainActor
+private enum PermissionPreview {
+    static func run() {
+        let environment = ProcessInfo.processInfo.environment
+        let scenario = environment["PERMISSIONS_PREVIEW_SCENARIO"] ?? "fresh"
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular)
+        if let appearance = environment["PERMISSIONS_PREVIEW_APPEARANCE"] {
+            app.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
+        }
+        let none = PermissionSnapshot(microphone: .undetermined, accessibility: false, inputMonitoring: false,
+                                      listenAccess: kIOHIDAccessTypeUnknown)
+        var snapshot = none
+        switch scenario {
+        case "resumed", "waiting", "attention", "panel":
+            snapshot.microphone = .granted
+        case "panel-success":
+            snapshot.microphone = .granted
+            snapshot.accessibility = true
+        case "relaunch":
+            snapshot.microphone = .granted
+            snapshot.accessibility = true
+            snapshot.listenAccess = kIOHIDAccessTypeGranted
+        case "oldentry":
+            snapshot.microphone = .denied
+            snapshot.listenAccess = kIOHIDAccessTypeDenied
+        case "restricted":
+            snapshot.microphone = .restricted
+        case "complete", "complete-model":
+            snapshot = PermissionSnapshot(microphone: .granted, accessibility: true, inputMonitoring: true,
+                                          listenAccess: kIOHIDAccessTypeGranted)
+        default:
+            break
+        }
+        let ledger = PermissionLedger(store: UserDefaults(suiteName: "localvoice.permissions.preview") ?? .standard)
+        ledger.store.removePersistentDomain(forName: "localvoice.permissions.preview")
+        if scenario == "oldentry" {
+            for kind in PermissionKind.allCases { ledger.setGrantedBy(kind, "earlier-build") }
+        }
+        let checklist = PermissionChecklist(probe: PreviewPermissionProbe(snapshot),
+                                            identity: BuildIdentity(cdhash: "preview", isAdhoc: true),
+                                            ledger: ledger)
+        if scenario == "complete" { checklist.serviceState = { .ready } }
+        if scenario == "complete-model" { checklist.serviceState = { .needsModel } }
+        checklist.previewConfigure(scenario)
+        checklist.present()
+        let panel = checklist.previewGuide(scenario)
+        if let path = environment["PERMISSIONS_PREVIEW_SNAPSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                guard let window = panel ?? checklist.window, let frameView = window.contentView?.superview
+                else { exit(1) }
+                frameView.layoutSubtreeIfNeeded()
+                let bounds = frameView.bounds
+                guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { exit(1) }
+                frameView.cacheDisplay(in: bounds, to: rep)
+                let data = rep.representation(using: .png, properties: [:])
+                exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
+            }
+        }
+        withExtendedLifetime(checklist) { app.run() }
+    }
+}
+#endif
+
+#if PERMISSIONS_PREVIEW
+@main
+struct PermissionPreviewMain {
+    @MainActor
+    static func main() { PermissionPreview.run() }
+}
+#else
+@main
+struct LocalVoiceMain {
+    @MainActor
+    static func main() { LocalVoiceLauncher.run() }
+}
+#endif

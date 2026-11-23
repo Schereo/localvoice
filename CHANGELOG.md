@@ -30,6 +30,23 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Changed
 
+- The permission window is rebuilt in the model library's style and walks
+  through setup instead of listing three equal buttons. Microphone,
+  Accessibility and Input Monitoring are numbered rows in one card. The next
+  step is highlighted and holds the only default button, and the others stay
+  clickable. Each row shows its state in words ("Not set up", "Waiting…",
+  "Reopen needed", "Old entry") and turns into a green "Allowed" when
+  granted. The window updates live, polling every half second while you are
+  in System Settings. The floating panel beside System Settings explains the
+  current step, offers the draggable app, confirms the grant and offers the
+  next step without leaving Settings. When everything is on, the window says
+  what happens next (choose a model, starting, ready, or dictation didn't
+  start). Input Monitoring that is on but not yet in effect offers Reopen, and
+  System Settings' Quit & Reopen resumes on the finished window instead of
+  leaving an orphaned service behind. Test builds remember which build each
+  grant belonged to: rows granted to an earlier build show "Old entry", and
+  Re-add removes the stale entry before adding the app again. The menu item
+  reads "Finish Setup…" until everything is granted, then "Permissions…".
 - The model library is one table, like a settings pane: a column each for
   languages and size, a one-line description per model, and a single button
   per row (Download, Cancel, Use) with a checkmark on the model in use. A

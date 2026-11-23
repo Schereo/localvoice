@@ -16,12 +16,12 @@ The app exposes these actions in its menu:
 |---|---|
 | **Settings…** | Configures the hotkey, microphone, live preview, microphone standby, and media pause. |
 | **Models…** | Shows model source and size, and remembers the language choice for each model that accepts one. Downloads are explicit. Existing verified Hugging Face snapshots are reused in place; only LocalVoice-owned copies can be removed. **Use** starts the new model and leaves the previous selection intact if loading fails. |
-| **Set Up Permissions…** | Shows live checks for Microphone, Accessibility and Input Monitoring. Each permission has its own request or Settings button. |
+| **Permissions…** | Shows Microphone, Accessibility and Input Monitoring as numbered steps that update live. Reads **Finish Setup…** while something is missing. |
 | **Launch at Login** | Registers the app with macOS only if enabled. |
 
 The app keeps owned models in `~/Library/Application Support/LocalVoice/Models`. It does not write dictated text to logs or to an existing ctrlSPEAK history database. To uninstall, turn off **Launch at Login**, quit, and move the app to Trash. Model files and preferences are not removed with the app.
 
-If access is missing, the checklist opens without requesting anything. It refreshes after the microphone prompt and when you return to LocalVoice. For **Accessibility** and **Input Monitoring**, **Open Settings…** opens the matching list and a floating **Add LocalVoice** panel. Drag the app icon into the list, then turn it on. If macOS doesn’t accept the drop, use **+**; **Show App in Finder** reveals the exact app to add. Use the Dock, Cmd–Tab, or **Set Up Permissions…** in the menu bar to return to the checklist. If macOS offers **Quit & Reopen**, choose it.
+If access is missing, the window opens without requesting anything and updates live. The next step is highlighted and holds the default button; the others stay clickable. For Accessibility and Input Monitoring, **Open Settings…** opens the list and a guide panel: drag the app icon in and switch it on; the panel confirms and offers the next step without leaving System Settings. If macOS offers **Quit & Reopen**, choose it; LocalVoice also offers **Reopen** when Input Monitoring is on but not yet in effect, and resumes on the finished window. Test builds are a new identity after every rebuild: rows granted to an earlier build show **Old entry**, and **Re-add…** removes that entry (`tccutil reset`) before adding the app again.
 
 ## Local Test App
 

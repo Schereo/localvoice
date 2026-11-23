@@ -38,9 +38,16 @@ if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
   xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" \
     src/ctrlspeak-launcher.swift src/localvoice-model-library.swift -o "$BUILD/LocalVoice"
+  # The app build scripts compile in the default (Swift 5) language mode; check that too.
+  xcrun swiftc -parse-as-library -target arm64-apple-macosx13.0 \
+    -module-cache-path "$BUILD/module-cache" \
+    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift -o "$BUILD/LocalVoice-swift5"
   xcrun swiftc -parse-as-library -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" -D MODEL_LIBRARY_PREVIEW \
     src/localvoice-model-library.swift -o "$BUILD/model-library"
+  xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
+    -module-cache-path "$BUILD/module-cache" -D PERMISSIONS_PREVIEW \
+    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift -o "$BUILD/permissions-preview"
   xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" \
     src/localvoice-model-library.swift tests/model_library_smoke.swift -o "$BUILD/model-library-smoke"
