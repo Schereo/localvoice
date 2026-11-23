@@ -62,6 +62,66 @@ for line in sys.stdin:
         model.close()
         self.assertIsNotNone(process.poll())
 
+    def test_dead_worker_is_respawned_on_next_request(self):
+        worker = self.worker("""
+import sys
+print('{"event":"ready"}', flush=True)
+sys.stdin.readline()
+print('{"event":"result","text":"once"}', flush=True)
+""")
+        model = backend.ParakeetCoreMLModel("parakeet-v3", self.root, worker=worker)
+        self.addCleanup(model.close)
+        model.load_model()
+        first = model.process
+        self.assertEqual(model.transcribe_pcm(Samples([0.1]), "auto", "auto"), "once")
+        first.wait(timeout=5)
+        self.assertEqual(model.transcribe_pcm(Samples([0.2]), "auto", "auto"), "once")
+        self.assertIsNot(model.process, first)
+
+    def test_bad_reply_drops_worker_and_next_request_recovers(self):
+        marker = self.root / "spawned"
+        worker = self.worker(f"""
+import os, sys
+first = not os.path.exists({str(marker)!r})
+open({str(marker)!r}, 'a').close()
+print('{{"event":"ready"}}', flush=True)
+for line in sys.stdin:
+    print('garbage' if first else '{{"event":"result","text":"ok"}}', flush=True)
+""")
+        model = backend.ParakeetCoreMLModel("parakeet-v3", self.root, worker=worker)
+        self.addCleanup(model.close)
+        model.load_model()
+        with self.assertRaises(ValueError):
+            model.transcribe_pcm(Samples([0.1]), "auto", "auto")
+        self.assertIsNone(model.process)
+        self.assertEqual(model.transcribe_pcm(Samples([0.1]), "auto", "auto"), "ok")
+
+    def test_long_audio_is_split_evenly_without_a_tiny_tail(self):
+        worker = self.worker("""
+import base64, json, sys
+print('{"event":"ready"}', flush=True)
+for line in sys.stdin:
+    n = len(base64.b64decode(json.loads(line)['pcm'])) // 4
+    print(json.dumps({'event': 'result', 'text': str(n)}), flush=True)
+""")
+        original = backend.MAX_SAMPLES
+        backend.MAX_SAMPLES = 4
+        self.addCleanup(setattr, backend, "MAX_SAMPLES", original)
+        model = backend.ParakeetCoreMLModel("parakeet-v3", self.root, worker=worker)
+        self.addCleanup(model.close)
+        model.load_model()
+        self.assertEqual(model.transcribe_pcm(Samples([0.0] * 9), "auto", "auto"), "3 3 3")
+        self.assertEqual(model.transcribe_pcm(Samples([]), "auto", "auto"), "")
+
+    def test_closed_backend_does_not_respawn(self):
+        worker = self.worker('print(\'{"event":"ready"}\', flush=True)\nimport sys; sys.stdin.read()')
+        model = backend.ParakeetCoreMLModel("parakeet-v3", self.root, worker=worker)
+        model.load_model()
+        model.close()
+        with self.assertRaisesRegex(RuntimeError, "closed"):
+            model.transcribe_pcm(Samples([0.1]), "auto", "auto")
+        self.assertIsNone(model.process)
+
     def test_initialization_failure_reaps_child(self):
         worker = self.worker('print(\'{"event":"error"}\', flush=True)')
         model = backend.ParakeetCoreMLModel("parakeet-v3", self.root, worker=worker)
