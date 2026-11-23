@@ -49,6 +49,9 @@ if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
     -module-cache-path "$BUILD/module-cache" -D PERMISSIONS_PREVIEW \
     src/ctrlspeak-launcher.swift src/localvoice-model-library.swift -o "$BUILD/permissions-preview"
   xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
+    -module-cache-path "$BUILD/module-cache" -D SETTINGS_PREVIEW \
+    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift -o "$BUILD/settings-preview"
+  xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" \
     src/localvoice-model-library.swift tests/model_library_smoke.swift -o "$BUILD/model-library-smoke"
   "$BUILD/model-library-smoke" "$BUILD" "$PYTHON"
