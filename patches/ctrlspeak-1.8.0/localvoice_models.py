@@ -578,6 +578,17 @@ def _fetch(model, asset, stage, advance):
         raise ModelStoreError(f"SHA256 mismatch: {asset.name}")
 
 
+def _sweep_stale_stages(root, model):
+    """Delete staging folders a killed download left behind (up to 1.6 GB).
+
+    Call only while holding the model lock: no other download of this model
+    can be running then, so every matching folder is stale.
+    """
+    for stage in root.glob(f".{model.id}.download-*"):
+        if stage.is_dir() and not stage.is_symlink():
+            shutil.rmtree(stage, ignore_errors=True)
+
+
 def _download(model, emit):
     if model.minimum_macos is not None:
         coreml_worker_path(model.id)
@@ -588,6 +599,7 @@ def _download(model, emit):
     root.mkdir(parents=True, exist_ok=True)
     destination = root / model.id
     with _model_lock(root, model):
+        _sweep_stale_stages(root, model)
         path, location = _locate(model)
         if path is not None:
             return path, location
@@ -637,6 +649,7 @@ def _remove(model):
     destination = root / model.id
     if root.is_dir():
         with _model_lock(root, model):
+            _sweep_stale_stages(root, model)
             if destination.exists() or destination.is_symlink():
                 _inspect_owned(destination, model, remove=True)
                 return True

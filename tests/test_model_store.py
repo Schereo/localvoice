@@ -462,6 +462,20 @@ class ModelStoreTests(unittest.TestCase):
                 self.assert_no_staging()
                 self.assertFalse((self.app / self.model.id).exists())
 
+    def test_stale_staging_from_a_killed_download_is_swept(self):
+        self.app.mkdir(parents=True)
+        stale = self.app / f".{self.model.id}.download-deadbeef"
+        (stale / "nested").mkdir(parents=True)
+        (stale / "nested" / "weights.npz").write_bytes(b"partial")
+        other = self.app / ".some-other-model.download-cafe"
+        other.mkdir()
+        self.install()
+        self.assertFalse(stale.exists())
+        self.assertTrue(other.exists(), "Only this model's staging may be swept")
+        stale.mkdir()
+        self.assertTrue(self.cli("remove", self.model.id)[1][0]["removed"])
+        self.assertFalse(stale.exists())
+
     def test_unowned_path_is_neither_replaced_nor_removed(self):
         destination = self.app / self.model.id
         destination.mkdir(parents=True)
