@@ -48,6 +48,9 @@ def main():
     parser.add_argument("--output", default="LocalVoice.app", help="app bundle name inside build/dev")
     parser.add_argument("--bundle-identifier", default="com.localvoice.dev")
     parser.add_argument("--display-name", default="LocalVoice Test")
+    parser.add_argument("--sign", default="-", metavar="IDENTITY",
+                        help="codesign identity; '-' signs ad hoc. A stable identity such as "
+                             "'Apple Development: …' keeps macOS permissions across rebuilds")
     args = parser.parse_args()
     if os.uname().sysname != "Darwin" or os.uname().machine != "arm64" or not args.python:
         parser.error("Apple Silicon macOS and an existing Python 3.11 are required.")
@@ -134,7 +137,7 @@ def main():
             "NSMicrophoneUsageDescription": "LocalVoice records audio for on-device dictation.",
             "NSAppleEventsUsageDescription": "LocalVoice can pause media when dictation starts.",
         }))
-        subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(bundle)], check=True)
+        subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", args.sign, str(bundle)], check=True)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
         bundle.rename(app)
 

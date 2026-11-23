@@ -54,6 +54,10 @@ private struct ModelLibrarySmoke {
             if case .active? = backend.models.first(where: { $0.id == id })?.state { return true }
             return false
         }
+        func isLoading(_ id: String) -> Bool {
+            if case .loading? = backend.models.first(where: { $0.id == id })?.state { return true }
+            return false
+        }
 
         backend.refresh()
         try waitFor("initial status") { backend.allows(.download, modelID: q4) }
@@ -90,8 +94,10 @@ private struct ModelLibrarySmoke {
         backend.perform(.use, modelID: q4)
         try expect(isActive(fp16) && !backend.allows(.remove, modelID: q4),
                    "The previous model must stay active and Remove must be blocked while switching")
+        try expect(isLoading(q4), "The model being switched to must show as loading")
         completeActivation?(false)
         try waitFor("failed activation") { backend.allows(.use, modelID: q4) }
+        try expect(!isLoading(q4), "A failed switch must clear the loading state")
         try expect(isActive(fp16) && backend.message?.contains("Could not switch") == true,
                    "Failed activation must keep the previous selection and show an error")
 

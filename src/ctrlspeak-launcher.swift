@@ -1836,7 +1836,8 @@ func readConfigValue(_ key: String) -> String? {
         return nil
     }
     var value: String?
-    for line in raw.split(separator: "\n") {
+    // Swift treats "\r\n" as one Character, so split on newline scalars.
+    for line in raw.components(separatedBy: .newlines) {
         let entry = line.trimmingCharacters(in: .whitespaces)
         guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
         guard entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key else {
@@ -1850,7 +1851,9 @@ func readConfigValue(_ key: String) -> String? {
 @discardableResult
 func writeConfigValue(_ key: String, _ value: String) -> Bool {
     guard value.rangeOfCharacter(from: .newlines) == nil else { return false }
-    let path = localVoiceConfigPath()
+    // Follow a symlinked config (dotfiles) so the atomic write updates the
+    // target instead of replacing the link with a regular file.
+    let path = (localVoiceConfigPath() as NSString).resolvingSymlinksInPath
     let raw: String
     do {
         raw = try String(contentsOfFile: path, encoding: .utf8)
@@ -1859,7 +1862,9 @@ func writeConfigValue(_ key: String, _ value: String) -> Bool {
     } catch {
         return false
     }
-    var lines = raw.isEmpty ? [] : raw.components(separatedBy: "\n")
+    // Keep the file's own line endings; edit on normalized lines.
+    let newline = raw.contains("\r\n") ? "\r\n" : "\n"
+    var lines = raw.isEmpty ? [] : raw.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
 
     var replaced = false
     for index in lines.indices {
@@ -1881,7 +1886,7 @@ func writeConfigValue(_ key: String, _ value: String) -> Bool {
             atPath: (path as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true
         )
-        try lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        try lines.joined(separator: newline).write(toFile: path, atomically: true, encoding: .utf8)
         return true
     } catch {
         return false
@@ -2380,6 +2385,8 @@ private final class ReadyIllustrationView: NSView {
 private final class ReadyWindowController: NSWindowController, NSWindowDelegate {
     var onSettings: (() -> Void)?
     var onClose: (() -> Void)?
+    // Offered once, pre-checked and visible, applied when the window closes.
+    private let loginToggle = NSButton(checkboxWithTitle: "Open LocalVoice when I log in", target: nil, action: nil)
 
     init(modelName: String?, menuBar: Bool, still: Bool? = nil) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
@@ -2431,13 +2438,16 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
         buttons.spacing = 10
         for button in [settings, start] { button.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true }
 
-        let column = NSStackView(views: [scene, title, subtitle, steps, buttons])
+        loginToggle.state = .on
+        loginToggle.isHidden = SMAppService.mainApp.status == .enabled
+        let column = NSStackView(views: [scene, title, subtitle, steps, loginToggle, buttons])
         column.orientation = .vertical
         column.alignment = .centerX
         column.spacing = 6
         column.setCustomSpacing(24, after: scene)
         column.setCustomSpacing(22, after: subtitle)
-        column.setCustomSpacing(26, after: steps)
+        column.setCustomSpacing(loginToggle.isHidden ? 26 : 18, after: steps)
+        column.setCustomSpacing(22, after: loginToggle)
         column.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
         content.addSubview(column)
@@ -2500,7 +2510,18 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
 
     @objc private func finish() { close() }
 
-    func windowWillClose(_ notification: Notification) { onClose?() }
+    func windowWillClose(_ notification: Notification) {
+        if !loginToggle.isHidden, loginToggle.state == .on {
+            let service = SMAppService.mainApp
+            do {
+                try service.register()
+                if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+            } catch {
+                // The menu's Launch at Login item reports errors; nothing to block here.
+            }
+        }
+        onClose?()
+    }
 }
 
 // MARK: - Media pause permission
@@ -2897,6 +2918,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var setupPermissions: (() -> Void)?
     var restart: (() -> Void)?
     var quit: (() -> Void)?
+    /// A read-only line at the top of the menu, e.g. "Whisper … · Ready".
+    var status: (() -> String?)?
 
     var isVisible: Bool { statusItem != nil }
 
@@ -2935,6 +2958,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+
+        if let line = status?() {
+            let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
 
         if showSettings != nil {
             menu.addItem(actionItem(title: "Settings…", selector: #selector(openSettings), key: ","))
@@ -3100,8 +3130,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 SMAppService.openSystemSettingsLoginItems()
             } else {
                 try service.register()
+                if service.status == .requiresApproval {
+                    // Registered, but macOS wants the user to allow it.
+                    SMAppService.openSystemSettingsLoginItems()
+                }
             }
         } catch {
+            NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Could not change Launch at Login"
             alert.informativeText = error.localizedDescription
@@ -3237,6 +3272,11 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private static let readyShownKey = "onboarding.readyShown"
     private var waitingForPermissions = false
     private var mayRetry = true
+    // When the running child became ready, to re-arm crash recovery.
+    private var readySince: TimeInterval?
+    // Write end of the child's stdin. The child exits on EOF, so it cannot
+    // outlive the app even if the app crashes or is force-quit.
+    private var lifeline: FileHandle?
 
     init(config: [String: String], arguments: [String]) throws {
         self.config = config
@@ -3292,6 +3332,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         menuBar.setupPermissions = { [weak self] in self?.setupPermissions() }
         menuBar.restart = { [weak self] in self?.restart() }
         menuBar.quit = { [weak self] in self?.quit() }
+        menuBar.status = { [weak self] in self?.statusLine }
         menuBar.installApplicationMenu()
         applyMenuVisibility()
         menuTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -3325,6 +3366,18 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             return .starting(library?.models.first { $0.id == childModel }?.name ?? "the speech model")
         }
         return .stopped
+    }
+
+    private func modelName(_ id: String) -> String {
+        library?.models.first(where: { $0.id == id })?.name ?? id
+    }
+
+    /// One line for the top of the menu: what dictation will use right now.
+    private var statusLine: String {
+        if let runningModel { return "\(modelName(runningModel)) · Ready" }
+        if let childModel { return "Loading \(modelName(childModel))…" }
+        if !permissionsGranted { return "Waiting for permissions" }
+        return "Dictation is off"
     }
 
     private var permissionsGranted: Bool {
@@ -3483,8 +3536,14 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         if process.isRunning {
             process.terminate()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak process] in
-                guard let self, let process, self.child === process, process.isRunning else { return }
-                kill(process.processIdentifier, SIGKILL)
+                // While quitting, the child may already be detached from
+                // `self.child`; it still has to go before the app exits.
+                guard let self, let process, process.isRunning,
+                      self.stopping || self.child === process else { return }
+                // Process starts the child in its own group; take the mic
+                // worker and overlay helpers down with it.
+                let pid = process.processIdentifier
+                if kill(-pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
             }
         }
     }
@@ -3517,7 +3576,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         environment["LOCALVOICE_READY_FILE"] = ready.path
         environment["LOCALVOICE_STATE_DIR"] = selection.deletingLastPathComponent().path
         environment["LOCALVOICE_SESSION_LOCK"] = scratch.appendingPathComponent("session.lock").path
+        environment["LOCALVOICE_LIFELINE"] = "stdin"
         process.environment = environment
+        let pipe = Pipe()
+        process.standardInput = pipe.fileHandleForReading
         process.terminationHandler = { [weak self] finished in
             DispatchQueue.main.async { [weak self] in
                 self?.ended(finished, model: model)
@@ -3529,10 +3591,15 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             failedStart(model)
             return
         }
+        try? pipe.fileHandleForReading.close()
+        try? lifeline?.close()
+        lifeline = pipe.fileHandleForWriting
         child = process
         childModel = model
         permissionChecklist?.serviceDidChange()
-        let deadline = Date().addingTimeInterval(150)
+        // Uptime does not advance while the Mac sleeps, so closing the lid
+        // during a model load does not count against the deadline.
+        let deadline = ProcessInfo.processInfo.systemUptime + 150
         readyTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self, weak process] _ in
             DispatchQueue.main.async { [weak self, weak process] in
                 guard let self, let process, self.child === process,
@@ -3540,7 +3607,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                 if process.isRunning,
                    (try? String(contentsOf: ready, encoding: .utf8)) == "\(process.processIdentifier)\n" {
                     self.becameReady(model)
-                } else if Date() > deadline {
+                } else if ProcessInfo.processInfo.systemUptime > deadline {
                     self.readyTimer?.invalidate()
                     self.readyTimer = nil
                     self.terminate(process)
@@ -3562,6 +3629,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             }
         }
         runningModel = model
+        readySince = ProcessInfo.processInfo.systemUptime
         // Decide before the library updates, so its own "ready" note stays quiet.
         let showReady = setupCompletedThisRun || !UserDefaults.standard.bool(forKey: Self.readyShownKey)
         if showReady { presentingReady = true }
@@ -3597,11 +3665,17 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private func ended(_ process: Process, model: String) {
         guard child === process else { return }
         let wasReady = runningModel == model
+        // A child that ran for a while before crashing earns a fresh retry;
+        // only back-to-back crashes give up.
+        if let readySince, ProcessInfo.processInfo.systemUptime - readySince > 300 { mayRetry = true }
+        readySince = nil
         child = nil
         childModel = nil
         readyTimer?.invalidate()
         readyTimer = nil
         runningModel = nil
+        try? lifeline?.close()
+        lifeline = nil
         library?.setActiveModel(nil)
         if stopping {
             exitCleanly()
@@ -3630,12 +3704,13 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         }
         releaseGate()
         library?.setLoadingModel(nil)
-        library?.refresh()
+        library?.refresh(error: "LocalVoice could not start \(modelName(model)). Click Use to try again.")
         showModels()
         permissionChecklist?.serviceDidChange()
     }
 
     func quit() {
+        guard !stopping else { return }
         stopping = true
         menuTimer?.invalidate()
         library?.stop()

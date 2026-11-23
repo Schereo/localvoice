@@ -296,6 +296,71 @@ def _setup_managed_logging():
         return
     log.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[log], force=True)
+    global _service_log_stream
+    _service_log_stream = log.stream
+
+
+# The managed service's log file, used for the shutdown watchdog's traceback.
+_service_log_stream = None
+# Upper bound for the managed cleanup; a stuck native teardown must not keep a
+# service alive that holds the hotkey, the microphone and the service lock.
+SHUTDOWN_GRACE_SECONDS = 8
+
+
+def _watch_lifeline():
+    """Stop the service once the host app is gone.
+
+    The app keeps the write end of our stdin open for as long as it runs. If
+    it quits, crashes or is force-quit, the kernel closes it and we read EOF.
+    """
+    if os.environ.get("LOCALVOICE_LIFELINE") != "stdin":
+        return
+    try:
+        stream = os.fdopen(os.dup(0), "rb", buffering=0)
+    except OSError:
+        return
+
+    def watch():
+        try:
+            while stream.read(4096):
+                pass
+        except OSError:
+            pass
+        logger.warning("The LocalVoice app is gone; stopping the service.")
+        os.kill(os.getpid(), signal.SIGTERM)
+        # Backstop in case the main thread cannot unwind.
+        time.sleep(SHUTDOWN_GRACE_SECONDS + 2)
+        os._exit(1)
+
+    threading.Thread(target=watch, name="LifelineWatcher", daemon=True).start()
+
+
+def _bound_managed_shutdown():
+    """Make the remaining cleanup finite and a second SIGTERM final."""
+    import faulthandler
+
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(143))
+    stream = _service_log_stream or sys.stderr
+    try:
+        faulthandler.dump_traceback_later(SHUTDOWN_GRACE_SECONDS, exit=True, file=stream)
+    except (ValueError, OSError, AttributeError):
+        pass
+
+
+def _exit_managed(code):
+    """Leave without interpreter teardown: native atexit handlers (PortAudio,
+    Metal, libomp) have hung the service on exit before."""
+    if code is None:
+        code = 0
+    elif not isinstance(code, int):
+        code = 1
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(code)
 
 
 def run_app(args):
@@ -328,6 +393,7 @@ def run_app(args):
         state.DEBUG_MODE = args.debug
         if managed:
             _setup_managed_logging()
+            _watch_lifeline()
         else:
             setup_logging_for_mode(state.DEBUG_MODE)
 
@@ -558,8 +624,9 @@ def run_app(args):
     finally:
         logger.info("Executing main finally block for cleanup...")
         if previous_sigterm is not None:
-            # Do not let a second signal interrupt disposal of the model helper.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            # Cleanup gets a fixed budget; after that, or on a second
+            # SIGTERM, the process ends instead of hanging.
+            _bound_managed_shutdown()
 
         if state.keyboard_manager is not None:
             try:
@@ -593,6 +660,8 @@ def run_app(args):
             restore_environment_variables(saved_env_vars)
         if previous_sigterm is not None:
             signal.signal(signal.SIGTERM, previous_sigterm)
+            import faulthandler
+            faulthandler.cancel_dump_traceback_later()
 
         console.print("[bold green]ctrlspeak stopped.[/bold green]")
 
@@ -718,4 +787,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        exit_code = main()
+    except SystemExit as exc:
+        exit_code = exc.code
+    if os.environ.get("LOCALVOICE_MODEL_ID") is not None:
+        _exit_managed(exit_code)
+    sys.exit(exit_code)

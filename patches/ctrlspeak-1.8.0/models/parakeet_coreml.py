@@ -38,8 +38,11 @@ class ParakeetCoreMLModel:
         with self._guard:
             if self._closed:
                 raise RuntimeError("The Parakeet backend has closed.")
-            if self.process is not None:
+            if self.process is not None and self.process.poll() is None:
                 return
+            # A worker that crashed or was killed is replaced, not mourned.
+            stale, self.process = self.process, None
+            self._pending.clear()
             if not self.worker.is_absolute() or not self.worker.is_file() or not os.access(self.worker, os.X_OK):
                 raise RuntimeError("The bundled Parakeet worker is unavailable.")
             if not self.model_path.is_absolute() or not self.model_path.is_dir():
@@ -52,12 +55,14 @@ class ParakeetCoreMLModel:
                 bufsize=0,
             )
             self.process = process
+        if stale is not None:
+            self._reap(stale)
         try:
             os.set_blocking(process.stdin.fileno(), False)
             if self._read(process, time.monotonic() + 110).get("event") != "ready":
                 raise RuntimeError("The Parakeet worker could not load the model.")
         except BaseException:
-            self.close()
+            self._discard()
             raise
 
     @staticmethod
@@ -97,7 +102,12 @@ class ParakeetCoreMLModel:
     def _exchange(self, request):
         process = self.process
         if process is None or process.poll() is not None:
-            raise RuntimeError("The Core ML worker is unavailable.")
+            # The previous worker died or was dropped after an error. Start a
+            # fresh one so one stall does not break every later dictation.
+            self.load_model()
+            process = self.process
+            if process is None:
+                raise RuntimeError("The Core ML worker is unavailable.")
         try:
             data = memoryview(json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n")
             fd = process.stdin.fileno()
@@ -110,23 +120,39 @@ class ParakeetCoreMLModel:
                     continue
             reply = self._read(process, deadline)
         except (OSError, ValueError, RuntimeError):
-            self.close()
+            # The pipe may be out of sync; the next request respawns.
+            self._discard()
             raise
         if reply.get("event") != "result" or not isinstance(reply.get("text"), str):
             raise RuntimeError("The Core ML worker could not complete the audio request.")
         return reply["text"].strip()
 
     def transcribe_pcm(self, samples, source_lang, target_lang):
-        chunks = (self._exchange({"pcm": self._pcm(samples[offset:offset + MAX_SAMPLES])})
-                  for offset in range(0, len(samples), MAX_SAMPLES))
+        # Split long segments into equal parts. A fixed 30 s split can leave a
+        # tail below FluidAudio's 0.3 s minimum, which fails the whole segment.
+        count = -(-len(samples) // MAX_SAMPLES)
+        if count == 0:
+            return ""
+        size = -(-len(samples) // count)
+        chunks = (self._exchange({"pcm": self._pcm(samples[offset:offset + size])})
+                  for offset in range(0, len(samples), size))
         return " ".join(filter(None, chunks))
+
+    def _discard(self):
+        """Stop the current worker; the next request starts a fresh one."""
+        with self._guard:
+            process, self.process = self.process, None
+            self._pending.clear()
+        if process is not None:
+            self._reap(process)
 
     def close(self):
         with self._guard:
-            process, self.process = self.process, None
             self._closed = True
-        if process is None:
-            return
+        self._discard()
+
+    @staticmethod
+    def _reap(process):
         try:
             if process.poll() is None:
                 process.terminate()
