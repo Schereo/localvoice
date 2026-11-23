@@ -13,6 +13,13 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Added
 
+- Settings window redesigned in the style of System Settings: a header with
+  the app icon and the current dictation state, grouped cards with a coloured
+  symbol per row, and keycaps that show the chosen hotkey gesture. New rows
+  for Vocabulary, Show in Menu Bar, Launch at Login (off unless you turn it
+  on) and Manage Models, plus an Open Config File link. The Pause Media
+  permission state is now part of that row's own description.
+
 - Custom vocabulary (`vocabulary` key): comma-separated names, brands and
   jargon, handed to Whisper as its initial prompt so it reuses their exact
   spelling — verified with synthesized audio containing an invented name.
