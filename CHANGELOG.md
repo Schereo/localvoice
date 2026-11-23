@@ -32,11 +32,15 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 - A ready screen after setup. When the first model has finished loading after
   the permissions are set up (and the first time on a new install), a window
-  shows the gesture as an animation: the configured key is tapped as often as
-  the hotkey needs, then the recording pill appears with a moving waveform.
+  plays the whole cycle as an animation with a caption for each step. Insert:
+  the configured key is tapped as often as the hotkey needs, the recording
+  pill shows a moving waveform, the key is tapped again, and the text types
+  itself into a field. Discard: tap, speak, Esc, and the pill shakes and
+  disappears.
   Below it, three steps cover how to start, how to insert or discard (Return,
   Esc) and where Models and Settings are, followed by Open Settings… and
-  Start Dictating. Under Reduce Motion the scene is a still with a "2×" badge.
+  Start Dictating. Under Reduce Motion the scene is one still with a "2×" badge,
+  the pill, the inserted text and a one-line caption.
   The model library's own ready note stays quiet while the screen is up.
 - A "Ready to dictate" confirmation once a model has finished loading. The
   model library shows a green note above the table that explains how to

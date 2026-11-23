@@ -1975,72 +1975,130 @@ func hotkeyKeycap() -> (symbol: String, name: String, taps: Int) {
     return (key.0, key.1, taps)
 }
 
-/// A looping scene that shows the gesture: the hotkey's keycap is tapped, then the recording
-/// pill appears with a moving waveform. Static (with a "2×" badge) under Reduce Motion.
+/// A keycap drawn with layers: face, accent glow for presses, label, optional key name, ripple.
+@MainActor
+private final class KeycapLayers {
+    let base = CALayer()
+    let glow = CALayer()
+    let symbol = CATextLayer()
+    let name = CATextLayer()
+    let ripple = CALayer()
+    private let hasName: Bool
+
+    init(symbol text: String, name keyName: String?, symbolSize: CGFloat) {
+        hasName = keyName != nil
+        for layer in [base, glow] {
+            layer.cornerRadius = 14
+            layer.cornerCurve = .continuous
+        }
+        base.borderWidth = 1
+        base.shadowOpacity = 0.18
+        base.shadowRadius = 5
+        base.shadowOffset = CGSize(width: 0, height: -2)
+        glow.opacity = 0
+        for label in [symbol, name] {
+            label.alignmentMode = .center
+            label.contentsScale = 2
+        }
+        symbol.string = text
+        symbol.font = NSFont.systemFont(ofSize: symbolSize, weight: .regular)
+        symbol.fontSize = symbolSize
+        name.string = keyName ?? ""
+        name.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        name.fontSize = 10
+        ripple.cornerRadius = 18
+        ripple.cornerCurve = .continuous
+        ripple.borderWidth = 2
+        ripple.opacity = 0
+        base.addSublayer(glow)
+        base.addSublayer(symbol)
+        if hasName { base.addSublayer(name) }
+    }
+
+    func layout(center: CGPoint, size: CGFloat) {
+        base.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+        base.position = center
+        glow.frame = base.bounds
+        let symbolHeight = (symbol.fontSize * 1.25).rounded()
+        if hasName {
+            symbol.frame = CGRect(x: 0, y: size / 2 - 8, width: size, height: symbolHeight)
+            name.frame = CGRect(x: 0, y: 9, width: size, height: 14)
+        } else {
+            symbol.frame = CGRect(x: 0, y: (size - symbolHeight) / 2 + 1, width: size, height: symbolHeight)
+        }
+        ripple.bounds = CGRect(x: 0, y: 0, width: size + 8, height: size + 8)
+        ripple.position = center
+    }
+
+    func applyColors(dark: Bool) {
+        base.backgroundColor = (dark ? NSColor(white: 0.24, alpha: 1) : NSColor.white).cgColor
+        base.borderColor = NSColor.separatorColor.cgColor
+        base.shadowColor = NSColor.black.cgColor
+        glow.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(dark ? 0.35 : 0.18).cgColor
+        symbol.foregroundColor = NSColor.labelColor.cgColor
+        name.foregroundColor = NSColor.secondaryLabelColor.cgColor
+        ripple.borderColor = NSColor.controlAccentColor.cgColor
+    }
+
+    func setScale(_ scale: CGFloat) {
+        for layer in [symbol, name] { layer.contentsScale = scale }
+    }
+}
+
+/// A looping scene of the whole cycle. Insert: tap the hotkey, speak (the pill shows a
+/// waveform), tap it again, and the text types itself into a field. Discard: tap, speak,
+/// press Esc, and the pill shakes and goes away. Captions name each step. Under Reduce
+/// Motion it is a single still that shows everything at once.
 @MainActor
 private final class ReadyIllustrationView: NSView {
     private let keycap = hotkeyKeycap()
+    private let hotkey = hotkeyDescription()
     private let still: Bool
-    private let key = CALayer()
-    private let keyGlow = CALayer()
-    private let keySymbol = CATextLayer()
-    private let keyName = CATextLayer()
-    private let ripple = CALayer()
+    private let modifier: KeycapLayers
+    private let escape = KeycapLayers(symbol: "esc", name: nil, symbolSize: 13)
     private let badge = CALayer()
     private let badgeText = CATextLayer()
-    private let pill = CALayer()
     private let arrow = CAShapeLayer()
+    private let pill = CALayer()
     private let dot = CALayer()
     private var bars: [CALayer] = []
+    private let field = CALayer()
+    private let fieldText = CATextLayer()
+    private let fieldMask = CALayer()
+    private let caret = CALayer()
+    private var captions: [CATextLayer] = []
     private var animating = false
 
-    static let size = NSSize(width: 464, height: 168)
-    private static let keySize: CGFloat = 76
-    private static let pillSize = NSSize(width: 136, height: 40)
+    static let size = NSSize(width: 464, height: 196)
+    private static let insertedText = "See you on Friday at ten."
+    private static let fieldFont = NSFont.systemFont(ofSize: 12)
 
     init(still: Bool) {
         self.still = still
+        modifier = KeycapLayers(symbol: keycap.symbol, name: keycap.name, symbolSize: 30)
         super.init(frame: NSRect(origin: .zero, size: Self.size))
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
-        setAccessibilityLabel("Tap \(hotkeyDescription()) to start dictating")
+        setAccessibilityLabel("Animation: tap \(hotkey) to start, speak, tap \(hotkey) again to insert the text. "
+                              + "Esc discards the recording.")
         guard let root = layer else { return }
-        key.cornerRadius = 16
-        key.cornerCurve = .continuous
-        key.borderWidth = 1
-        key.shadowOpacity = 0.18
-        key.shadowRadius = 5
-        key.shadowOffset = CGSize(width: 0, height: -2)
-        keyGlow.cornerRadius = 16
-        keyGlow.cornerCurve = .continuous
-        keyGlow.opacity = 0
-        for text in [keySymbol, keyName, badgeText] {
-            text.alignmentMode = .center
-            text.contentsScale = 2
-        }
-        keySymbol.string = keycap.symbol
-        keySymbol.font = NSFont.systemFont(ofSize: 30, weight: .regular)
-        keySymbol.fontSize = 30
-        keyName.string = keycap.name
-        keyName.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-        keyName.fontSize = 10
-        key.addSublayer(keyGlow)
-        key.addSublayer(keySymbol)
-        key.addSublayer(keyName)
-        ripple.cornerRadius = 20
-        ripple.cornerCurve = .continuous
-        ripple.borderWidth = 2
-        ripple.opacity = 0
+
         badge.cornerRadius = 11
         badgeText.string = "\(keycap.taps)×"
         badgeText.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         badgeText.fontSize = 12
+        badgeText.alignmentMode = .center
         badge.addSublayer(badgeText)
         badge.isHidden = !still
 
-        pill.cornerRadius = Self.pillSize.height / 2
+        arrow.fillColor = nil
+        arrow.lineWidth = 2
+        arrow.lineCap = .round
+        arrow.lineJoin = .round
+
+        pill.cornerRadius = 20
         pill.borderWidth = 1
         pill.shadowOpacity = 0.25
         pill.shadowRadius = 8
@@ -2053,11 +2111,45 @@ private final class ReadyIllustrationView: NSView {
             bars.append(bar)
             pill.addSublayer(bar)
         }
-        arrow.fillColor = nil
-        arrow.lineWidth = 2
-        arrow.lineCap = .round
-        arrow.lineJoin = .round
-        for sublayer in [ripple, key, badge, arrow, pill] { root.addSublayer(sublayer) }
+
+        field.cornerRadius = 7
+        field.cornerCurve = .continuous
+        field.borderWidth = 1
+        fieldText.string = Self.insertedText
+        fieldText.font = Self.fieldFont
+        fieldText.fontSize = 12
+        fieldText.alignmentMode = .left
+        fieldMask.backgroundColor = NSColor.black.cgColor
+        fieldMask.anchorPoint = CGPoint(x: 0, y: 0.5)
+        fieldText.mask = fieldMask
+        field.addSublayer(fieldText)
+        caret.cornerRadius = 0.75
+        field.addSublayer(caret)
+
+        let captionTexts = still
+            ? ["Tap \(hotkey) to start, again to insert. Esc discards."]
+            : ["Tap \(hotkey) to start", "Speak…", "Tap \(hotkey) again to insert",
+               "The text appears where you type", "Esc discards the recording"]
+        for text in captionTexts {
+            let caption = CATextLayer()
+            caption.string = text
+            caption.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            caption.fontSize = 12
+            caption.alignmentMode = .center
+            caption.opacity = still ? 1 : 0
+            captions.append(caption)
+        }
+
+        for sublayer in [modifier.ripple, escape.ripple, modifier.base, escape.base, badge, arrow, field, pill]
+            + captions { root.addSublayer(sublayer) }
+        if still {
+            pill.opacity = 1
+            caret.opacity = 0
+        } else {
+            pill.opacity = 0
+            fieldText.opacity = 0
+            caret.opacity = 0
+        }
         applyColors()
     }
 
@@ -2068,7 +2160,9 @@ private final class ReadyIllustrationView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         let scale = window?.backingScaleFactor ?? 2
-        for text in [keySymbol, keyName, badgeText] { text.contentsScale = scale }
+        modifier.setScale(scale)
+        escape.setScale(scale)
+        for text in [badgeText, fieldText] + captions { text.contentsScale = scale }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -2079,126 +2173,165 @@ private final class ReadyIllustrationView: NSView {
     private func applyColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            key.backgroundColor = (dark ? NSColor(white: 0.24, alpha: 1) : NSColor.white).cgColor
-            key.borderColor = NSColor.separatorColor.cgColor
-            key.shadowColor = NSColor.black.cgColor
-            keyGlow.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(dark ? 0.35 : 0.18).cgColor
-            keySymbol.foregroundColor = NSColor.labelColor.cgColor
-            keyName.foregroundColor = NSColor.secondaryLabelColor.cgColor
-            ripple.borderColor = NSColor.controlAccentColor.cgColor
+            modifier.applyColors(dark: dark)
+            escape.applyColors(dark: dark)
             badge.backgroundColor = NSColor.controlAccentColor.cgColor
             badgeText.foregroundColor = NSColor.white.cgColor
+            arrow.strokeColor = NSColor.tertiaryLabelColor.cgColor
             pill.backgroundColor = NSColor(white: 0.1, alpha: 0.92).cgColor
             pill.borderColor = NSColor(white: 1, alpha: dark ? 0.16 : 0.08).cgColor
             pill.shadowColor = NSColor.black.cgColor
             dot.backgroundColor = NSColor.systemRed.cgColor
-            arrow.strokeColor = NSColor.tertiaryLabelColor.cgColor
             for bar in bars { bar.backgroundColor = NSColor.white.withAlphaComponent(0.92).cgColor }
+            field.backgroundColor = (dark ? NSColor(white: 0.16, alpha: 1) : NSColor.white).cgColor
+            field.borderColor = NSColor.separatorColor.cgColor
+            fieldText.foregroundColor = NSColor.labelColor.cgColor
+            caret.backgroundColor = NSColor.controlAccentColor.cgColor
+            for caption in captions { caption.foregroundColor = NSColor.secondaryLabelColor.cgColor }
         }
+    }
+
+    // Layer geometry is bottom-up (the view is not flipped).
+    private struct Geometry {
+        let keysLeft: CGFloat, rowY: CGFloat, columnX: CGFloat, fieldY: CGFloat
+        let modifierSize: CGFloat = 70, escapeSize: CGFloat = 46, pill = CGSize(width: 136, height: 40)
+        let field = CGSize(width: 204, height: 30)
+    }
+
+    private var geometry: Geometry {
+        let keysWidth: CGFloat = 46 + 10 + 70, gap: CGFloat = 42, column: CGFloat = 204
+        let left = (bounds.width - keysWidth - gap - column) / 2
+        return Geometry(keysLeft: left, rowY: 130, columnX: left + keysWidth + gap + column / 2, fieldY: 80)
+    }
+
+    private var textWidth: CGFloat {
+        ceil((Self.insertedText as NSString).size(withAttributes: [.font: Self.fieldFont]).width)
     }
 
     override func layout() {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let k = Self.keySize
-        let p = Self.pillSize
-        let gap: CGFloat = 44
-        let total = k + gap + p.width
-        let originX = (bounds.width - total) / 2
-        let midY = bounds.midY
-        key.bounds = CGRect(x: 0, y: 0, width: k, height: k)
-        key.position = CGPoint(x: originX + k / 2, y: midY)
-        keyGlow.frame = key.bounds
-        // Layer coordinates here are bottom-up (the view is not flipped).
-        keySymbol.frame = CGRect(x: 0, y: k / 2 - 8, width: k, height: 36)
-        keyName.frame = CGRect(x: 0, y: 10, width: k, height: 14)
-        ripple.bounds = CGRect(x: 0, y: 0, width: k + 8, height: k + 8)
-        ripple.position = key.position
+        let g = geometry
+        escape.layout(center: CGPoint(x: g.keysLeft + g.escapeSize / 2, y: g.rowY), size: g.escapeSize)
+        let modifierCenter = CGPoint(x: g.keysLeft + g.escapeSize + 10 + g.modifierSize / 2, y: g.rowY)
+        modifier.layout(center: modifierCenter, size: g.modifierSize)
         badge.bounds = CGRect(x: 0, y: 0, width: 30, height: 22)
-        badge.position = CGPoint(x: key.position.x + k / 2 - 4, y: midY + k / 2 - 4)
+        badge.position = CGPoint(x: modifierCenter.x + g.modifierSize / 2 - 4, y: g.rowY + g.modifierSize / 2 - 4)
         badgeText.frame = CGRect(x: 0, y: 3, width: 30, height: 16)
-        pill.bounds = CGRect(origin: .zero, size: p)
-        pill.position = CGPoint(x: originX + k + gap + p.width / 2, y: midY)
-        dot.frame = CGRect(x: 16, y: p.height / 2 - 4, width: 8, height: 8)
-        // A small arrow from the key to the pill: the tap causes the recording.
-        let arrowStart = originX + k + 12, arrowEnd = originX + k + gap - 12
+
+        let arrowStart = modifierCenter.x + g.modifierSize / 2 + 10
+        let arrowEnd = g.columnX - g.pill.width / 2 - 10
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: arrowStart, y: midY))
-        path.addLine(to: CGPoint(x: arrowEnd, y: midY))
-        path.move(to: CGPoint(x: arrowEnd - 5, y: midY + 5))
-        path.addLine(to: CGPoint(x: arrowEnd, y: midY))
-        path.addLine(to: CGPoint(x: arrowEnd - 5, y: midY - 5))
+        path.move(to: CGPoint(x: arrowStart, y: g.rowY))
+        path.addLine(to: CGPoint(x: arrowEnd, y: g.rowY))
+        path.move(to: CGPoint(x: arrowEnd - 5, y: g.rowY + 5))
+        path.addLine(to: CGPoint(x: arrowEnd, y: g.rowY))
+        path.addLine(to: CGPoint(x: arrowEnd - 5, y: g.rowY - 5))
         arrow.path = path
+
+        pill.bounds = CGRect(origin: .zero, size: g.pill)
+        pill.position = CGPoint(x: g.columnX, y: g.rowY)
+        dot.frame = CGRect(x: 16, y: g.pill.height / 2 - 4, width: 8, height: 8)
         for (index, bar) in bars.enumerated() {
             let height = still ? [10, 18, 26, 16, 22, 12, 20, 14, 8][index] : 22
             bar.bounds = CGRect(x: 0, y: 0, width: 3, height: CGFloat(height))
-            bar.position = CGPoint(x: 38 + CGFloat(index) * 9.5, y: p.height / 2)
+            bar.position = CGPoint(x: 38 + CGFloat(index) * 9.5, y: g.pill.height / 2)
         }
+
+        field.bounds = CGRect(origin: .zero, size: g.field)
+        field.position = CGPoint(x: g.columnX, y: g.fieldY)
+        fieldText.frame = CGRect(x: 10, y: (g.field.height - 16) / 2, width: g.field.width - 20, height: 16)
+        fieldMask.bounds = CGRect(x: 0, y: 0, width: still ? textWidth : 0, height: 16)
+        fieldMask.position = CGPoint(x: 0, y: 8)
+        caret.frame = CGRect(x: 10 + textWidth + 1, y: (g.field.height - 16) / 2, width: 1.5, height: 16)
+
+        for caption in captions { caption.frame = CGRect(x: 0, y: 14, width: bounds.width, height: 16) }
         CATransaction.commit()
         if !still && !animating && window != nil { startAnimating() }
     }
 
-    // One loop: pause, N taps (each with a press and a ripple), the pill appears with a
-    // moving waveform, fades out, pause.
+    // Loop length, set from the timeline (it grows with the hotkey's tap count).
+    private var loop = 11.4
+
+    /// A keyframe track in seconds; holds its first and last value to the loop's ends.
+    private func track(_ path: String, _ points: [(Double, Any)]) -> CAKeyframeAnimation {
+        let d = loop
+        var points = points
+        if let first = points.first, first.0 > 0 { points.insert((0, first.1), at: 0) }
+        if let last = points.last, last.0 < d { points.append((d, last.1)) }
+        let animation = CAKeyframeAnimation(keyPath: path)
+        animation.keyTimes = points.map { NSNumber(value: min(max($0.0 / d, 0), 1)) }
+        animation.values = points.map(\.1)
+        animation.duration = d
+        animation.repeatCount = .infinity
+        animation.calculationMode = .linear
+        return animation
+    }
+
+    private func press(_ key: KeycapLayers, at times: [Double]) {
+        var scale: [(Double, Any)] = [(0, 1.0)], glow: [(Double, Any)] = [(0, 0.0)]
+        var rippleScale: [(Double, Any)] = [(0, 1.0)], rippleOpacity: [(Double, Any)] = [(0, 0.0)]
+        for t in times {
+            scale += [(t, 1.0), (t + 0.08, 0.9), (t + 0.2, 1.0)]
+            glow += [(t, 0.0), (t + 0.06, 1.0), (t + 0.26, 0.0)]
+            rippleScale += [(t + 0.05, 1.0), (t + 0.06, 1.0), (t + 0.34, 1.35)]
+            rippleOpacity += [(t + 0.05, 0.0), (t + 0.06, 0.7), (t + 0.34, 0.0)]
+        }
+        key.base.add(track("transform.scale", scale), forKey: "press")
+        key.glow.add(track("opacity", glow), forKey: "glow")
+        let ripple = CAAnimationGroup()
+        ripple.animations = [track("transform.scale", rippleScale), track("opacity", rippleOpacity)]
+        ripple.duration = loop
+        ripple.repeatCount = .infinity
+        key.ripple.add(ripple, forKey: "ripple")
+    }
+
+    private func fade(_ layer: CALayer, visible spans: [(Double, Double)], key: String) {
+        var points: [(Double, Any)] = [(0, 0.0)]
+        for (start, end) in spans {
+            points += [(start, 0.0), (start + 0.15, 1.0), (end - 0.15, 1.0), (end, 0.0)]
+        }
+        layer.add(track("opacity", points), forKey: key)
+    }
+
+    // Timeline: insert (tap, speak, tap, text types in), then discard (tap, speak, Esc), rest.
     private func startAnimating() {
         animating = true
-        let taps = keycap.taps
-        let lead = 0.5, tapStep = 0.34, pillIn = 0.3, talk = 1.9, pillOut = 0.35, rest = 0.7
-        let pillStart = lead + Double(taps) * tapStep + 0.15
-        let duration = pillStart + pillIn + talk + pillOut + rest
-        func t(_ seconds: Double) -> NSNumber { NSNumber(value: min(max(seconds / duration, 0), 1)) }
+        let taps = keycap.taps, step = 0.34
+        func tapTimes(_ start: Double) -> [Double] { (0..<taps).map { start + Double($0) * step } }
+        let startA = 0.5
+        let pillInA = startA + Double(taps) * step + 0.1
+        let stopA = pillInA + 0.3 + 1.7
+        let pillOutA = stopA + Double(taps) * step + 0.05
+        let typeStart = pillOutA + 0.25, typeEnd = typeStart + 0.8, textOut = typeEnd + 1.05
+        let startB = textOut + 0.35
+        let pillInB = startB + Double(taps) * step + 0.1
+        let escapeAt = pillInB + 0.3 + 1.5
+        let pillOutB = escapeAt + 0.45
+        loop = pillOutB + 1.4
 
-        var scaleTimes: [NSNumber] = [0], scaleValues: [CGFloat] = [1]
-        var glowTimes: [NSNumber] = [0], glowValues: [Float] = [0]
-        var rippleTimes: [NSNumber] = [0], rippleScale: [CGFloat] = [1], rippleOpacity: [Float] = [0]
-        for i in 0..<taps {
-            let start = lead + Double(i) * tapStep
-            scaleTimes += [t(start), t(start + 0.08), t(start + 0.2)]
-            scaleValues += [1, 0.9, 1]
-            glowTimes += [t(start), t(start + 0.06), t(start + 0.26)]
-            glowValues += [0, 1, 0]
-            rippleTimes += [t(start + 0.05), t(start + 0.06), t(start + 0.34)]
-            rippleScale += [1, 1, 1.35]
-            rippleOpacity += [0, 0.7, 0]
-        }
-        scaleTimes.append(1); scaleValues.append(1)
-        glowTimes.append(1); glowValues.append(0)
-        rippleTimes.append(1); rippleScale.append(1.35); rippleOpacity.append(0)
+        press(modifier, at: tapTimes(startA) + tapTimes(stopA) + tapTimes(startB))
+        press(escape, at: [escapeAt])
 
-        func keyframes(_ path: String, _ times: [NSNumber], _ values: [Any]) -> CAKeyframeAnimation {
-            let animation = CAKeyframeAnimation(keyPath: path)
-            animation.keyTimes = times
-            animation.values = values
-            animation.duration = duration
-            animation.repeatCount = .infinity
-            animation.calculationMode = .linear
-            animation.isRemovedOnCompletion = false
-            return animation
-        }
-        key.add(keyframes("transform.scale", scaleTimes, scaleValues), forKey: "press")
-        keyGlow.add(keyframes("opacity", glowTimes, glowValues), forKey: "glow")
-        let rippleGroup = CAAnimationGroup()
-        rippleGroup.animations = [keyframes("transform.scale", rippleTimes, rippleScale),
-                                  keyframes("opacity", rippleTimes, rippleOpacity)]
-        rippleGroup.duration = duration
-        rippleGroup.repeatCount = .infinity
-        ripple.add(rippleGroup, forKey: "ripple")
-
-        let shown = pillStart + pillIn, hidden = shown + talk
-        pill.opacity = 0
         let pillGroup = CAAnimationGroup()
         pillGroup.animations = [
-            keyframes("opacity", [0, t(pillStart), t(shown), t(hidden), t(hidden + pillOut), 1], [0, 0, 1, 1, 0, 0]),
-            keyframes("transform.scale", [0, t(pillStart), t(shown), t(hidden), t(hidden + pillOut), 1],
-                      [0.85, 0.85, 1, 1, 0.92, 0.92]),
+            track("opacity", [(pillInA, 0.0), (pillInA + 0.3, 1.0), (pillOutA, 1.0), (pillOutA + 0.25, 0.0),
+                              (pillInB, 0.0), (pillInB + 0.3, 1.0), (pillOutB, 1.0), (pillOutB + 0.3, 0.0)]),
+            track("transform.scale", [(pillInA, 0.85), (pillInA + 0.3, 1.0), (pillOutA, 1.0), (pillOutA + 0.25, 0.9),
+                                      (pillInB, 0.85), (pillInB + 0.3, 1.0), (pillOutB, 1.0), (pillOutB + 0.3, 0.8)]),
+            // Esc: a short shake before the discarded pill leaves.
+            track("transform.translation.x", [(escapeAt + 0.05, 0.0), (escapeAt + 0.12, -8.0), (escapeAt + 0.19, 8.0),
+                                              (escapeAt + 0.26, -6.0), (escapeAt + 0.33, 5.0), (escapeAt + 0.4, 0.0)]),
         ]
-        pillGroup.duration = duration
+        pillGroup.duration = loop
         pillGroup.repeatCount = .infinity
         pill.add(pillGroup, forKey: "pill")
         arrow.opacity = 0
-        arrow.add(keyframes("opacity", [0, t(pillStart - 0.1), t(shown - 0.1), t(hidden), t(hidden + pillOut), 1],
-                            [0, 0, 1, 1, 0, 0]), forKey: "arrow")
+        arrow.add(track("opacity", [(pillInA - 0.1, 0.0), (pillInA + 0.2, 1.0), (pillOutA, 1.0), (pillOutA + 0.25, 0.0),
+                                    (pillInB - 0.1, 0.0), (pillInB + 0.2, 1.0), (pillOutB, 1.0), (pillOutB + 0.3, 0.0)]),
+                  forKey: "arrow")
+
         let blink = CABasicAnimation(keyPath: "opacity")
         blink.fromValue = 1
         blink.toValue = 0.35
@@ -2217,6 +2350,27 @@ private final class ReadyIllustrationView: NSView {
             wave.calculationMode = .cubic
             bar.add(wave, forKey: "wave")
         }
+
+        // The text types itself into the field after the second tap, then clears for the next round.
+        let width = textWidth
+        fieldText.add(track("opacity", [(typeStart - 0.05, 0.0), (typeStart, 1.0), (textOut - 0.3, 1.0), (textOut, 0.0)]),
+                      forKey: "text")
+        fieldMask.add(track("bounds.size.width", [(typeStart, 0.0), (typeEnd, Double(width)), (textOut, Double(width)),
+                                                  (textOut + 0.01, 0.0)]), forKey: "type")
+        let caretX = caret.position.x
+        caret.add(track("opacity", [(typeStart - 0.05, 0.0), (typeStart, 1.0), (textOut - 0.3, 1.0), (textOut, 0.0)]),
+                  forKey: "caret")
+        caret.add(track("position.x", [(typeStart, Double(caretX - width - 1)), (typeEnd, Double(caretX)),
+                                       (textOut, Double(caretX)), (textOut + 0.01, Double(caretX - width - 1))]),
+                  forKey: "caretMove")
+
+        // Captions, in order: start, speak, insert, result, discard.
+        guard captions.count == 5 else { return }
+        fade(captions[0], visible: [(startA - 0.25, pillInA + 0.1), (startB - 0.25, pillInB + 0.1)], key: "c0")
+        fade(captions[1], visible: [(pillInA + 0.2, stopA - 0.05), (pillInB + 0.2, escapeAt - 0.05)], key: "c1")
+        fade(captions[2], visible: [(stopA - 0.05, pillOutA + 0.15)], key: "c2")
+        fade(captions[3], visible: [(typeStart - 0.05, textOut + 0.1)], key: "c3")
+        fade(captions[4], visible: [(escapeAt - 0.05, pillOutB + 0.6)], key: "c4")
     }
 }
 
