@@ -30,6 +30,16 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Changed
 
+- The model library is one table, like a settings pane: a column each for
+  languages and size, a one-line description per model, and a single button
+  per row (Download, Cancel, Use) with a checkmark on the model in use. A
+  download shows in its row ("Downloading, 38 of 483 MB (8 %)") on a tinted
+  background; unavailable models stay listed, dimmed, with the reason in the
+  languages column. The dictation language moves to the foot of the table and
+  applies to the active model; models that detect the language themselves say
+  so instead of offering a choice. Removing a downloaded model is a trash
+  button beside Use, or the row's context menu.
+
 - Quieter result pills: regular-weight 12.5 pt text instead of semibold
   14 pt, a smaller status icon, and a capsule that hugs its text. The
   transcription state drops its spinner and "Transcribing" label — a small

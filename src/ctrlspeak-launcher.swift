@@ -1418,7 +1418,8 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             )
             let window = NSWindow(contentViewController: controller)
             window.title = "LocalVoice"
-            window.setContentSize(NSSize(width: 580, height: config["parakeet_worker"] == nil ? 390 : 565))
+            window.setContentSize(ModelLibraryViewController.preferredSize(
+                modelCount: config["parakeet_worker"] == nil ? 2 : 6))
             window.isReleasedWhenClosed = false
             window.center()
             modelWindow = window

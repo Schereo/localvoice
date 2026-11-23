@@ -12,6 +12,8 @@ struct ModelLibraryEntry {
     let source: String
     var state: State
     var removable = true
+    // Total download size, for "71 of 886 MB" while downloading.
+    var bytes: Int64? = nil
 }
 
 enum DictationLanguage: String, CaseIterable {
@@ -19,7 +21,7 @@ enum DictationLanguage: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .auto: "Automatic"
+        case .auto: "Detect Automatically"
         case .de: "Deutsch"
         case .en: "English"
         }
@@ -27,6 +29,35 @@ enum DictationLanguage: String, CaseIterable {
 
     static func canSelect(for model: String) -> Bool {
         ["whisper-turbo-fp16", "whisper-turbo-q4", "nemotron-streaming"].contains(model)
+    }
+}
+
+// What the library says about a model beyond the store's catalog. Only facts the
+// code relies on: which languages can be chosen, how the model runs, its size.
+private struct ModelLibraryDetails {
+    let summary: String
+    let languages: String
+
+    static func of(_ id: String) -> ModelLibraryDetails {
+        switch id {
+        case "whisper-turbo-fp16":
+            ModelLibraryDetails(summary: "Full precision. Runs on the GPU.", languages: "German, English")
+        case "whisper-turbo-q4":
+            ModelLibraryDetails(summary: "4-bit version. Under a third the size.",
+                                languages: "German, English")
+        case "parakeet-v3":
+            ModelLibraryDetails(summary: "NVIDIA, on the Neural Engine. Fast.", languages: "Detected automatically")
+        case "parakeet-ultra":
+            ModelLibraryDetails(summary: "The larger Parakeet, on the Neural Engine.",
+                                languages: "Detected automatically")
+        case "parakeet-redux":
+            ModelLibraryDetails(summary: "The smallest Parakeet download.",
+                                languages: "Detected automatically")
+        case "nemotron-streaming":
+            ModelLibraryDetails(summary: "Transcribes while you speak.", languages: "German, English")
+        default:
+            ModelLibraryDetails(summary: "", languages: "")
+        }
     }
 }
 
@@ -53,6 +84,79 @@ extension ModelLibraryBackend {
     func allows(_ action: ModelLibraryAction, modelID: String) -> Bool { true }
 }
 
+// Layout shared by the header and every row, so the columns line up.
+private enum ModelLibraryMetrics {
+    static let inset: CGFloat = 20
+    static let languageWidth: CGFloat = 156
+    static let sizeWidth: CGFloat = 72
+    static let actionWidth: CGFloat = 132
+    static let buttonWidth: CGFloat = 104
+    static let gap: CGFloat = 16
+    static let headerHeight: CGFloat = 38
+    static let rowHeight: CGFloat = 58
+    static let cornerRadius: CGFloat = 12
+}
+
+// Layer-backed views that pick their colours up again when the appearance changes.
+private class ModelLibraryLayerView: NSView {
+    var fill: NSColor? { didSet { needsDisplay = true } }
+    var stroke: NSColor? { didSet { needsDisplay = true } }
+    var radius: CGFloat = 0 { didSet { needsDisplay = true } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        layer.backgroundColor = fill?.cgColor
+        layer.borderColor = stroke?.cgColor
+        layer.borderWidth = stroke == nil ? 0 : 1
+        layer.cornerRadius = radius
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = radius > 0
+    }
+}
+
+private final class ModelLibrarySeparator: ModelLibraryLayerView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        fill = .separatorColor
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 1).isActive = true
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
+private extension NSColor {
+    static let modelLibraryCard = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 1, alpha: 0.05) : NSColor(white: 1, alpha: 1)
+    }
+    static let modelLibraryHighlight = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 0, alpha: 0.035)
+    }
+}
+
+@MainActor
+private func modelLibraryLabel(_ text: String = "", size: CGFloat, weight: NSFont.Weight = .regular,
+                               color: NSColor = .labelColor) -> NSTextField {
+    let label = NSTextField(labelWithString: text)
+    label.font = .systemFont(ofSize: size, weight: weight)
+    label.textColor = color
+    label.lineBreakMode = .byTruncatingTail
+    label.translatesAutoresizingMaskIntoConstraints = false
+    return label
+}
+
 @MainActor
 final class ModelLibraryViewController: NSViewController {
     private let backend: any ModelLibraryBackend
@@ -61,6 +165,10 @@ final class ModelLibraryViewController: NSViewController {
     private let saveLanguage: ((String, DictationLanguage) -> Bool)?
     private let rows = NSStackView()
     private let message = NSTextField(wrappingLabelWithString: "")
+    private let languageFooter = NSView()
+    private let languageNote = modelLibraryLabel(size: 12, color: .secondaryLabelColor)
+    private let languagePopUp = NSPopUpButton()
+    private var languageModel: String?
     private var modelIDs: [String] = []
 
     init(backend: any ModelLibraryBackend, notice: String? = nil,
@@ -76,34 +184,65 @@ final class ModelLibraryViewController: NSViewController {
     required init?(coder: NSCoder) { nil }
 
     override func loadView() {
-        let heading = NSTextField(labelWithString: "Model Library")
-        heading.font = .systemFont(ofSize: 23, weight: .semibold)
-
-        rows.orientation = .vertical
-        rows.alignment = .leading
-        rows.spacing = 12
+        let M = ModelLibraryMetrics.self
+        let heading = modelLibraryLabel("Speech Recognition Model", size: 17, weight: .semibold)
+        heading.setAccessibilityRole(.staticText)
 
         let content = NSStackView(views: [heading])
         content.orientation = .vertical
         content.alignment = .leading
-        content.spacing = 8
+        content.spacing = 4
         var lastHeaderView: NSView = heading
         if let notice {
             let label = NSTextField(wrappingLabelWithString: notice)
+            label.font = .systemFont(ofSize: 12)
             label.textColor = .secondaryLabelColor
             content.addArrangedSubview(label)
             label.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
             lastHeaderView = label
         }
-        content.addArrangedSubview(rows)
-        content.setCustomSpacing(20, after: lastHeaderView)
+
+        let card = ModelLibraryLayerView()
+        card.fill = .modelLibraryCard
+        card.stroke = .separatorColor
+        card.radius = M.cornerRadius
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let header = makeHeader()
+        rows.orientation = .vertical
+        rows.alignment = .leading
+        rows.spacing = 0
+        buildLanguageFooter()
+
+        let cardStack = NSStackView(views: [header, ModelLibrarySeparator(), rows, languageFooter])
+        cardStack.orientation = .vertical
+        cardStack.alignment = .leading
+        cardStack.spacing = 0
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(cardStack)
+        for view in cardStack.arrangedSubviews {
+            view.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            cardStack.topAnchor.constraint(equalTo: card.topAnchor),
+            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+
+        content.addArrangedSubview(card)
+        content.setCustomSpacing(16, after: lastHeaderView)
+        card.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        message.font = .systemFont(ofSize: 12)
         message.textColor = .secondaryLabelColor
         content.addArrangedSubview(message)
+        content.setCustomSpacing(10, after: card)
         message.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         let container = ModelLibraryDocument()
         scroll.documentView = container
@@ -114,14 +253,72 @@ final class ModelLibraryViewController: NSViewController {
             container.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
             container.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             content.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
-            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -28),
             content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24),
-            rows.widthAnchor.constraint(equalTo: content.widthAnchor),
         ])
         view = scroll
         refresh()
         backend.onChange = { [weak self] in self?.refresh() }
+    }
+
+    // Window content size that shows every row without scrolling.
+    static func preferredSize(modelCount: Int) -> NSSize {
+        let M = ModelLibraryMetrics.self
+        let card = M.headerHeight + 1 + CGFloat(modelCount) * M.rowHeight + 66
+        return NSSize(width: 760, height: (24 + 22 + 4 + 16 + 16 + card + 24).rounded())
+    }
+
+    private func makeHeader() -> NSView {
+        let M = ModelLibraryMetrics.self
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        let model = modelLibraryLabel("Model", size: 12, color: .secondaryLabelColor)
+        let languages = modelLibraryLabel("Languages", size: 12, color: .secondaryLabelColor)
+        let size = modelLibraryLabel("Size", size: 12, color: .secondaryLabelColor)
+        size.alignment = .right
+        for label in [model, languages, size] { header.addSubview(label) }
+        NSLayoutConstraint.activate([
+            header.heightAnchor.constraint(equalToConstant: M.headerHeight),
+            model.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: M.inset),
+            model.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            size.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -(M.inset + M.actionWidth + M.gap)),
+            size.widthAnchor.constraint(equalToConstant: M.sizeWidth),
+            size.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            languages.trailingAnchor.constraint(equalTo: size.leadingAnchor, constant: -M.gap),
+            languages.widthAnchor.constraint(equalToConstant: M.languageWidth),
+            languages.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+        ])
+        return header
+    }
+
+    private func buildLanguageFooter() {
+        let M = ModelLibraryMetrics.self
+        languageFooter.translatesAutoresizingMaskIntoConstraints = false
+        let rule = ModelLibrarySeparator()
+        let title = modelLibraryLabel("Language", size: 13, weight: .medium)
+        languageNote.lineBreakMode = .byWordWrapping
+        languageNote.maximumNumberOfLines = 2
+        languageNote.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        languagePopUp.addItems(withTitles: DictationLanguage.allCases.map(\.title))
+        languagePopUp.target = self
+        languagePopUp.action = #selector(selectLanguage)
+        languagePopUp.translatesAutoresizingMaskIntoConstraints = false
+        for view in [rule, title, languageNote, languagePopUp] { languageFooter.addSubview(view) }
+        NSLayoutConstraint.activate([
+            rule.topAnchor.constraint(equalTo: languageFooter.topAnchor),
+            rule.leadingAnchor.constraint(equalTo: languageFooter.leadingAnchor, constant: M.inset),
+            rule.trailingAnchor.constraint(equalTo: languageFooter.trailingAnchor, constant: -M.inset),
+            title.topAnchor.constraint(equalTo: rule.bottomAnchor, constant: 14),
+            title.leadingAnchor.constraint(equalTo: languageFooter.leadingAnchor, constant: M.inset),
+            languageNote.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 3),
+            languageNote.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            languageNote.trailingAnchor.constraint(lessThanOrEqualTo: languagePopUp.leadingAnchor, constant: -M.gap),
+            languageNote.bottomAnchor.constraint(equalTo: languageFooter.bottomAnchor, constant: -16),
+            languagePopUp.trailingAnchor.constraint(equalTo: languageFooter.trailingAnchor, constant: -M.inset),
+            languagePopUp.centerYAnchor.constraint(equalTo: languageFooter.centerYAnchor, constant: 1),
+            languagePopUp.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
+        ])
     }
 
     override func viewWillAppear() {
@@ -139,160 +336,213 @@ final class ModelLibraryViewController: NSViewController {
                 rows.removeArrangedSubview(row)
                 row.removeFromSuperview()
             }
-            for model in models {
-                let row = ModelLibraryRow(perform: { [weak self] action in
+            for (index, model) in models.enumerated() {
+                let row = ModelLibraryRow(separator: index > 0) { [weak self] action in
                     self?.backend.perform(action, modelID: model.id)
-                }, setLanguage: { [weak self] language in
-                    guard let self else { return }
-                    if self.saveLanguage?(model.id, language) != true {
-                        self.refresh()
-                        if let window = self.view.window {
-                            let alert = NSAlert()
-                            alert.messageText = "Could not save the language preference."
-                            alert.beginSheetModal(for: window)
-                        }
-                    }
-                })
+                }
                 rows.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
             }
             modelIDs = ids
         }
         for (view, model) in zip(rows.arrangedSubviews, models) {
-            let language = DictationLanguage.canSelect(for: model.id) ? readLanguage?(model.id) : nil
-            (view as? ModelLibraryRow)?.update(model, language: language) { action in
+            (view as? ModelLibraryRow)?.update(model) { action in
                 backend.allows(action, modelID: model.id)
+            }
+        }
+        updateLanguageFooter(models)
+    }
+
+    // The language belongs to the model in use, like the dictation it shapes.
+    private func updateLanguageFooter(_ models: [ModelLibraryEntry]) {
+        let active = models.first { if case .active = $0.state { true } else { false } }
+        languageModel = active?.id
+        languageFooter.isHidden = readLanguage == nil || active == nil
+        guard let active, let readLanguage else { return }
+        if DictationLanguage.canSelect(for: active.id) {
+            languagePopUp.isEnabled = true
+            languagePopUp.selectItem(withTitle: readLanguage(active.id).title)
+            languageNote.stringValue = "The language you speak with \(active.name)."
+        } else {
+            languagePopUp.isEnabled = false
+            languagePopUp.selectItem(withTitle: DictationLanguage.auto.title)
+            languageNote.stringValue = "\(active.name) recognizes the language by itself."
+        }
+        languagePopUp.setAccessibilityLabel("Dictation language for \(active.name)")
+    }
+
+    @objc private func selectLanguage() {
+        let index = languagePopUp.indexOfSelectedItem
+        guard let model = languageModel, DictationLanguage.allCases.indices.contains(index) else { return }
+        if saveLanguage?(model, DictationLanguage.allCases[index]) != true {
+            refresh()
+            if let window = view.window {
+                let alert = NSAlert()
+                alert.messageText = "Could not save the language preference."
+                alert.beginSheetModal(for: window)
             }
         }
     }
 }
 
 @MainActor
-private final class ModelLibraryRow: NSView {
-    private let name = NSTextField(labelWithString: "")
-    private let source = NSTextField(labelWithString: "")
-    private let status = NSTextField(labelWithString: "")
-    private let progress = NSProgressIndicator()
+private final class ModelLibraryRow: ModelLibraryLayerView {
+    private let name = modelLibraryLabel(size: 13, weight: .medium)
+    private let summary = modelLibraryLabel(size: 12, color: .secondaryLabelColor)
+    private let languages = modelLibraryLabel(size: 13)
+    private let size = modelLibraryLabel(size: 13, color: .secondaryLabelColor)
     private let primary = NSButton(title: "", target: nil, action: nil)
-    private let remove = NSButton(title: "Remove", target: nil, action: nil)
-    private let language = NSPopUpButton()
-    private let languageRow = NSStackView()
+    private let remove = NSButton()
+    private let inUse = NSStackView()
     private let perform: (ModelLibraryAction) -> Void
-    private let setLanguage: (DictationLanguage) -> Void
     private var primaryAction: ModelLibraryAction?
+    private var modelName = ""
 
-    init(perform: @escaping (ModelLibraryAction) -> Void, setLanguage: @escaping (DictationLanguage) -> Void) {
+    init(separator: Bool, perform: @escaping (ModelLibraryAction) -> Void) {
         self.perform = perform
-        self.setLanguage = setLanguage
         super.init(frame: .zero)
-        let border = NSBox()
-        border.boxType = .custom
-        border.borderWidth = 1
-        border.borderColor = .separatorColor
-        border.fillColor = .clear
-        border.cornerRadius = 8
-        border.setAccessibilityElement(false)
-        border.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(border)
+        let M = ModelLibraryMetrics.self
+        translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
 
-        name.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        source.textColor = .secondaryLabelColor
-        source.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        source.lineBreakMode = .byTruncatingMiddle
-        source.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        status.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
-        status.setContentCompressionResistancePriority(.required, for: .horizontal)
+        languages.lineBreakMode = .byWordWrapping
+        languages.maximumNumberOfLines = 2
+        size.alignment = .right
+        size.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        summary.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        progress.isIndeterminate = false
-        progress.controlSize = .small
-        progress.minValue = 0
-        progress.maxValue = 1
-        progress.widthAnchor.constraint(equalToConstant: 116).isActive = true
-
+        primary.bezelStyle = .push
         primary.target = self
         primary.action = #selector(performPrimary)
+        primary.translatesAutoresizingMaskIntoConstraints = false
+
+        remove.bezelStyle = .accessoryBarAction
+        remove.isBordered = false
+        remove.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove")
+        remove.contentTintColor = .tertiaryLabelColor
+        remove.toolTip = "Remove the downloaded model"
         remove.target = self
         remove.action = #selector(performRemove)
-        language.controlSize = .small
-        language.addItems(withTitles: DictationLanguage.allCases.map(\.title))
-        language.target = self
-        language.action = #selector(selectLanguage)
-        let caption = NSTextField(labelWithString: "Dictation Language")
-        caption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        caption.textColor = .secondaryLabelColor
-        languageRow.alignment = .centerY
-        languageRow.addArrangedSubview(caption)
-        languageRow.addArrangedSubview(language)
+        remove.translatesAutoresizingMaskIntoConstraints = false
 
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [status, progress, spacer, primary, remove])
-        actions.alignment = .centerY
-        actions.spacing = 8
-        actions.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true
+        let check = NSImageView(image: NSImage(systemSymbolName: "checkmark.circle.fill",
+                                               accessibilityDescription: nil) ?? NSImage())
+        check.contentTintColor = .controlAccentColor
+        check.symbolConfiguration = .init(pointSize: 13, weight: .medium)
+        let inUseLabel = modelLibraryLabel("In Use", size: 13, weight: .medium, color: .controlAccentColor)
+        inUse.setViews([check, inUseLabel], in: .leading)
+        inUse.spacing = 5
+        inUse.alignment = .centerY
+        inUse.translatesAutoresizingMaskIntoConstraints = false
 
-        let content = NSStackView(views: [name, source, languageRow, actions])
-        content.orientation = .vertical
-        content.alignment = .leading
-        content.spacing = 4
-        content.setCustomSpacing(10, after: source)
-        source.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor).isActive = true
-        actions.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-        content.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(content)
+        let text = NSStackView(views: [name, summary])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        let rule = ModelLibrarySeparator()
+        rule.isHidden = !separator
+        for view in [rule, text, languages, size, remove, primary, inUse] { addSubview(view) }
         NSLayoutConstraint.activate([
-            border.topAnchor.constraint(equalTo: topAnchor),
-            border.leadingAnchor.constraint(equalTo: leadingAnchor),
-            border.trailingAnchor.constraint(equalTo: trailingAnchor),
-            border.bottomAnchor.constraint(equalTo: bottomAnchor),
-            content.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: M.rowHeight),
+            rule.topAnchor.constraint(equalTo: topAnchor),
+            rule.leadingAnchor.constraint(equalTo: leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: trailingAnchor),
+
+            primary.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -M.inset),
+            primary.centerYAnchor.constraint(equalTo: centerYAnchor),
+            primary.widthAnchor.constraint(equalToConstant: M.buttonWidth),
+            inUse.centerXAnchor.constraint(equalTo: primary.centerXAnchor),
+            inUse.centerYAnchor.constraint(equalTo: centerYAnchor),
+            remove.trailingAnchor.constraint(equalTo: primary.leadingAnchor, constant: -6),
+            remove.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            size.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(M.inset + M.actionWidth + M.gap)),
+            size.widthAnchor.constraint(equalToConstant: M.sizeWidth),
+            size.centerYAnchor.constraint(equalTo: centerYAnchor),
+            languages.trailingAnchor.constraint(equalTo: size.leadingAnchor, constant: -M.gap),
+            languages.widthAnchor.constraint(equalToConstant: M.languageWidth),
+            languages.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: M.inset),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: languages.leadingAnchor, constant: -M.gap),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 10),
         ])
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func update(_ model: ModelLibraryEntry, language choice: DictationLanguage?, allows: (ModelLibraryAction) -> Bool) {
-        name.stringValue = "\(model.name) · \(model.size)"
-        source.stringValue = model.source
-        source.toolTip = model.source
-        progress.setAccessibilityLabel("\(model.name) download progress")
-        remove.setAccessibilityLabel("Remove \(model.name)")
-        language.setAccessibilityLabel("Dictation Language for \(model.name)")
-        languageRow.isHidden = choice == nil
-        if let choice { language.selectItem(withTitle: choice.title) }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard !remove.isHidden, remove.isEnabled else { return nil }
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Remove Download", action: #selector(performRemove), keyEquivalent: "").target = self
+        return menu
+    }
+
+    func update(_ model: ModelLibraryEntry, allows: (ModelLibraryAction) -> Bool) {
+        let details = ModelLibraryDetails.of(model.id)
+        modelName = model.name
+        name.stringValue = model.name
+        summary.stringValue = details.summary.isEmpty ? model.source : details.summary
+        summary.toolTip = model.source
+        languages.stringValue = details.languages
+        languages.textColor = .labelColor
+        size.stringValue = model.size
+        fill = nil
+        alphaValue = 1
 
         switch model.state {
         case .notInstalled:
-            show("Not Installed", action: .download, title: "Download", modelName: model.name)
+            show(.download, title: "Download")
         case let .downloading(fraction):
             let progress = fraction.isFinite ? min(max(fraction, 0), 1) : 0
-            show("Downloading \(Int(progress * 100))%", action: .cancel, title: "Cancel",
-                 modelName: model.name, fraction: progress)
+            summary.stringValue = downloadText(progress, bytes: model.bytes)
+            fill = .modelLibraryHighlight
+            show(.cancel, title: "Cancel")
         case .installed:
-            show("Installed", action: .use, title: "Use", modelName: model.name)
+            show(.use, title: "Use")
         case .active:
-            show("Active", modelName: model.name)
+            show(nil)
+            fill = nil
         case let .unavailable(reason):
-            show(reason, modelName: model.name)
+            show(.download, title: "Download")
+            languages.stringValue = reason
+            languages.textColor = .secondaryLabelColor
+            alphaValue = 0.45
         }
-        primary.isEnabled = primaryAction.map(allows) ?? false
+        if case .unavailable = model.state {
+            primary.isEnabled = false
+        } else {
+            primary.isEnabled = primaryAction.map(allows) ?? false
+        }
         remove.isHidden = primaryAction != .use || !model.removable
         remove.isEnabled = allows(.remove)
+        remove.setAccessibilityLabel("Remove \(model.name)")
+        setAccessibilityLabel("\(model.name), \(summary.stringValue), \(model.size)")
     }
 
-    private func show(_ text: String, action: ModelLibraryAction? = nil, title: String = "",
-                      modelName: String, fraction: Double? = nil) {
-        status.stringValue = text
-        status.textColor = action == nil ? .controlAccentColor : .secondaryLabelColor
+    private func downloadText(_ fraction: Double, bytes: Int64?) -> String {
+        let percent = Int((fraction * 100).rounded(.down))
+        guard let bytes, bytes > 0 else { return "Downloading, \(percent) %" }
+        let total = Double(bytes) / 1e6
+        let done = (total * fraction).rounded(.down)
+        if total >= 1000 {
+            let format = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(2))
+            return "Downloading, \((done / 1000).formatted(format)) of \((total / 1000).formatted(format)) GB (\(percent) %)"
+        }
+        return "Downloading, \(Int(done)) of \(Int(total.rounded())) MB (\(percent) %)"
+    }
+
+    private func show(_ action: ModelLibraryAction?, title: String = "") {
         primaryAction = action
         primary.title = title
         primary.setAccessibilityLabel("\(title) \(modelName)")
         primary.isHidden = action == nil
-        progress.isHidden = fraction == nil
-        if let fraction { progress.doubleValue = fraction }
+        inUse.isHidden = action != nil
     }
 
     @objc private func performPrimary() {
@@ -301,12 +551,6 @@ private final class ModelLibraryRow: NSView {
 
     @objc private func performRemove() {
         perform(.remove)
-    }
-
-    @objc private func selectLanguage() {
-        let index = language.indexOfSelectedItem
-        guard DictationLanguage.allCases.indices.contains(index) else { return }
-        setLanguage(DictationLanguage.allCases[index])
     }
 }
 
@@ -362,7 +606,7 @@ final class StoreModelLibraryBackend: ModelLibraryBackend {
                 : (record.id == "nemotron-streaming" ? " · Live streaming" : "")
             return ModelLibraryEntry(id: record.id, name: record.name, size: record.displaySize,
                                      source: "\(record.source)\(location)\(capability)", state: state,
-                                     removable: record.canRemove)
+                                     removable: record.canRemove, bytes: record.bytes)
         }
     }
 
@@ -638,18 +882,24 @@ private final class ModelStoreCommand: @unchecked Sendable {
 @MainActor
 private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
     private(set) var models = [
-        ModelLibraryEntry(id: "fp16", name: "Whisper Turbo FP16", size: "1.61 GB",
-                          source: "Hugging Face · mlx-community/whisper-large-v3-turbo", state: .active),
-        ModelLibraryEntry(id: "q4", name: "Whisper Turbo Q4", size: "464 MB",
-                          source: "Hugging Face · mlx-community/whisper-large-v3-turbo-q4", state: .notInstalled),
+        ModelLibraryEntry(id: "whisper-turbo-fp16", name: "Whisper Large V3 Turbo", size: "1.61 GB",
+                          source: "Hugging Face · mlx-community/whisper-large-v3-turbo", state: .active,
+                          bytes: 1_614_000_000),
+        ModelLibraryEntry(id: "whisper-turbo-q4", name: "Whisper Large V3 Turbo Q4", size: "464 MB",
+                          source: "Hugging Face · mlx-community/whisper-large-v3-turbo-q4", state: .installed,
+                          bytes: 464_000_000),
         ModelLibraryEntry(id: "parakeet-v3", name: "Parakeet V3", size: "483 MB",
-                          source: "FluidInference · Auto language", state: .notInstalled),
+                          source: "FluidInference · parakeet-tdt-0.6b-v3-coreml", state: .downloading(0.08),
+                          bytes: 483_000_000),
         ModelLibraryEntry(id: "parakeet-ultra", name: "Parakeet Ultra", size: "632 MB",
-                          source: "FluidInference · Auto language", state: .notInstalled),
+                          source: "FluidInference · parakeet-ultra-coreml", state: .notInstalled,
+                          bytes: 632_000_000),
         ModelLibraryEntry(id: "parakeet-redux", name: "Parakeet Redux", size: "220 MB",
-                          source: "FluidInference · Auto language", state: .notInstalled),
+                          source: "FluidInference · parakeet-redux-coreml", state: .unavailable("Needs macOS 15"),
+                          bytes: 220_000_000),
         ModelLibraryEntry(id: "nemotron-streaming", name: "Nemotron Streaming", size: "615 MB",
-                          source: "FluidInference · Live streaming", state: .notInstalled),
+                          source: "FluidInference · Nemotron-3.5-ASR-Streaming-Multilingual", state: .notInstalled,
+                          bytes: 615_000_000),
     ]
     var onChange: (() -> Void)?
     private var timer: Timer?
@@ -706,18 +956,25 @@ private final class ModelLibraryPreview: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        var languages: [String: DictationLanguage] = [:]
         let controller = ModelLibraryViewController(
             backend: DemoModelLibraryBackend(),
-            notice: "Demo only. Actions are simulated; no network or files are used."
+            notice: "Models run on this Mac. Demo only: actions are simulated.",
+            readLanguage: { languages[$0] ?? .auto },
+            saveLanguage: { languages[$0] = $1; return true }
         )
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 340),
                               styleMask: [.titled, .closable, .miniaturizable],
                               backing: .buffered, defer: false)
         window.title = "LocalVoice"
         window.contentViewController = controller
-        window.setContentSize(NSSize(width: 580, height: 565))
+        window.setContentSize(ModelLibraryViewController.preferredSize(modelCount: 6))
         window.center()
         self.window = window
+        if let path = ProcessInfo.processInfo.environment["MODEL_LIBRARY_SNAPSHOT"] {
+            snapshot(window, to: path)
+            return
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -726,9 +983,26 @@ private final class ModelLibraryPreview: NSObject, NSApplicationDelegate {
         true
     }
 
+    // Renders the window offscreen to <path>.png in the appearance from
+    // MODEL_LIBRARY_APPEARANCE (light or dark), then quits.
+    private func snapshot(_ window: NSWindow, to path: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard let frameView = window.contentView?.superview else { exit(1) }
+            frameView.layoutSubtreeIfNeeded()
+            let bounds = frameView.bounds
+            guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { exit(1) }
+            frameView.cacheDisplay(in: bounds, to: rep)
+            let data = rep.representation(using: .png, properties: [:])
+            exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
+        }
+    }
+
     static func run() {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
+        if let appearance = ProcessInfo.processInfo.environment["MODEL_LIBRARY_APPEARANCE"] {
+            app.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
+        }
         let mainMenu = NSMenu()
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
