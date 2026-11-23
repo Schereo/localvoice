@@ -143,6 +143,12 @@ extension NSColor {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 1, alpha: 0.05) : NSColor(white: 1, alpha: 1)
     }
+    static let modelLibraryReady = NSColor(name: nil) { appearance in
+        NSColor.systemGreen.withAlphaComponent(appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 0.16 : 0.10)
+    }
+    static let modelLibraryReadyStroke = NSColor(name: nil) { appearance in
+        NSColor.systemGreen.withAlphaComponent(appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 0.35 : 0.30)
+    }
     static let modelLibraryHighlight = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 0, alpha: 0.035)
@@ -175,14 +181,21 @@ final class ModelLibraryViewController: NSViewController {
     private let languagePopUp = NSPopUpButton()
     private var languageModel: String?
     private var modelIDs: [String] = []
+    private let readyDetail: (() -> String)?
+    private let readyBanner = ModelLibraryLayerView()
+    private let readyText = NSTextField(wrappingLabelWithString: "")
+    // The active model as of the last refresh with a loaded catalog; nil until then.
+    private var lastActive: String??
 
     init(backend: any ModelLibraryBackend, notice: String? = nil,
          readLanguage: ((String) -> DictationLanguage)? = nil,
-         saveLanguage: ((String, DictationLanguage) -> Bool)? = nil) {
+         saveLanguage: ((String, DictationLanguage) -> Bool)? = nil,
+         readyDetail: (() -> String)? = nil) {
         self.backend = backend
         self.notice = notice
         self.readLanguage = readLanguage
         self.saveLanguage = saveLanguage
+        self.readyDetail = readyDetail
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -230,8 +243,12 @@ final class ModelLibraryViewController: NSViewController {
             cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
         ])
 
+        buildReadyBanner()
+        content.addArrangedSubview(readyBanner)
+        readyBanner.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         content.addArrangedSubview(card)
         content.setCustomSpacing(16, after: subtitle)
+        content.setCustomSpacing(12, after: readyBanner)
         card.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         content.translatesAutoresizingMaskIntoConstraints = false
 
@@ -264,6 +281,69 @@ final class ModelLibraryViewController: NSViewController {
         let card = M.headerHeight + 1 + CGFloat(modelCount) * M.rowHeight + 66
         return NSSize(width: 760, height: (24 + 22 + 4 + 16 + 16 + card + 24).rounded())
     }
+
+    // Shown once a model has finished loading: how to dictate, and where Settings are.
+    private func buildReadyBanner() {
+        readyBanner.fill = .modelLibraryReady
+        readyBanner.stroke = .modelLibraryReadyStroke
+        readyBanner.radius = 10
+        readyBanner.translatesAutoresizingMaskIntoConstraints = false
+        readyBanner.isHidden = true
+        let icon = NSImageView(image: NSImage(systemSymbolName: "checkmark.circle.fill",
+                                              accessibilityDescription: nil) ?? NSImage())
+        icon.symbolConfiguration = .init(pointSize: 18, weight: .regular)
+        icon.contentTintColor = .systemGreen
+        icon.setAccessibilityElement(false)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        let title = modelLibraryLabel("Ready to dictate", size: 13, weight: .semibold)
+        readyText.font = .systemFont(ofSize: 12)
+        readyText.textColor = .secondaryLabelColor
+        readyText.maximumNumberOfLines = 3
+        let text = NSStackView(views: [title, readyText])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.translatesAutoresizingMaskIntoConstraints = false
+        let dismiss = NSButton(title: "Got It", target: self, action: #selector(dismissReady))
+        dismiss.bezelStyle = .push
+        dismiss.controlSize = .small
+        dismiss.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        dismiss.translatesAutoresizingMaskIntoConstraints = false
+        for view in [icon, text, dismiss] { readyBanner.addSubview(view) }
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: readyBanner.leadingAnchor, constant: 16),
+            icon.topAnchor.constraint(equalTo: text.topAnchor),
+            text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            text.topAnchor.constraint(equalTo: readyBanner.topAnchor, constant: 12),
+            text.bottomAnchor.constraint(equalTo: readyBanner.bottomAnchor, constant: -12),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: dismiss.leadingAnchor, constant: -16),
+            readyText.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+            dismiss.trailingAnchor.constraint(equalTo: readyBanner.trailingAnchor, constant: -16),
+            dismiss.centerYAnchor.constraint(equalTo: readyBanner.centerYAnchor),
+        ])
+        readyBanner.setAccessibilityElement(true)
+        readyBanner.setAccessibilityRole(.group)
+    }
+
+    private func showReady(_ model: ModelLibraryEntry) {
+        guard let detail = readyDetail?() else { return }
+        readyText.stringValue = detail
+        readyBanner.setAccessibilityLabel("Ready to dictate with \(model.name). \(detail)")
+        let wasHidden = readyBanner.isHidden
+        readyBanner.isHidden = false
+        if wasHidden { fitWindow(modelCount: modelIDs.count) }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [
+            .announcement: "\(model.name) is ready. \(detail)", .priority: NSAccessibilityPriorityLevel.high.rawValue,
+        ])
+    }
+
+    private func hideReady() {
+        guard !readyBanner.isHidden else { return }
+        readyBanner.isHidden = true
+        fitWindow(modelCount: modelIDs.count)
+    }
+
+    @objc private func dismissReady() { hideReady() }
 
     private func makeHeader() -> NSView {
         let M = ModelLibraryMetrics.self
@@ -351,12 +431,28 @@ final class ModelLibraryViewController: NSViewController {
             }
         }
         updateLanguageFooter(models)
+
+        // A model just finished loading (not one that was already running when the window opened).
+        if !models.isEmpty {
+            let active = models.first { if case .active = $0.state { true } else { false } }
+            if let lastActive, let active, active.id != lastActive {
+                showReady(active)
+            } else if active == nil {
+                hideReady()
+            }
+            lastActive = .some(active?.id)
+        }
     }
 
     // Grow or shrink the open window so every row stays visible; keep its width and top edge.
     private func fitWindow(modelCount: Int) {
         guard let window = view.window, modelCount > 0 else { return }
-        let content = NSRect(origin: .zero, size: Self.preferredSize(modelCount: modelCount))
+        var size = Self.preferredSize(modelCount: modelCount)
+        if !readyBanner.isHidden {
+            readyBanner.layoutSubtreeIfNeeded()
+            size.height += readyBanner.fittingSize.height + 12
+        }
+        let content = NSRect(origin: .zero, size: size)
         var frame = window.frame
         let height = window.frameRect(forContentRect: content).height
         frame.origin.y += frame.height - height
@@ -1010,11 +1106,14 @@ private final class ModelLibraryPreview: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         var languages: [String: DictationLanguage] = [:]
+        let backend = DemoModelLibraryBackend()
         let controller = ModelLibraryViewController(
-            backend: DemoModelLibraryBackend(),
+            backend: backend,
             notice: "Models run on this Mac. Demo only: actions are simulated.",
             readLanguage: { languages[$0] ?? .auto },
-            saveLanguage: { languages[$0] = $1; return true }
+            saveLanguage: { languages[$0] = $1; return true },
+            readyDetail: { "Tap Command twice in any app to start, and again to insert the text. Esc discards. "
+                + "Settings are under the LocalVoice icon in the menu bar." }
         )
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 340),
                               styleMask: [.titled, .closable, .miniaturizable],
@@ -1024,6 +1123,10 @@ private final class ModelLibraryPreview: NSObject, NSApplicationDelegate {
         window.setContentSize(ModelLibraryViewController.preferredSize(modelCount: 6))
         window.center()
         self.window = window
+        // MODEL_LIBRARY_READY=1 switches models once, as a user would, to show the ready banner.
+        if ProcessInfo.processInfo.environment["MODEL_LIBRARY_READY"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { backend.perform(.use, modelID: "whisper-turbo-q4") }
+        }
         if let path = ProcessInfo.processInfo.environment["MODEL_LIBRARY_SNAPSHOT"] {
             snapshot(window, to: path)
             return

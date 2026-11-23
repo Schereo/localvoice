@@ -1193,7 +1193,9 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
             case let .starting(model):
                 footer("Starting dictation", "Loading \(model)…", "Done")
             case .ready:
-                footer("Ready to dictate", "Tap \(hotkeyDescription()) in any app to start.", "Done")
+                let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
+                footer("Ready to dictate", "Tap \(hotkeyDescription()) in any app to start."
+                       + (menuBar ? " Settings are under the LocalVoice icon in the menu bar." : ""), "Done")
             case .stopped:
                 footer("Dictation didn’t start", "Open Models to try again or choose another model.", "Done")
             case nil:
@@ -2814,6 +2816,11 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                 },
                 saveLanguage: { id, language in
                     DictationLanguage.canSelect(for: id) && writeConfigValue("language.\(id)", language.rawValue)
+                },
+                readyDetail: {
+                    let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
+                    return "Tap \(hotkeyDescription()) in any app to start, and again to insert the text. Esc discards."
+                        + (menuBar ? " Settings are under the LocalVoice icon in the menu bar." : "")
                 }
             )
             let window = NSWindow(contentViewController: controller)

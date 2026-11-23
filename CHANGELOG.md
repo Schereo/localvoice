@@ -28,6 +28,18 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   pipeline was already doing, plus low-priority guess decodes that never
   delay it.
 
+### Added
+
+- A "Ready to dictate" confirmation once a model has finished loading. The
+  model library shows a green note above the table that explains how to
+  dictate (tap the configured hotkey in any app, tap again to insert the
+  text, Esc discards) and that Settings are under the LocalVoice icon in the
+  menu bar. It has a Got It button and is announced to VoiceOver. It appears
+  only when a model becomes active while the window is open, not for a model
+  that was already running. When setup finishes with a model already chosen,
+  the permission window's "Ready to dictate" footer gives the same Settings
+  hint.
+
 ### Changed
 
 - Settings follow the setup windows' design: a heading, then two cards
