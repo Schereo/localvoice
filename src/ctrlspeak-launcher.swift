@@ -280,15 +280,19 @@ func resetPermission(service: String, bundle: String) -> Bool {
 }
 
 private enum PermissionRowState: Equatable {
-    case granted, restricted, clearing, pending, reopening, waiting, relaunchDetected, oldEntry,
-         relaunchReturned, needsAttention, off, notSetUp
+    // coveredByAccessibility: event listening is allowed through the Accessibility grant,
+    // so Input Monitoring works although its own list is empty.
+    case granted, coveredByAccessibility, restricted, clearing, pending, reopening, waiting, relaunchDetected,
+         oldEntry, relaunchReturned, needsAttention, off, notSetUp
 
     var showsSpinner: Bool { [.clearing, .pending, .reopening, .waiting].contains(self) }
-    var isOpen: Bool { self != .granted && self != .restricted }
+    var isDone: Bool { self == .granted || self == .coveredByAccessibility }
+    var isOpen: Bool { !isDone && self != .restricted }
 
     func status(for kind: PermissionKind) -> (word: String, note: String) {
         switch self {
         case .granted: ("Allowed", "")
+        case .coveredByAccessibility: ("With Accessibility", "No switch needed")
         case .restricted: ("Managed", "By your organization")
         case .clearing: ("Clearing…", "Removing old entry")
         case .pending: ("Waiting…", "Answer the dialog")
@@ -304,12 +308,16 @@ private enum PermissionRowState: Equatable {
     }
 
     var statusColor: NSColor {
-        self == .oldEntry || self == .relaunchDetected ? .systemOrange : .labelColor
+        switch self {
+        case .oldEntry, .relaunchDetected: .systemOrange
+        case .coveredByAccessibility: .secondaryLabelColor
+        default: .labelColor
+        }
     }
 
     func button(for kind: PermissionKind) -> (title: String, enabled: Bool)? {
         switch self {
-        case .granted, .restricted: nil
+        case .granted, .coveredByAccessibility, .restricted: nil
         case .clearing: ("Re-add…", false)
         case .pending: ("Allow…", false)
         case .reopening: ("Reopen", false)
@@ -477,7 +485,7 @@ private final class PermissionSetupRow: ModelLibraryLayerView {
         guard changed else { return }
 
         fill = highlighted ? .modelLibraryHighlight : nil
-        let done = state == .granted
+        let done = state.isDone
         badge.isHidden = done || state == .restricted
         if highlighted {
             badge.fill = .controlAccentColor
@@ -502,7 +510,7 @@ private final class PermissionSetupRow: ModelLibraryLayerView {
         icon.isHidden = !(done || state == .restricted)
 
         let (word, detail) = state.status(for: kind)
-        statusColumn.isHidden = done
+        statusColumn.isHidden = state == .granted
         status.stringValue = word
         status.textColor = state.statusColor
         note.stringValue = detail
@@ -521,7 +529,7 @@ private final class PermissionSetupRow: ModelLibraryLayerView {
         }
 
         setAccessibilityLabel(done
-            ? "\(kind.title), allowed, \(kind.explanation)"
+            ? "\(kind.title), allowed\(state == .coveredByAccessibility ? " through Accessibility" : ""), \(kind.explanation)"
             : "\(kind.title), step \(kind.step) of 3, \(word), \(kind.explanation)")
     }
 
@@ -1073,7 +1081,12 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
     }
 
     private func rowState(_ kind: PermissionKind) -> PermissionRowState {
-        if snapshot.isGranted(kind) { return .granted }
+        if snapshot.isGranted(kind) {
+            if kind == .inputMonitoring && snapshot.accessibility && snapshot.listenAccess != kIOHIDAccessTypeGranted {
+                return .coveredByAccessibility
+            }
+            return .granted
+        }
         if kind == .microphone && snapshot.microphone == .restricted { return .restricted }
         if clearing.contains(kind) { return .clearing }
         if kind == .microphone && microphonePending { return .pending }
@@ -1323,7 +1336,7 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
         let current = rowState(kind)
         // Act on the label the user saw. If it no longer applies (granted meanwhile), do nothing.
         let state = shownState ?? current
-        if current == .granted || current == .restricted { refresh(); return }
+        if current.isDone || current == .restricted { refresh(); return }
         switch state {
         case .notSetUp where kind == .microphone:
             requestMicrophone()
@@ -1351,7 +1364,7 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
             }
         case .relaunchDetected, .relaunchReturned:
             reopen()
-        case .granted, .restricted, .clearing, .pending, .reopening:
+        case .granted, .coveredByAccessibility, .restricted, .clearing, .pending, .reopening:
             break
         }
         refresh()
@@ -2859,7 +2872,7 @@ enum LocalVoiceLauncher {
 #if PERMISSIONS_PREVIEW
 // Renders the permission window offscreen. Nothing here reads or changes real permissions:
 //   PERMISSIONS_PREVIEW_SCENARIO = fresh | resumed | waiting | attention | relaunch | oldentry |
-//                                  restricted | complete | complete-model | panel | panel-success
+//                                  restricted | complete | covered | complete-model | panel | panel-success
 //   PERMISSIONS_PREVIEW_SNAPSHOT = <path without .png>   (omit to keep the window open)
 //   PERMISSIONS_PREVIEW_APPEARANCE = light | dark
 @MainActor
@@ -2897,6 +2910,9 @@ private enum PermissionPreview {
             snapshot.listenAccess = kIOHIDAccessTypeDenied
         case "restricted":
             snapshot.microphone = .restricted
+        case "covered":
+            snapshot = PermissionSnapshot(microphone: .granted, accessibility: true, inputMonitoring: true,
+                                          listenAccess: kIOHIDAccessTypeUnknown)
         case "complete", "complete-model":
             snapshot = PermissionSnapshot(microphone: .granted, accessibility: true, inputMonitoring: true,
                                           listenAccess: kIOHIDAccessTypeGranted)
@@ -2911,7 +2927,7 @@ private enum PermissionPreview {
         let checklist = PermissionChecklist(probe: PreviewPermissionProbe(snapshot),
                                             identity: BuildIdentity(cdhash: "preview", isAdhoc: true),
                                             ledger: ledger)
-        if scenario == "complete" { checklist.serviceState = { .ready } }
+        if scenario == "complete" || scenario == "covered" { checklist.serviceState = { .ready } }
         if scenario == "complete-model" { checklist.serviceState = { .needsModel } }
         checklist.previewConfigure(scenario)
         checklist.present()
