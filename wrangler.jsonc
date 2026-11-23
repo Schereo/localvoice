@@ -1,0 +1,7 @@
+{
+  "name": "localvoice",
+  "compatibility_date": "2026-11-23",
+  "assets": {
+    "directory": "./site"
+  }
+}
