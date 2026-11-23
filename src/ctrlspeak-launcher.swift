@@ -1836,7 +1836,8 @@ func readConfigValue(_ key: String) -> String? {
         return nil
     }
     var value: String?
-    for line in raw.split(separator: "\n") {
+    // Swift treats "\r\n" as one Character, so split on newline scalars.
+    for line in raw.components(separatedBy: .newlines) {
         let entry = line.trimmingCharacters(in: .whitespaces)
         guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
         guard entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key else {
@@ -1850,7 +1851,9 @@ func readConfigValue(_ key: String) -> String? {
 @discardableResult
 func writeConfigValue(_ key: String, _ value: String) -> Bool {
     guard value.rangeOfCharacter(from: .newlines) == nil else { return false }
-    let path = localVoiceConfigPath()
+    // Follow a symlinked config (dotfiles) so the atomic write updates the
+    // target instead of replacing the link with a regular file.
+    let path = (localVoiceConfigPath() as NSString).resolvingSymlinksInPath
     let raw: String
     do {
         raw = try String(contentsOfFile: path, encoding: .utf8)
@@ -1859,7 +1862,9 @@ func writeConfigValue(_ key: String, _ value: String) -> Bool {
     } catch {
         return false
     }
-    var lines = raw.isEmpty ? [] : raw.components(separatedBy: "\n")
+    // Keep the file's own line endings; edit on normalized lines.
+    let newline = raw.contains("\r\n") ? "\r\n" : "\n"
+    var lines = raw.isEmpty ? [] : raw.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
 
     var replaced = false
     for index in lines.indices {
@@ -1881,7 +1886,7 @@ func writeConfigValue(_ key: String, _ value: String) -> Bool {
             atPath: (path as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true
         )
-        try lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        try lines.joined(separator: newline).write(toFile: path, atomically: true, encoding: .utf8)
         return true
     } catch {
         return false
@@ -3237,6 +3242,11 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private static let readyShownKey = "onboarding.readyShown"
     private var waitingForPermissions = false
     private var mayRetry = true
+    // When the running child became ready, to re-arm crash recovery.
+    private var readySince: TimeInterval?
+    // Write end of the child's stdin. The child exits on EOF, so it cannot
+    // outlive the app even if the app crashes or is force-quit.
+    private var lifeline: FileHandle?
 
     init(config: [String: String], arguments: [String]) throws {
         self.config = config
@@ -3483,8 +3493,14 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         if process.isRunning {
             process.terminate()
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak process] in
-                guard let self, let process, self.child === process, process.isRunning else { return }
-                kill(process.processIdentifier, SIGKILL)
+                // While quitting, the child may already be detached from
+                // `self.child`; it still has to go before the app exits.
+                guard let self, let process, process.isRunning,
+                      self.stopping || self.child === process else { return }
+                // Process starts the child in its own group; take the mic
+                // worker and overlay helpers down with it.
+                let pid = process.processIdentifier
+                if kill(-pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
             }
         }
     }
@@ -3517,7 +3533,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         environment["LOCALVOICE_READY_FILE"] = ready.path
         environment["LOCALVOICE_STATE_DIR"] = selection.deletingLastPathComponent().path
         environment["LOCALVOICE_SESSION_LOCK"] = scratch.appendingPathComponent("session.lock").path
+        environment["LOCALVOICE_LIFELINE"] = "stdin"
         process.environment = environment
+        let pipe = Pipe()
+        process.standardInput = pipe.fileHandleForReading
         process.terminationHandler = { [weak self] finished in
             DispatchQueue.main.async { [weak self] in
                 self?.ended(finished, model: model)
@@ -3529,10 +3548,15 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             failedStart(model)
             return
         }
+        try? pipe.fileHandleForReading.close()
+        try? lifeline?.close()
+        lifeline = pipe.fileHandleForWriting
         child = process
         childModel = model
         permissionChecklist?.serviceDidChange()
-        let deadline = Date().addingTimeInterval(150)
+        // Uptime does not advance while the Mac sleeps, so closing the lid
+        // during a model load does not count against the deadline.
+        let deadline = ProcessInfo.processInfo.systemUptime + 150
         readyTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self, weak process] _ in
             DispatchQueue.main.async { [weak self, weak process] in
                 guard let self, let process, self.child === process,
@@ -3540,7 +3564,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                 if process.isRunning,
                    (try? String(contentsOf: ready, encoding: .utf8)) == "\(process.processIdentifier)\n" {
                     self.becameReady(model)
-                } else if Date() > deadline {
+                } else if ProcessInfo.processInfo.systemUptime > deadline {
                     self.readyTimer?.invalidate()
                     self.readyTimer = nil
                     self.terminate(process)
@@ -3562,6 +3586,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             }
         }
         runningModel = model
+        readySince = ProcessInfo.processInfo.systemUptime
         // Decide before the library updates, so its own "ready" note stays quiet.
         let showReady = setupCompletedThisRun || !UserDefaults.standard.bool(forKey: Self.readyShownKey)
         if showReady { presentingReady = true }
@@ -3597,11 +3622,17 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private func ended(_ process: Process, model: String) {
         guard child === process else { return }
         let wasReady = runningModel == model
+        // A child that ran for a while before crashing earns a fresh retry;
+        // only back-to-back crashes give up.
+        if let readySince, ProcessInfo.processInfo.systemUptime - readySince > 300 { mayRetry = true }
+        readySince = nil
         child = nil
         childModel = nil
         readyTimer?.invalidate()
         readyTimer = nil
         runningModel = nil
+        try? lifeline?.close()
+        lifeline = nil
         library?.setActiveModel(nil)
         if stopping {
             exitCleanly()
@@ -3636,6 +3667,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     }
 
     func quit() {
+        guard !stopping else { return }
         stopping = true
         menuTimer?.invalidate()
         library?.stop()
