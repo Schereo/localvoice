@@ -109,9 +109,12 @@ permission setup, restart, and quit.
 the moment it stops. Only players that were actually *playing* are paused,
 and only those are resumed — music that was not running is never started.
 Covered players: Spotify and Apple Music (scriptable over Apple Events;
-browser tabs are not reachable this way). On first use macOS asks once per
-player for the Automation permission — "LocalVoice wants to control
-Spotify"; approve it, and from then on it is silent.
+browser tabs are not reachable this way). macOS asks once per player for
+the Automation permission ("LocalVoice wants to control Spotify"). Turning
+the option on in Settings asks right away for the players that are open, and
+the line under the option shows whether each is allowed, with a shortcut to
+Privacy & Security › Automation if it was declined. A player that was closed
+at that moment is asked about the first time it plays while you dictate.
 
 ### `vocabulary`
 

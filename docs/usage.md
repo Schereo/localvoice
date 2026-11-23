@@ -46,9 +46,10 @@ Details: [configuration.md](configuration.md#microphone).
 
 Recording pauses whatever Spotify or Apple Music is playing and resumes it
 the moment you stop — only what was playing comes back, nothing is ever
-started. The first recording with a player open triggers a one-time macOS
-Automation prompt ("LocalVoice wants to control Spotify"). Disable with
-`pause-media = off` or in Settings.
+started. macOS asks once whether LocalVoice may control each player
+("LocalVoice wants to control Spotify"); turning the option on in Settings
+asks right away for open players and shows the answer under the option.
+Disable with `pause-media = off` or in Settings.
 
 ## Menu bar
 

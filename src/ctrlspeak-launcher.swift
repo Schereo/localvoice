@@ -1960,6 +1960,35 @@ func runLaunchctl(_ subcommand: [String]) {
     try? launchctl.run()
 }
 
+// MARK: - Media pause permission
+
+/// The scriptable players utils/media_pause.py pauses; keep the two lists in sync.
+let mediaPlayers = [("Spotify", "com.spotify.client"), ("Music", "com.apple.Music")]
+
+enum MediaPlayerAccess: Sendable {
+    case allowed, denied, undetermined, notRunning, failed
+}
+
+/// The Automation permission to control one player. Sends no Apple Event. With `ask`,
+/// macOS shows its consent dialog and the call blocks until the user answers, so never
+/// call it on the main thread.
+func mediaPlayerAccess(bundleID: String, ask: Bool) -> MediaPlayerAccess {
+    let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
+    let status = withExtendedLifetime(target) {
+        Int(AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, ask))
+    }
+    if status == Int(noErr) { return .allowed }
+    if status == Int(errAEEventNotPermitted) { return .denied }
+    if status == Int(errAEEventWouldRequireUserConsent) { return .undetermined }
+    if status == Int(procNotFound) { return .notRunning }
+    return .failed
+}
+
+func runningMediaPlayers() -> [(name: String, bundleID: String)] {
+    mediaPlayers.filter { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.1).isEmpty }
+        .map { (name: $0.0, bundleID: $0.1) }
+}
+
 @MainActor
 private final class SettingsViewController: NSViewController {
     private let modifier = NSPopUpButton()
@@ -1968,6 +1997,11 @@ private final class SettingsViewController: NSViewController {
     private let preview = NSButton(checkboxWithTitle: "Show text while dictating", target: nil, action: nil)
     private let standby = NSButton(checkboxWithTitle: "Keep microphone open between dictations", target: nil, action: nil)
     private let pauseMedia = NSButton(checkboxWithTitle: "Pause media during dictation", target: nil, action: nil)
+    private let pauseNote = NSTextField(wrappingLabelWithString: "")
+    private let pauseAction = NSButton(title: "", target: nil, action: nil)
+    private var pauseActionOpensSettings = false
+    private var askingPlayers: [String] = []
+    private var pauseNoteRevision = 0
     private let message = NSTextField(labelWithString: "")
 
     override func loadView() {
@@ -1985,20 +2019,39 @@ private final class SettingsViewController: NSViewController {
 
         let hotkey = NSStackView(views: [modifier, taps])
         hotkey.spacing = 6
+        // Pausing Spotify or Music needs macOS's Automation permission; say so here, where
+        // the option is turned on, instead of surprising the user mid-dictation.
+        pauseNote.font = .systemFont(ofSize: 11)
+        pauseNote.textColor = .secondaryLabelColor
+        pauseNote.preferredMaxLayoutWidth = 300
+        pauseNote.maximumNumberOfLines = 3
+        pauseAction.bezelStyle = .push
+        pauseAction.controlSize = .small
+        pauseAction.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        pauseAction.target = self
+        pauseAction.action = #selector(performPauseAction)
+        let audio = NSStackView(views: [pauseMedia, pauseNote, pauseAction])
+        audio.orientation = .vertical
+        audio.alignment = .leading
+        audio.spacing = 4
+        audio.setCustomSpacing(6, after: pauseNote)
+        pauseNote.widthAnchor.constraint(lessThanOrEqualToConstant: 300).isActive = true
         let controls = NSGridView(views: [
             [NSTextField(labelWithString: "Hotkey"), hotkey],
             [NSTextField(labelWithString: "Microphone"), microphone],
             [NSTextField(labelWithString: "Live Preview"), preview],
             [NSTextField(labelWithString: "Microphone Standby"), standby],
-            [NSTextField(labelWithString: "Audio"), pauseMedia],
+            [NSTextField(labelWithString: "Audio"), audio],
         ])
         controls.column(at: 0).xPlacement = .trailing
         controls.column(at: 1).xPlacement = .leading
         controls.yPlacement = .center
+        controls.row(at: 4).yPlacement = .top
         controls.columnSpacing = 14
         controls.rowSpacing = 14
 
         message.textColor = .systemRed
+        message.isHidden = true
         let stack = NSStackView(views: [controls, message])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -2010,6 +2063,7 @@ private final class SettingsViewController: NSViewController {
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
             microphone.widthAnchor.constraint(lessThanOrEqualToConstant: 300),
         ])
         view = content
@@ -2038,6 +2092,118 @@ private final class SettingsViewController: NSViewController {
             let key = button.identifier!.rawValue
             button.state = ["1", "on", "true", "yes"].contains(readConfigValue(key)?.lowercased() ?? "") ? .on : .off
         }
+        updatePauseNote()
+    }
+
+    /// Height that fits the content at the window's fixed width.
+    var preferredContentSize520: NSSize {
+        view.layoutSubtreeIfNeeded()
+        let stack = view.subviews.first
+        return NSSize(width: 520, height: ((stack?.fittingSize.height ?? 187) + 48).rounded())
+    }
+
+    private func fitWindow() {
+        guard let window = view.window else { return }
+        let size = preferredContentSize520
+        guard abs(size.height - view.frame.height) > 0.5 else { return }
+        let top = window.frame.maxY
+        window.setContentSize(size)
+        window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: top))
+    }
+
+    private func showPauseNote(_ text: String, action: String? = nil, opensSettings: Bool = false) {
+        pauseNote.stringValue = text
+        pauseAction.isHidden = action == nil
+        pauseAction.title = action ?? ""
+        pauseActionOpensSettings = opensSettings
+        fitWindow()
+    }
+
+    // Reads the Automation state of the running players without asking, then explains it.
+    private func updatePauseNote() {
+        pauseNoteRevision += 1
+        let revision = pauseNoteRevision
+        guard pauseMedia.state == .on else {
+            showPauseNote("Pauses Spotify and Music while you dictate. macOS asks once whether LocalVoice may control them.")
+            return
+        }
+        if !askingPlayers.isEmpty {
+            showPauseNote("Answer the macOS dialog to let LocalVoice pause \(askingPlayers.joined(separator: " and ")).")
+            return
+        }
+        let players = runningMediaPlayers()
+        guard !players.isEmpty else {
+            showPauseNote("macOS asks once, the first time Spotify or Music is open while you dictate.")
+            return
+        }
+        Task.detached {
+            var results: [(String, MediaPlayerAccess)] = []
+            for player in players { results.append((player.name, mediaPlayerAccess(bundleID: player.bundleID, ask: false))) }
+            let answers = results
+            await MainActor.run { [weak self] in
+                guard let self, revision == self.pauseNoteRevision else { return }
+                self.explain(answers)
+            }
+        }
+    }
+
+    private func explain(_ answers: [(String, MediaPlayerAccess)]) {
+        let denied = answers.filter { $0.1 == .denied }.map(\.0)
+        let pending = answers.filter { $0.1 == .undetermined }.map(\.0)
+        let allowed = answers.filter { $0.1 == .allowed }.map(\.0)
+        if !denied.isEmpty {
+            showPauseNote("Not allowed for \(denied.joined(separator: " and ")). Turn on LocalVoice under "
+                          + "Privacy & Security › Automation.", action: "Open Settings…", opensSettings: true)
+        } else if !pending.isEmpty {
+            showPauseNote("LocalVoice needs your OK to pause \(pending.joined(separator: " and ")).", action: "Allow…")
+        } else if !allowed.isEmpty {
+            showPauseNote("Allowed for \(allowed.joined(separator: " and ")).")
+        } else {
+            showPauseNote("Pauses Spotify and Music while you dictate. macOS asks once whether LocalVoice may control them.")
+        }
+    }
+
+    // Shows macOS's consent dialog now, while the user is looking at this option.
+    private func askRunningPlayers() {
+        let players = runningMediaPlayers()
+        guard !players.isEmpty, askingPlayers.isEmpty else { updatePauseNote(); return }
+        askingPlayers = players.map(\.name)
+        updatePauseNote()
+        Task.detached {
+            for player in players { _ = mediaPlayerAccess(bundleID: player.bundleID, ask: true) }
+            await MainActor.run { [weak self] in
+                self?.askingPlayers = []
+                self?.updatePauseNote()
+            }
+        }
+    }
+
+#if PERMISSIONS_PREVIEW
+    func previewPauseNote(_ scenario: String) {
+        pauseNoteRevision += 1
+        switch scenario {
+        case "settings-off":
+            pauseMedia.state = .off
+            showPauseNote("Pauses Spotify and Music while you dictate. macOS asks once whether LocalVoice may control them.")
+        case "settings-denied":
+            pauseMedia.state = .on
+            explain([("Spotify", .denied)])
+        case "settings-allowed":
+            pauseMedia.state = .on
+            explain([("Spotify", .allowed)])
+        default:
+            pauseMedia.state = .on
+            explain([("Spotify", .undetermined)])
+        }
+    }
+#endif
+
+    @objc private func performPauseAction() {
+        if pauseActionOpensSettings {
+            openPrivacyPane("Privacy_Automation")
+        } else {
+            askRunningPlayers()
+        }
     }
 
     private func configure(_ button: NSPopUpButton, label: String, action: Selector) {
@@ -2065,6 +2231,8 @@ private final class SettingsViewController: NSViewController {
         let saved = writeConfigValue(key, value)
         if !saved { refresh() }
         message.stringValue = saved ? "" : "Could not save the setting."
+        message.isHidden = saved
+        fitWindow()
     }
 
     @objc private func changeHotkey() {
@@ -2079,6 +2247,9 @@ private final class SettingsViewController: NSViewController {
 
     @objc private func changeToggle(_ sender: NSButton) {
         if let key = sender.identifier?.rawValue { save(key, sender.state == .on ? "on" : "off") }
+        if sender === pauseMedia {
+            if pauseMedia.state == .on { askRunningPlayers() } else { updatePauseNote() }
+        }
     }
 }
 
@@ -2576,7 +2747,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             let window = NSWindow(contentViewController: controller)
             window.title = "LocalVoice Settings"
             window.styleMask = [.titled, .closable]
-            window.setContentSize(NSSize(width: 520, height: 235))
+            window.setContentSize(controller.preferredContentSize520)
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
@@ -2918,6 +3089,29 @@ private enum PermissionPreview {
                                           listenAccess: kIOHIDAccessTypeGranted)
         default:
             break
+        }
+        if scenario.hasPrefix("settings") {
+            let controller = SettingsViewController()
+            let window = NSWindow(contentViewController: controller)
+            window.title = "LocalVoice Settings"
+            window.styleMask = [.titled, .closable]
+            controller.previewPauseNote(scenario)
+            window.setContentSize(controller.preferredContentSize520)
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            if let path = environment["PERMISSIONS_PREVIEW_SNAPSHOT"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    guard let frameView = window.contentView?.superview else { exit(1) }
+                    let bounds = frameView.bounds
+                    guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { exit(1) }
+                    frameView.cacheDisplay(in: bounds, to: rep)
+                    let data = rep.representation(using: .png, properties: [:])
+                    exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
+                }
+            }
+            withExtendedLifetime(controller) { app.run() }
+            return
         }
         let ledger = PermissionLedger(store: UserDefaults(suiteName: "localvoice.permissions.preview") ?? .standard)
         ledger.store.removePersistentDomain(forName: "localvoice.permissions.preview")

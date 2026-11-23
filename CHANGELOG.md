@@ -30,6 +30,13 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Changed
 
+- Settings explain media pause's Automation prompt before it appears. Under
+  "Pause media during dictation" a line says that macOS will ask once to let
+  LocalVoice control Spotify and Music. Turning the option on asks right away
+  for the players that are open, so the dialog no longer appears in the middle
+  of the first dictation. The line then shows the answer ("Allowed for
+  Spotify", or an Open Settings… shortcut to Privacy & Security › Automation
+  if it was declined, or Allow… if still unanswered).
 - The permission window is rebuilt in the model library's style and walks
   through setup instead of listing three equal buttons. Microphone,
   Accessibility and Input Monitoring are numbered rows in one card. The next
