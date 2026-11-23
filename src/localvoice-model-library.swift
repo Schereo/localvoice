@@ -14,6 +14,8 @@ struct ModelLibraryEntry {
     var removable = true
     // Total download size, for "71 of 886 MB" while downloading.
     var bytes: Int64? = nil
+    // Found in the Hugging Face cache: used in place, never removed by LocalVoice.
+    var shared = false
 }
 
 enum DictationLanguage: String, CaseIterable {
@@ -164,7 +166,9 @@ final class ModelLibraryViewController: NSViewController {
     private let readLanguage: ((String) -> DictationLanguage)?
     private let saveLanguage: ((String, DictationLanguage) -> Bool)?
     private let rows = NSStackView()
-    private let message = NSTextField(wrappingLabelWithString: "")
+    private let content = NSStackView()
+    private let heading = modelLibraryLabel("Speech Recognition Model", size: 17, weight: .semibold)
+    private let subtitle = NSTextField(wrappingLabelWithString: "")
     private let languageFooter = NSView()
     private let languageNote = modelLibraryLabel(size: 12, color: .secondaryLabelColor)
     private let languagePopUp = NSPopUpButton()
@@ -185,22 +189,17 @@ final class ModelLibraryViewController: NSViewController {
 
     override func loadView() {
         let M = ModelLibraryMetrics.self
-        let heading = modelLibraryLabel("Speech Recognition Model", size: 17, weight: .semibold)
         heading.setAccessibilityRole(.staticText)
 
-        let content = NSStackView(views: [heading])
+        // The subtitle shows the notice, or the library's current message in its
+        // place, so progress and errors stay in view above the table.
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 4
-        var lastHeaderView: NSView = heading
-        if let notice {
-            let label = NSTextField(wrappingLabelWithString: notice)
-            label.font = .systemFont(ofSize: 12)
-            label.textColor = .secondaryLabelColor
-            content.addArrangedSubview(label)
-            label.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-            lastHeaderView = label
-        }
+        content.addArrangedSubview(heading)
+        subtitle.font = .systemFont(ofSize: 12)
+        content.addArrangedSubview(subtitle)
+        subtitle.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
 
         let card = ModelLibraryLayerView()
         card.fill = .modelLibraryCard
@@ -231,13 +230,8 @@ final class ModelLibraryViewController: NSViewController {
         ])
 
         content.addArrangedSubview(card)
-        content.setCustomSpacing(16, after: lastHeaderView)
+        content.setCustomSpacing(16, after: subtitle)
         card.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
-        message.font = .systemFont(ofSize: 12)
-        message.textColor = .secondaryLabelColor
-        content.addArrangedSubview(message)
-        content.setCustomSpacing(10, after: card)
-        message.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let scroll = NSScrollView()
@@ -262,7 +256,8 @@ final class ModelLibraryViewController: NSViewController {
         backend.onChange = { [weak self] in self?.refresh() }
     }
 
-    // Window content size that shows every row without scrolling.
+    // Window content size that shows every row without scrolling. The store lists
+    // every catalog model, available or not, so pass the count it returns.
     static func preferredSize(modelCount: Int) -> NSSize {
         let M = ModelLibraryMetrics.self
         let card = M.headerHeight + 1 + CGFloat(modelCount) * M.rowHeight + 66
@@ -327,10 +322,14 @@ final class ModelLibraryViewController: NSViewController {
     }
 
     private func refresh() {
-        message.stringValue = backend.message ?? ""
-        message.isHidden = backend.message == nil
+        let text = backend.message ?? notice
+        subtitle.stringValue = text ?? ""
+        subtitle.textColor = backend.message == nil ? .secondaryLabelColor : .labelColor
+        subtitle.isHidden = text == nil
+        content.setCustomSpacing(subtitle.isHidden ? 16 : 4, after: heading)
         let models = backend.models
         let ids = models.map(\.id)
+        if ids.count != modelIDs.count { fitWindow(modelCount: ids.count) }
         if ids != modelIDs {
             for row in rows.arrangedSubviews {
                 rows.removeArrangedSubview(row)
@@ -351,6 +350,17 @@ final class ModelLibraryViewController: NSViewController {
             }
         }
         updateLanguageFooter(models)
+    }
+
+    // Grow or shrink the open window so every row stays visible; keep its width and top edge.
+    private func fitWindow(modelCount: Int) {
+        guard let window = view.window, modelCount > 0 else { return }
+        let content = NSRect(origin: .zero, size: Self.preferredSize(modelCount: modelCount))
+        var frame = window.frame
+        let height = window.frameRect(forContentRect: content).height
+        frame.origin.y += frame.height - height
+        frame.size.height = height
+        window.setFrame(frame, display: true, animate: window.isVisible)
     }
 
     // The language belongs to the model in use, like the dictation it shapes.
@@ -391,6 +401,7 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
     private let summary = modelLibraryLabel(size: 12, color: .secondaryLabelColor)
     private let languages = modelLibraryLabel(size: 13)
     private let size = modelLibraryLabel(size: 13, color: .secondaryLabelColor)
+    private let sizeNote = modelLibraryLabel("Shared cache", size: 11, color: .tertiaryLabelColor)
     private let primary = NSButton(title: "", target: nil, action: nil)
     private let remove = NSButton()
     private let inUse = NSStackView()
@@ -407,9 +418,17 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
         setAccessibilityRole(.group)
 
         languages.lineBreakMode = .byWordWrapping
-        languages.maximumNumberOfLines = 2
+        languages.maximumNumberOfLines = 3
+        languages.cell?.truncatesLastVisibleLine = true
         size.alignment = .right
         size.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        sizeNote.alignment = .right
+        sizeNote.toolTip = "Found in your Hugging Face cache. LocalVoice uses it in place and leaves it there."
+        let sizeStack = NSStackView(views: [size, sizeNote])
+        sizeStack.orientation = .vertical
+        sizeStack.alignment = .trailing
+        sizeStack.spacing = 1
+        sizeStack.translatesAutoresizingMaskIntoConstraints = false
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         summary.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -445,8 +464,12 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
 
         let rule = ModelLibrarySeparator()
         rule.isHidden = !separator
-        for view in [rule, text, languages, size, remove, primary, inUse] { addSubview(view) }
+        for view in [rule, text, languages, sizeStack, remove, primary, inUse] { addSubview(view) }
+        // Rows are rowHeight tall unless their text needs more.
+        let height = heightAnchor.constraint(equalToConstant: M.rowHeight)
+        height.priority = .defaultHigh - 1
         NSLayoutConstraint.activate([
+            height,
             heightAnchor.constraint(greaterThanOrEqualToConstant: M.rowHeight),
             rule.topAnchor.constraint(equalTo: topAnchor),
             rule.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -460,12 +483,15 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
             remove.trailingAnchor.constraint(equalTo: primary.leadingAnchor, constant: -6),
             remove.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            size.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(M.inset + M.actionWidth + M.gap)),
-            size.widthAnchor.constraint(equalToConstant: M.sizeWidth),
-            size.centerYAnchor.constraint(equalTo: centerYAnchor),
-            languages.trailingAnchor.constraint(equalTo: size.leadingAnchor, constant: -M.gap),
+            sizeStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(M.inset + M.actionWidth + M.gap)),
+            sizeStack.widthAnchor.constraint(equalToConstant: M.sizeWidth),
+            sizeStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            size.widthAnchor.constraint(equalTo: sizeStack.widthAnchor),
+            sizeNote.widthAnchor.constraint(equalTo: sizeStack.widthAnchor),
+            languages.trailingAnchor.constraint(equalTo: sizeStack.leadingAnchor, constant: -M.gap),
             languages.widthAnchor.constraint(equalToConstant: M.languageWidth),
             languages.centerYAnchor.constraint(equalTo: centerYAnchor),
+            languages.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 6),
 
             text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: M.inset),
             text.trailingAnchor.constraint(lessThanOrEqualTo: languages.leadingAnchor, constant: -M.gap),
@@ -491,38 +517,51 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
         summary.toolTip = model.source
         languages.stringValue = details.languages
         languages.textColor = .labelColor
+        languages.toolTip = nil
         size.stringValue = model.size
         fill = nil
         alphaValue = 1
+        var installed = false
+        let state: String
 
         switch model.state {
         case .notInstalled:
             show(.download, title: "Download")
+            state = "Not downloaded"
         case let .downloading(fraction):
             let progress = fraction.isFinite ? min(max(fraction, 0), 1) : 0
             summary.stringValue = downloadText(progress, bytes: model.bytes)
             fill = .modelLibraryHighlight
             show(.cancel, title: "Cancel")
+            state = summary.stringValue
         case .installed:
             show(.use, title: "Use")
+            installed = true
+            state = "Downloaded"
         case .active:
-            show(nil)
-            fill = nil
+            show(nil, inUse: true)
+            installed = true
+            state = "In use"
         case let .unavailable(reason):
-            show(.download, title: "Download")
+            // The store may report this for an installed model too; offer no action.
+            show(nil)
             languages.stringValue = reason
             languages.textColor = .secondaryLabelColor
+            languages.toolTip = reason
             alphaValue = 0.45
+            state = "Unavailable: \(reason)"
         }
-        if case .unavailable = model.state {
-            primary.isEnabled = false
-        } else {
-            primary.isEnabled = primaryAction.map(allows) ?? false
-        }
+        sizeNote.isHidden = !(installed && model.shared)
+        primary.isEnabled = primaryAction.map(allows) ?? false
         remove.isHidden = primaryAction != .use || !model.removable
         remove.isEnabled = allows(.remove)
         remove.setAccessibilityLabel("Remove \(model.name)")
-        setAccessibilityLabel("\(model.name), \(summary.stringValue), \(model.size)")
+        var parts = [model.name, state]
+        if case .downloading = model.state {} else if !details.summary.isEmpty { parts.append(details.summary) }
+        if case .unavailable = model.state {} else if !details.languages.isEmpty { parts.append(details.languages) }
+        parts.append(model.size)
+        if !sizeNote.isHidden { parts.append("shared cache") }
+        setAccessibilityLabel(parts.joined(separator: ", "))
     }
 
     private func downloadText(_ fraction: Double, bytes: Int64?) -> String {
@@ -537,12 +576,12 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
         return "Downloading, \(Int(done)) of \(Int(total.rounded())) MB (\(percent) %)"
     }
 
-    private func show(_ action: ModelLibraryAction?, title: String = "") {
+    private func show(_ action: ModelLibraryAction?, title: String = "", inUse showsInUse: Bool = false) {
         primaryAction = action
         primary.title = title
         primary.setAccessibilityLabel("\(title) \(modelName)")
         primary.isHidden = action == nil
-        inUse.isHidden = action != nil
+        inUse.isHidden = !showsInUse
     }
 
     @objc private func performPrimary() {
@@ -606,7 +645,8 @@ final class StoreModelLibraryBackend: ModelLibraryBackend {
                 : (record.id == "nemotron-streaming" ? " · Live streaming" : "")
             return ModelLibraryEntry(id: record.id, name: record.name, size: record.displaySize,
                                      source: "\(record.source)\(location)\(capability)", state: state,
-                                     removable: record.canRemove, bytes: record.bytes)
+                                     removable: record.canRemove, bytes: record.bytes,
+                                     shared: record.location == "hf-cache")
         }
     }
 
@@ -884,7 +924,7 @@ private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
     private(set) var models = [
         ModelLibraryEntry(id: "whisper-turbo-fp16", name: "Whisper Large V3 Turbo", size: "1.61 GB",
                           source: "Hugging Face · mlx-community/whisper-large-v3-turbo", state: .active,
-                          bytes: 1_614_000_000),
+                          removable: false, bytes: 1_614_000_000, shared: true),
         ModelLibraryEntry(id: "whisper-turbo-q4", name: "Whisper Large V3 Turbo Q4", size: "464 MB",
                           source: "Hugging Face · mlx-community/whisper-large-v3-turbo-q4", state: .installed,
                           bytes: 464_000_000),
@@ -895,7 +935,7 @@ private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
                           source: "FluidInference · parakeet-ultra-coreml", state: .notInstalled,
                           bytes: 632_000_000),
         ModelLibraryEntry(id: "parakeet-redux", name: "Parakeet Redux", size: "220 MB",
-                          source: "FluidInference · parakeet-redux-coreml", state: .unavailable("Needs macOS 15"),
+                          source: "FluidInference · parakeet-redux-coreml", state: .unavailable("Parakeet Redux requires macOS 15 or later."),
                           bytes: 220_000_000),
         ModelLibraryEntry(id: "nemotron-streaming", name: "Nemotron Streaming", size: "615 MB",
                           source: "FluidInference · Nemotron-3.5-ASR-Streaming-Multilingual", state: .notInstalled,
@@ -906,6 +946,21 @@ private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
     private var downloadIndex: Int?
     private var step = 0
 
+    override init() {
+        super.init()
+        // The demo opens mid-download (Parakeet V3 at 8 %), so keep it moving.
+        downloadIndex = 2
+        step = 2
+        startTimer()
+    }
+
+    private func startTimer() {
+        let timer = Timer(timeInterval: 0.25, target: self, selector: #selector(advance(_:)),
+                          userInfo: nil, repeats: true)
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     func perform(_ action: ModelLibraryAction, modelID: String) {
         guard let index = models.firstIndex(where: { $0.id == modelID }) else { return }
         switch (action, models[index].state) {
@@ -913,10 +968,7 @@ private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
             downloadIndex = index
             step = 0
             models[index].state = .downloading(0)
-            let timer = Timer(timeInterval: 0.25, target: self, selector: #selector(advance(_:)),
-                              userInfo: nil, repeats: true)
-            self.timer = timer
-            RunLoop.main.add(timer, forMode: .common)
+            startTimer()
         case (.cancel, .downloading):
             finish(at: index, state: .notInstalled)
         case (.use, .installed):

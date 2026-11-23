@@ -38,7 +38,9 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   languages column. The dictation language moves to the foot of the table and
   applies to the active model; models that detect the language themselves say
   so instead of offering a choice. Removing a downloaded model is a trash
-  button beside Use, or the row's context menu.
+  button beside Use, or the row's context menu. Models used in place from the
+  Hugging Face cache say "Shared cache" under their size, and progress or
+  error messages replace the subtitle above the table so they stay in view.
 
 - Quieter result pills: regular-weight 12.5 pt text instead of semibold
   14 pt, a smaller status icon, and a capsule that hugs its text. The

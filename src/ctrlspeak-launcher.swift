@@ -1418,8 +1418,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             )
             let window = NSWindow(contentViewController: controller)
             window.title = "LocalVoice"
+            // The store lists every catalog model (six), available or not; the
+            // controller refits the window once it has the actual list.
             window.setContentSize(ModelLibraryViewController.preferredSize(
-                modelCount: config["parakeet_worker"] == nil ? 2 : 6))
+                modelCount: library.models.isEmpty ? 6 : library.models.count))
             window.isReleasedWhenClosed = false
             window.center()
             modelWindow = window
