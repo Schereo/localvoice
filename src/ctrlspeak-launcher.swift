@@ -1989,20 +1989,69 @@ func runningMediaPlayers() -> [(name: String, bundleID: String)] {
         .map { (name: $0.0, bundleID: $0.1) }
 }
 
+/// One settings row in the setup windows' card style: title and explanation on the left,
+/// the control on the right, optional extra lines under the explanation.
+@MainActor
+private final class SettingsRow: NSView {
+    init(title: String, detail: String, accessory: NSView, extra: [NSView] = [], separator: Bool, width: CGFloat) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let titleLabel = modelLibraryLabel(title, size: 13, weight: .medium)
+        let detailLabel = NSTextField(wrappingLabelWithString: detail)
+        detailLabel.font = .systemFont(ofSize: 12)
+        detailLabel.textColor = .secondaryLabelColor
+        accessory.translatesAutoresizingMaskIntoConstraints = false
+        let textWidth = width - 20 - 16 - 20 - accessory.fittingSize.width
+        detailLabel.preferredMaxLayoutWidth = textWidth
+        for view in extra { (view as? NSTextField)?.preferredMaxLayoutWidth = textWidth }
+        let text = NSStackView(views: [titleLabel, detailLabel] + extra)
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        if !extra.isEmpty { text.setCustomSpacing(6, after: detailLabel) }
+        text.detachesHiddenViews = true
+        text.translatesAutoresizingMaskIntoConstraints = false
+        let rule = ModelLibrarySeparator()
+        rule.isHidden = !separator
+        // The control lines up with the title and explanation, not with any extra lines.
+        let firstLines = NSLayoutGuide()
+        addLayoutGuide(firstLines)
+        for view in [rule, text, accessory] { addSubview(view) }
+        NSLayoutConstraint.activate([
+            rule.topAnchor.constraint(equalTo: topAnchor),
+            rule.leadingAnchor.constraint(equalTo: leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: trailingAnchor),
+            text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            text.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            text.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            text.widthAnchor.constraint(lessThanOrEqualToConstant: textWidth),
+            firstLines.topAnchor.constraint(equalTo: titleLabel.topAnchor),
+            firstLines.bottomAnchor.constraint(equalTo: detailLabel.bottomAnchor),
+            accessory.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            accessory.centerYAnchor.constraint(equalTo: firstLines.centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
 @MainActor
 private final class SettingsViewController: NSViewController {
+    private static let width: CGFloat = 620
+    private static let cardWidth: CGFloat = width - 56
     private let modifier = NSPopUpButton()
     private let taps = NSPopUpButton()
     private let microphone = NSPopUpButton()
-    private let preview = NSButton(checkboxWithTitle: "Show text while dictating", target: nil, action: nil)
-    private let standby = NSButton(checkboxWithTitle: "Keep microphone open between dictations", target: nil, action: nil)
-    private let pauseMedia = NSButton(checkboxWithTitle: "Pause media during dictation", target: nil, action: nil)
+    private let preview = NSSwitch()
+    private let standby = NSSwitch()
+    private let pauseMedia = NSSwitch()
     private let pauseNote = NSTextField(wrappingLabelWithString: "")
     private let pauseAction = NSButton(title: "", target: nil, action: nil)
     private var pauseActionOpensSettings = false
     private var askingPlayers: [String] = []
     private var pauseNoteRevision = 0
     private let message = NSTextField(labelWithString: "")
+    private let content = NSStackView()
 
     override func loadView() {
         configure(modifier, label: "Hotkey Modifier", action: #selector(changeHotkey))
@@ -2010,11 +2059,17 @@ private final class SettingsViewController: NSViewController {
         configure(microphone, label: "Microphone", action: #selector(changeMicrophone))
         setItems([("Control", "ctrl"), ("Command", "cmd"), ("Option", "alt"), ("Shift", "shift")], on: modifier)
         setItems((2...4).map { ("\($0) taps", "\($0)") }, on: taps)
+        setItems([("Built-in Microphone", "built-in"), ("System Default", "system")], on: microphone)
+        microphone.widthAnchor.constraint(equalToConstant: 210).isActive = true
 
-        for (button, key) in [(preview, "live-preview"), (standby, "mic-standby"), (pauseMedia, "pause-media")] {
-            button.identifier = NSUserInterfaceItemIdentifier(key)
-            button.target = self
-            button.action = #selector(changeToggle)
+        for (control, key, label) in [(preview, "live-preview", "Live Preview"),
+                                      (standby, "mic-standby", "Microphone Standby"),
+                                      (pauseMedia, "pause-media", "Pause Media")] {
+            control.identifier = NSUserInterfaceItemIdentifier(key)
+            control.controlSize = .small
+            control.target = self
+            control.action = #selector(changeToggle)
+            control.setAccessibilityLabel(label)
         }
 
         let hotkey = NSStackView(views: [modifier, taps])
@@ -2023,51 +2078,86 @@ private final class SettingsViewController: NSViewController {
         // the option is turned on, instead of surprising the user mid-dictation.
         pauseNote.font = .systemFont(ofSize: 11)
         pauseNote.textColor = .secondaryLabelColor
-        pauseNote.preferredMaxLayoutWidth = 300
         pauseNote.maximumNumberOfLines = 3
         pauseAction.bezelStyle = .push
         pauseAction.controlSize = .small
         pauseAction.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         pauseAction.target = self
         pauseAction.action = #selector(performPauseAction)
-        let audio = NSStackView(views: [pauseMedia, pauseNote, pauseAction])
-        audio.orientation = .vertical
-        audio.alignment = .leading
-        audio.spacing = 4
-        audio.setCustomSpacing(6, after: pauseNote)
-        pauseNote.widthAnchor.constraint(lessThanOrEqualToConstant: 300).isActive = true
-        let controls = NSGridView(views: [
-            [NSTextField(labelWithString: "Hotkey"), hotkey],
-            [NSTextField(labelWithString: "Microphone"), microphone],
-            [NSTextField(labelWithString: "Live Preview"), preview],
-            [NSTextField(labelWithString: "Microphone Standby"), standby],
-            [NSTextField(labelWithString: "Audio"), audio],
-        ])
-        controls.column(at: 0).xPlacement = .trailing
-        controls.column(at: 1).xPlacement = .leading
-        controls.yPlacement = .center
-        controls.row(at: 4).yPlacement = .top
-        controls.columnSpacing = 14
-        controls.rowSpacing = 14
 
+        let width = Self.cardWidth
+        let dictation = card([
+            SettingsRow(title: "Hotkey", detail: "Tap one modifier key repeatedly to start and stop dictation.",
+                        accessory: hotkey, separator: false, width: width),
+            SettingsRow(title: "Microphone",
+                        detail: "Built-in keeps AirPods in high-quality playback while you dictate.",
+                        accessory: microphone, separator: true, width: width),
+        ])
+        let recording = card([
+            SettingsRow(title: "Live Preview", detail: "Shows the words in the pill while you speak.",
+                        accessory: preview, separator: false, width: width),
+            SettingsRow(title: "Microphone Standby",
+                        detail: "Keeps the microphone open so recording starts instantly. The microphone indicator stays on.",
+                        accessory: standby, separator: true, width: width),
+            SettingsRow(title: "Pause Media", detail: "Pauses Spotify and Music while you dictate.",
+                        accessory: pauseMedia, extra: [pauseNote, pauseAction], separator: true, width: width),
+        ])
+
+        let heading = modelLibraryLabel("Settings", size: 17, weight: .semibold)
+        heading.setAccessibilityRole(.staticText)
+        let subtitle = modelLibraryLabel("Saved as you change them.", size: 12, color: .secondaryLabelColor)
+        let dictationTitle = modelLibraryLabel("Dictation", size: 12, weight: .medium, color: .secondaryLabelColor)
+        let recordingTitle = modelLibraryLabel("While Recording", size: 12, weight: .medium, color: .secondaryLabelColor)
         message.textColor = .systemRed
+        message.font = .systemFont(ofSize: 12)
         message.isHidden = true
-        let stack = NSStackView(views: [controls, message])
+
+        content.setViews([heading, subtitle, dictationTitle, dictation, recordingTitle, recording, message], in: .top)
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 4
+        content.detachesHiddenViews = true
+        content.setCustomSpacing(18, after: subtitle)
+        content.setCustomSpacing(6, after: dictationTitle)
+        content.setCustomSpacing(18, after: dictation)
+        content.setCustomSpacing(6, after: recordingTitle)
+        content.setCustomSpacing(10, after: recording)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 480))
+        view.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
+            content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+            content.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -24),
+            dictationTitle.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 2),
+            recordingTitle.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 2),
+        ])
+        self.view = view
+        refresh()
+    }
+
+    private func card(_ rows: [NSView]) -> NSView {
+        let card = ModelLibraryLayerView()
+        card.fill = .modelLibraryCard
+        card.stroke = .separatorColor
+        card.radius = 12
+        card.translatesAutoresizingMaskIntoConstraints = false
+        let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 235))
-        content.addSubview(stack)
+        card.addSubview(stack)
+        for row in rows { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
-            microphone.widthAnchor.constraint(lessThanOrEqualToConstant: 300),
+            card.widthAnchor.constraint(equalToConstant: Self.cardWidth),
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
         ])
-        view = content
-        refresh()
+        return card
     }
 
     func refresh() {
@@ -2095,16 +2185,15 @@ private final class SettingsViewController: NSViewController {
         updatePauseNote()
     }
 
-    /// Height that fits the content at the window's fixed width.
-    var preferredContentSize520: NSSize {
+    /// Content size that fits everything at the window's fixed width.
+    var fittedContentSize: NSSize {
         view.layoutSubtreeIfNeeded()
-        let stack = view.subviews.first
-        return NSSize(width: 520, height: ((stack?.fittingSize.height ?? 187) + 48).rounded())
+        return NSSize(width: Self.width, height: (content.fittingSize.height + 48).rounded())
     }
 
     private func fitWindow() {
-        guard let window = view.window else { return }
-        let size = preferredContentSize520
+        guard isViewLoaded, let window = view.window else { return }
+        let size = fittedContentSize
         guard abs(size.height - view.frame.height) > 0.5 else { return }
         let top = window.frame.maxY
         window.setContentSize(size)
@@ -2124,7 +2213,7 @@ private final class SettingsViewController: NSViewController {
         pauseNoteRevision += 1
         let revision = pauseNoteRevision
         guard pauseMedia.state == .on else {
-            showPauseNote("Pauses Spotify and Music while you dictate. macOS asks once whether LocalVoice may control them.")
+            showPauseNote("macOS asks once whether LocalVoice may control them.")
             return
         }
         if !askingPlayers.isEmpty {
@@ -2159,7 +2248,7 @@ private final class SettingsViewController: NSViewController {
         } else if !allowed.isEmpty {
             showPauseNote("Allowed for \(allowed.joined(separator: " and ")).")
         } else {
-            showPauseNote("Pauses Spotify and Music while you dictate. macOS asks once whether LocalVoice may control them.")
+            showPauseNote("macOS asks once whether LocalVoice may control them.")
         }
     }
 
@@ -2184,7 +2273,7 @@ private final class SettingsViewController: NSViewController {
         switch scenario {
         case "settings-off":
             pauseMedia.state = .off
-            showPauseNote("Pauses Spotify and Music while you dictate. macOS asks once whether LocalVoice may control them.")
+            showPauseNote("macOS asks once whether LocalVoice may control them.")
         case "settings-denied":
             pauseMedia.state = .on
             explain([("Spotify", .denied)])
@@ -2245,7 +2334,7 @@ private final class SettingsViewController: NSViewController {
         if let device = microphone.selectedItem?.representedObject as? String { save("microphone", device) }
     }
 
-    @objc private func changeToggle(_ sender: NSButton) {
+    @objc private func changeToggle(_ sender: NSSwitch) {
         if let key = sender.identifier?.rawValue { save(key, sender.state == .on ? "on" : "off") }
         if sender === pauseMedia {
             if pauseMedia.state == .on { askRunningPlayers() } else { updatePauseNote() }
@@ -2747,7 +2836,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             let window = NSWindow(contentViewController: controller)
             window.title = "LocalVoice Settings"
             window.styleMask = [.titled, .closable]
-            window.setContentSize(controller.preferredContentSize520)
+            window.setContentSize(controller.fittedContentSize)
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
@@ -3096,7 +3185,7 @@ private enum PermissionPreview {
             window.title = "LocalVoice Settings"
             window.styleMask = [.titled, .closable]
             controller.previewPauseNote(scenario)
-            window.setContentSize(controller.preferredContentSize520)
+            window.setContentSize(controller.fittedContentSize)
             window.center()
             window.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)

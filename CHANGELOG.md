@@ -30,6 +30,12 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Changed
 
+- Settings follow the setup windows' design: a heading, then two cards
+  ("Dictation": Hotkey, Microphone; "While Recording": Live Preview,
+  Microphone Standby, Pause Media). Each row has a title, a one-line
+  explanation of what the option does and its control on the right, and the
+  on/off options are switches instead of checkboxes. The window sizes to its
+  content.
 - Settings explain media pause's Automation prompt before it appears. Under
   "Pause media during dictation" a line says that macOS will ask once to let
   LocalVoice control Spotify and Music. Turning the option on asks right away
