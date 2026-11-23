@@ -1,15 +1,18 @@
 # Configuration reference
 
-Use **Settings…** in the LocalVoice menu for the hotkey, microphone, live
-preview, standby, and media pause. Set the dictation language per model in
-**Models…**. These choices are stored in one plain-text file:
+Use **Settings…** in the LocalVoice menu for the hotkey, microphone,
+vocabulary, live preview, standby, media pause, the menu bar icon, and launch
+at login. Set the dictation language per model in **Models…**. Apart from
+launch at login, which macOS keeps, these choices are stored in one
+plain-text file:
 
 ```
 ~/.config/localvoice/config
 ```
 
-The service creates it on first start. For advanced edits, open it in your
-editor or run `open -t ~/.config/localvoice/config`.
+The service creates it on first start. For advanced edits, click **Open
+Config File…** at the bottom of Settings or run
+`open -t ~/.config/localvoice/config`.
 
 **Edits apply within a couple of seconds, no restart needed.** The service
 watches the file: hotkey and mic-standby changes take effect immediately.
@@ -102,6 +105,8 @@ default, so dictation keeps working. Changes apply from the next recording
 `on` (default) shows the LocalVoice icon in the menu bar, with Settings, Models,
 permission setup, restart, and quit.
 `off` hides the icon; like everything here it takes effect within seconds.
+Settings has the same switch. With the icon hidden, open LocalVoice again
+and press ⌘, to get back to Settings.
 
 ### `pause-media`
 

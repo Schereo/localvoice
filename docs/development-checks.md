@@ -13,6 +13,17 @@ xcrun swiftc -parse-as-library -target arm64-apple-macosx13.0 \
 
 The preview simulates model actions without using your installed models.
 
+## Settings Preview
+
+```sh
+out="$(mktemp -d)"
+xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
+  -D SETTINGS_PREVIEW src/ctrlspeak-launcher.swift src/localvoice-model-library.swift -o "$out/settings-preview"
+LOCALVOICE_CONFIG_DIR="$out" SETTINGS_PREVIEW_ICON=assets/icon.png "$out/settings-preview"
+```
+
+The preview shows the Settings window on its own. It reads and writes `config` in `LOCALVOICE_CONFIG_DIR`, or in an empty temporary directory if that is unset, never `~/.config/localvoice/config`, and it does not open the microphone. Set `SETTINGS_PREVIEW_SNAPSHOT=/path/name` to render `name.png` offscreen and quit, with `SETTINGS_PREVIEW_APPEARANCE=light|dark`, `SETTINGS_PREVIEW_SCENARIO=off|pending|denied|allowed` for the Pause Media line and `SETTINGS_PREVIEW_STATUS=ready|loading|permissions|off` for the header.
+
 ## Offline Model Smoke Test
 
 Run with the private app's Python or another Python environment that already has its MLX runtime. The model must already be installed; the script never fetches it. It processes one second of synthetic silence by default, so it needs neither a microphone nor real audio.
