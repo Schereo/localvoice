@@ -1,0 +1,1253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LocalVoice - Local dictation for Mac</title>
+<meta name="description" content="LocalVoice is free, open-source dictation for Apple Silicon Macs. Tap a hotkey, speak, and the text lands at your cursor. Whisper, Parakeet and Nemotron run entirely on your Mac.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LocalVoice">
+<meta property="og:title" content="LocalVoice - Local dictation for Mac">
+<meta property="og:description" content="Tap a hotkey, speak, and the text lands at your cursor. Free, open source, and fully local on Apple Silicon.">
+<meta property="og:image" content="assets/icon.png">
+<meta property="og:image:alt" content="LocalVoice app icon: a light blue microphone on a dark navy tile">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/png" href="assets/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script>
+/* Theme: follows the system unless ?theme=light|dark or the toggle sets it. */
+(function () {
+  var t = null;
+  try { t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('lv-theme'); } catch (e) {}
+  if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  document.documentElement.classList.add('js');
+})();
+</script>
+<style>
+/* ---------- Tokens ---------- */
+:root {
+  --bg: #f3f5f9;
+  --bg-2: #e9edf4;
+  --surface: #fbfcfe;
+  --surface-2: #eef1f7;
+  --line: rgba(16, 24, 44, .11);
+  --line-strong: rgba(16, 24, 44, .2);
+  --ink: #0d1322;
+  --ink-2: #414a5f;
+  --ink-3: #5d667b;
+  --accent: #1c58c7;
+  --accent-soft: rgba(28, 88, 199, .1);
+  --on-accent: #f6f9ff;
+  --wash: rgba(60, 120, 230, .16);
+  --shadow: 0 30px 60px -30px rgba(20, 35, 70, .28);
+  --code-ink: #24407c;
+
+  /* The pill keeps its dark frosted look in both themes. */
+  --pill-top: rgba(72, 76, 87, .96);
+  --pill-bottom: rgba(36, 39, 47, .97);
+  --pill-ink: #f3f4f7;
+  --pill-dim: rgba(243, 244, 247, .62);
+  --rec: #ff5d5d;
+  --ok: #4fd39b;
+
+  --font-display: "Bricolage Grotesque", "Geist", system-ui, sans-serif;
+  --font-body: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --r-panel: 24px;
+  --r-pill: 999px;
+  --gutter: 16px;
+  --max: 1180px;
+  --ease: cubic-bezier(.16, 1, .3, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0a0d14;
+    --bg-2: #0e121c;
+    --surface: #121724;
+    --surface-2: #171d2c;
+    --line: rgba(222, 232, 255, .09);
+    --line-strong: rgba(222, 232, 255, .18);
+    --ink: #eef1f8;
+    --ink-2: #aeb6c8;
+    --ink-3: #8790a5;
+    --accent: #8cbcff;
+    --accent-soft: rgba(140, 188, 255, .12);
+    --on-accent: #07101f;
+    --wash: rgba(90, 150, 255, .2);
+    --shadow: 0 40px 80px -40px rgba(0, 0, 0, .8);
+    --code-ink: #b9d4ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0a0d14;
+  --bg-2: #0e121c;
+  --surface: #121724;
+  --surface-2: #171d2c;
+  --line: rgba(222, 232, 255, .09);
+  --line-strong: rgba(222, 232, 255, .18);
+  --ink: #eef1f8;
+  --ink-2: #aeb6c8;
+  --ink-3: #8790a5;
+  --accent: #8cbcff;
+  --accent-soft: rgba(140, 188, 255, .12);
+  --on-accent: #07101f;
+  --wash: rgba(90, 150, 255, .2);
+  --shadow: 0 40px 80px -40px rgba(0, 0, 0, .8);
+  --code-ink: #b9d4ff;
+}
+@media (min-width: 720px) { :root { --gutter: 32px; } }
+
+/* ---------- Base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 84px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+img { max-width: 100%; height: auto; display: block; }
+a { color: inherit; }
+h1, h2, h3, p, ul, ol, figure, dl, dd { margin: 0; padding: 0; }
+ul, ol { list-style: none; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing: -.028em; line-height: 1.05; text-wrap: balance; }
+h2 { font-size: clamp(2rem, 4.2vw, 3.25rem); }
+h3 { font-size: 1.3rem; letter-spacing: -.015em; line-height: 1.2; }
+code, kbd, .mono { font-family: var(--font-mono); font-size: .9em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+.wrap { width: 100%; max-width: calc(var(--max) + 2 * var(--gutter)); margin-inline: auto; padding-inline: var(--gutter); }
+.section { padding-block: clamp(72px, 10vw, 136px); }
+.lede { color: var(--ink-2); font-size: 1.12rem; max-width: 58ch; margin-top: 18px; }
+.eyebrow { font-family: var(--font-mono); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.skip { position: absolute; left: -999px; top: 8px; background: var(--surface); padding: 10px 14px; border-radius: 10px; z-index: 50; }
+.skip:focus { left: 8px; }
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  min-height: 48px; padding: 0 22px;
+  border-radius: var(--r-pill);
+  font: 500 1rem/1 var(--font-body);
+  text-decoration: none; white-space: nowrap;
+  border: 1px solid transparent;
+  transition: transform .25s var(--ease), background-color .25s, border-color .25s;
+}
+.btn:active { transform: scale(.98); }
+.btn-primary { background: var(--accent); color: var(--on-accent); }
+.btn-primary:hover { transform: translateY(-1px); }
+.btn-ghost { border-color: var(--line-strong); color: var(--ink); }
+.btn-ghost:hover { background: var(--accent-soft); border-color: var(--accent); }
+.btn-status { background: var(--surface); border-color: var(--line-strong); color: var(--ink); cursor: default; }
+.btn-status::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); animation: breathe 2.4s ease-in-out infinite;
+}
+.btn .arrow { font-family: var(--font-mono); font-size: .9em; }
+@keyframes breathe { 50% { opacity: .35; } }
+
+/* ---------- Nav ---------- */
+.nav {
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(160%); backdrop-filter: blur(18px) saturate(160%);
+  border-bottom: 1px solid var(--line);
+}
+.nav .wrap { display: flex; align-items: center; height: 64px; gap: 28px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 600 1.08rem/1 var(--font-display); letter-spacing: -.01em; }
+.brand img { width: 30px; height: 30px; }
+.nav-links { display: none; gap: 26px; margin-left: auto; font-size: .95rem; }
+.nav-links a { color: var(--ink-2); text-decoration: none; transition: color .2s; }
+.nav-links a:hover { color: var(--ink); }
+.nav-end { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.nav .btn { min-height: 38px; padding: 0 16px; font-size: .92rem; }
+.theme-toggle {
+  width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--line-strong);
+  background: transparent; cursor: pointer; display: grid; place-items: center; padding: 0;
+}
+.theme-toggle span { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--ink); background: linear-gradient(90deg, var(--ink) 50%, transparent 50%); transition: transform .5s var(--ease); }
+.theme-toggle:hover span { transform: rotate(180deg); }
+@media (min-width: 900px) { .nav-links { display: flex; } .nav-end { margin-left: 0; } }
+
+/* ---------- Hero ---------- */
+.hero { position: relative; padding-block: clamp(40px, 6vw, 84px) clamp(56px, 7vw, 96px); overflow: hidden; }
+.hero::before {
+  content: ""; position: absolute; inset: -20% -10% auto 35%; height: 90%;
+  background: radial-gradient(closest-side, var(--wash), transparent 72%);
+  pointer-events: none;
+}
+.hero-grid { position: relative; display: grid; gap: 44px; align-items: center; }
+.hero h1 { font-size: clamp(2.6rem, 5.6vw, 4.3rem); line-height: 1; margin-top: 20px; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.hero .lede { font-size: 1.2rem; max-width: 34ch; margin-top: 22px; }
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
+@media (min-width: 960px) {
+  .hero-grid { grid-template-columns: minmax(0, 1.02fr) minmax(0, .98fr); gap: 56px; min-height: min(640px, calc(100dvh - 240px)); }
+}
+
+/* The dictation stage: a blank page, a caret, and the pill. */
+.stage {
+  position: relative;
+  background: linear-gradient(180deg, var(--surface), var(--bg-2));
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, .06);
+  padding: clamp(24px, 4vw, 44px);
+  min-height: 430px;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 32px;
+  overflow: hidden;
+}
+.stage-text {
+  font-family: var(--font-display); font-weight: 500;
+  font-size: clamp(1.45rem, 2.6vw, 2.05rem); line-height: 1.22; letter-spacing: -.02em;
+  min-height: 4.9em; color: var(--ink);
+}
+.landed { display: inline; }
+.landed.fly { display: inline-block; transform-origin: 0 0; will-change: transform, opacity; }
+.stage.flying .caret { visibility: hidden; }
+/* Voice cue: a soft wash behind the pill that follows the speech level. */
+.stage::after {
+  content: ""; position: absolute; left: 50%; bottom: -150px; width: 620px; height: 380px; margin-left: -310px;
+  background: radial-gradient(closest-side, var(--wash), transparent 75%);
+  opacity: calc(var(--level, 0) * 1.6); transition: opacity .22s ease-out; pointer-events: none;
+}
+.stage:not([data-state="rec"])::after { opacity: 0; }
+@keyframes land { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.caret {
+  /* Inline with a border, so it can never wrap onto a line of its own. */
+  display: inline; margin-left: 3px; border-left: 3px solid var(--accent);
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+.slot { position: relative; height: 64px; z-index: 1; }
+.slot > * {
+  position: absolute; left: 50%; bottom: 0;
+  transform: translate(-50%, 16px) scale(.96); opacity: 0;
+  transition: opacity .45s var(--ease), transform .55s var(--ease);
+}
+.stage[data-state="idle"] .keys,
+.stage[data-state="tap"] .keys,
+.stage[data-state="rec"] .pill-voice,
+.stage[data-state="done"] .pill-ok { opacity: 1; transform: translate(-50%, 0) scale(1); }
+
+.keys { display: flex; align-items: center; gap: 8px; height: 56px; color: var(--ink-3); font-size: .9rem; white-space: nowrap; }
+.key {
+  display: inline-grid; place-items: center; min-width: 52px; height: 44px; padding: 0 12px;
+  border-radius: 12px; border: 1px solid var(--line-strong); border-bottom-width: 3px;
+  background: var(--surface); color: var(--ink);
+  font: 500 .85rem/1 var(--font-mono);
+}
+.stage[data-state="tap"] .key { animation: press .3s var(--ease) both; }
+.stage[data-state="tap"] .key:nth-child(2) { animation-delay: .22s; }
+.stage[data-state="tap"] .key:nth-child(3) { animation-delay: .44s; }
+@keyframes press { 40% { transform: translateY(3px); border-bottom-width: 1px; background: var(--accent-soft); } }
+
+/* ---------- The pill (web approximation of the app's frosted capsule) ---------- */
+.pill {
+  display: inline-flex; align-items: center; gap: 14px;
+  height: 56px; padding: 0 20px 0 14px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(180deg, var(--pill-top), var(--pill-bottom));
+  border: 1px solid rgba(255, 255, 255, .17);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), inset 0 -1px 0 rgba(0, 0, 0, .3), 0 22px 40px -18px rgba(0, 0, 0, .65);
+  color: var(--pill-ink);
+  white-space: nowrap;
+}
+.pill .dot { width: 30px; height: 30px; border-radius: 50%; background: rgba(255, 93, 93, .24); display: grid; place-items: center; flex: none; }
+.pill .dot::after { content: ""; width: 11px; height: 11px; border-radius: 50%; background: var(--rec); animation: breathe 1.6s ease-in-out infinite; }
+.pill time { font: 400 1.05rem/1 var(--font-mono); color: var(--pill-dim); font-variant-numeric: tabular-nums; }
+.wave { display: flex; align-items: center; gap: 4px; height: 26px; }
+.wave i {
+  width: 3px; height: 100%; border-radius: 2px; background: rgba(243, 244, 247, .6);
+  transform: scaleY(var(--h, .4));
+  animation: wave var(--t, 1s) ease-in-out var(--d, 0s) infinite alternate;
+}
+@keyframes wave { from { transform: scaleY(.18); } to { transform: scaleY(var(--h, .8)); } }
+.pill .check { width: 32px; height: 32px; border-radius: 50%; background: rgba(79, 211, 155, .22); flex: none; position: relative; }
+.pill .check::after {
+  content: ""; position: absolute; left: 11px; top: 7px; width: 8px; height: 14px;
+  border: solid #dff8ec; border-width: 0 2.5px 2.5px 0; transform: rotate(42deg); border-radius: 1px;
+}
+.pill .two { display: grid; gap: 5px; line-height: 1; }
+.pill .two b { font-weight: 600; font-size: .98rem; }
+.pill .two span { color: var(--ok); font-size: .82rem; font-weight: 500; }
+
+/* Hero recording pill with live preview: grows upward around the transcript. */
+.pill-voice {
+  display: grid; grid-template-columns: minmax(0, 1fr); height: auto; width: min(100%, 400px); padding: 0 20px 0 14px; gap: 0;
+  border-radius: 28px; white-space: normal; transform-origin: 50% 100%;
+}
+.pill-voice .transcript { padding: 15px 4px 0 6px; font-size: 1rem; line-height: 1.4; min-height: calc(1.4em + 15px); }
+.pill-voice .transcript:empty { display: none; }
+.pill-voice .transcript .guess { color: var(--pill-dim); }
+.pill-voice .transcript .w { animation: word .32s var(--ease) both; }
+@keyframes word { from { opacity: 0; } to { opacity: 1; } }
+.pill-voice .chrome { display: flex; align-items: center; gap: 14px; height: 54px; }
+.pill-voice .chrome time { margin-left: auto; }
+.pill-voice .dot { box-shadow: 0 0 0 calc(var(--level, 0) * 7px) rgba(255, 93, 93, .16); transition: box-shadow .16s ease-out; }
+.wave-live { flex: 1; min-width: 0; overflow: hidden; }
+.wave-live i { flex: none; animation: none; transition: transform .13s ease-out; }
+
+/* ---------- Facts strip ---------- */
+.facts { border-block: 1px solid var(--line); }
+.facts ul { display: grid; grid-template-columns: 1fr 1fr; }
+.facts li { padding: 22px 0; display: grid; gap: 4px; }
+.facts li:nth-child(odd) { padding-right: 16px; }
+.facts b { font: 600 1.05rem/1.2 var(--font-display); letter-spacing: -.01em; }
+.facts span { color: var(--ink-3); font-size: .92rem; }
+@media (min-width: 860px) {
+  .facts ul { grid-template-columns: repeat(4, 1fr); }
+  .facts li { padding: 26px 24px 26px 0; }
+  .facts li + li { padding-left: 24px; border-left: 1px solid var(--line); }
+}
+
+/* ---------- How it works ---------- */
+.beats { display: grid; gap: 40px; margin-top: 56px; }
+.beat figure {
+  height: 190px; display: grid; place-items: center;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-panel);
+  overflow: hidden; position: relative;
+}
+.beat h3 { margin-top: 24px; }
+.beat p { color: var(--ink-2); margin-top: 10px; max-width: 36ch; }
+.beat .keys { position: static; opacity: 1; transform: none; }
+.beat .pill { transform: scale(.86); }
+.beat img { width: 210px; }
+@media (min-width: 900px) {
+  .beats { grid-template-columns: 1fr 1.2fr 1fr; gap: 0; }
+  .beat figure { border-radius: 0; border-left-width: 0; }
+  .beat:first-child figure { border-radius: var(--r-panel) 0 0 var(--r-panel); border-left-width: 1px; }
+  .beat:last-child figure { border-radius: 0 var(--r-panel) var(--r-panel) 0; }
+  .beat h3, .beat p { padding-inline: 28px; }
+  .beat:first-child h3, .beat:first-child p { padding-left: 0; }
+}
+
+/* ---------- Privacy ---------- */
+.privacy { background: var(--bg-2); border-block: 1px solid var(--line); }
+.privacy h2 { font-size: clamp(2.5rem, 7.4vw, 6rem); line-height: .98; letter-spacing: -.04em; max-width: 12ch; margin-top: 18px; }
+.privacy h2 em { font-style: normal; color: var(--accent); }
+.proofs { display: grid; gap: 36px 56px; margin-top: clamp(48px, 7vw, 88px); }
+.proofs h3 { font-size: 1.15rem; }
+.proofs p { color: var(--ink-2); margin-top: 8px; max-width: 44ch; }
+.proofs li { padding-top: 22px; border-top: 1px solid var(--line-strong); }
+@media (min-width: 760px) { .proofs { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1080px) {
+  .privacy-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 72px; align-items: start; }
+  .privacy-grid > div:first-child { position: sticky; top: 110px; }
+  .proofs { margin-top: 8px; }
+}
+
+/* ---------- Models ---------- */
+.bento { display: grid; gap: 16px; margin-top: 52px; }
+.cell {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-panel);
+  padding: clamp(24px, 3vw, 36px); display: flex; flex-direction: column; gap: 18px; position: relative; overflow: hidden;
+}
+.cell > p { color: var(--ink-2); max-width: 48ch; }
+.cell .by { font-family: var(--font-mono); font-size: .8rem; color: var(--ink-3); letter-spacing: .01em; }
+.cell-whisper { background: radial-gradient(120% 140% at 100% 0%, var(--wash), transparent 60%), var(--surface); }
+.cell-download { background: linear-gradient(160deg, #1b2236, #0d111b); border-color: rgba(222, 232, 255, .12); color: #eef1f8; justify-content: space-between; }
+.cell-download > p { color: #aeb6c8; }
+.cell-download img { width: min(100%, 420px); filter: drop-shadow(0 24px 30px rgba(0, 0, 0, .5)); }
+.variants { display: grid; gap: 10px; margin-top: auto; }
+.variants li { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 12px 16px; border-radius: 14px; background: var(--surface-2); }
+.variants b { font-weight: 500; }
+.variants span { font-family: var(--font-mono); font-size: .86rem; color: var(--ink-2); white-space: nowrap; }
+.variants small { display: block; color: var(--ink-3); font-size: .84rem; margin-top: 2px; }
+@media (min-width: 900px) {
+  .bento { grid-template-columns: repeat(12, 1fr); }
+  .cell-whisper { grid-column: span 7; }
+  .cell-parakeet { grid-column: span 5; }
+  .cell-nemotron { grid-column: span 5; }
+  .cell-download { grid-column: span 7; }
+}
+
+/* ---------- Details (tabs) ---------- */
+.tabs { margin-top: 48px; display: grid; gap: 24px; }
+.tablist { display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x proximity; padding-bottom: 6px; margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); scrollbar-width: none; }
+.tablist::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none; scroll-snap-align: start; cursor: pointer;
+  font: 500 1rem/1 var(--font-body); color: var(--ink-2);
+  padding: 13px 18px; border-radius: var(--r-pill); border: 1px solid var(--line-strong); background: transparent;
+  transition: background-color .25s, color .25s, border-color .25s;
+}
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.panel { display: grid; gap: 28px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-panel); padding: clamp(24px, 4vw, 48px); }
+.panel + .panel { margin-top: 16px; }
+.js .panel + .panel { margin-top: 0; }
+.js .panel[hidden] { display: none; }
+.js .panel { animation: land .5s var(--ease) both; }
+.panel h3 { font-size: clamp(1.5rem, 2.6vw, 2.1rem); letter-spacing: -.025em; }
+.panel p { color: var(--ink-2); margin-top: 14px; max-width: 46ch; }
+.panel p + p { margin-top: 10px; }
+.visual { display: grid; place-items: center; min-height: 220px; border-radius: 18px; background: var(--bg-2); border: 1px solid var(--line); padding: 24px; }
+.config { width: 100%; max-width: 420px; font-family: var(--font-mono); font-size: .88rem; line-height: 1.75; }
+.config .path { color: var(--ink-3); font-size: .78rem; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.config .c { color: var(--ink-3); }
+.config .k { color: var(--code-ink); }
+.config div { overflow-wrap: anywhere; }
+.pill-live {
+  width: min(100%, 380px); border-radius: 26px; height: auto; padding: 16px 20px 12px; display: grid; gap: 12px; white-space: normal;
+}
+.pill-live .transcript { font-size: .98rem; line-height: 1.4; }
+.pill-live .transcript span { color: var(--pill-dim); }
+.pill-live .chrome { display: flex; align-items: center; gap: 14px; }
+.pill-live .chrome time { margin-left: auto; }
+.menu { width: 100%; max-width: 300px; display: grid; gap: 2px; font-size: .95rem; }
+.menu li { padding: 9px 14px; border-radius: 10px; color: var(--ink-2); }
+.menu li:first-child { background: var(--accent-soft); color: var(--ink); }
+@media (min-width: 900px) {
+  .tabs { grid-template-columns: 250px minmax(0, 1fr); gap: 40px; align-items: start; }
+  .tablist { flex-direction: column; overflow: visible; margin: 0; padding: 0; gap: 6px; }
+  .tab { text-align: left; border-color: transparent; padding: 14px 18px; }
+  .tab:hover { background: var(--accent-soft); }
+  .tab[aria-selected="true"]:hover { background: var(--ink); }
+  .panel { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 44px; min-height: 380px; }
+}
+
+/* ---------- FAQ ---------- */
+.faq-grid { display: grid; gap: 36px; }
+.faq details { border-bottom: 1px solid var(--line-strong); }
+.faq summary {
+  list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 20px;
+  padding: 22px 0; font: 500 1.14rem/1.3 var(--font-display); letter-spacing: -.01em;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after {
+  content: "+"; font: 400 1.5rem/1 var(--font-mono); color: var(--accent); flex: none;
+  transition: transform .35s var(--ease);
+}
+.faq details[open] summary::after { transform: rotate(45deg); }
+.faq details p { color: var(--ink-2); padding-bottom: 24px; max-width: 62ch; }
+.faq details p + p { margin-top: -12px; }
+@media (min-width: 960px) {
+  .faq-grid { grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr); gap: 72px; }
+  .faq-grid h2 { position: sticky; top: 110px; }
+}
+
+/* ---------- Closing capsule ---------- */
+.closing { padding-bottom: clamp(56px, 8vw, 104px); }
+.capsule {
+  position: relative; overflow: hidden;
+  border-radius: 36px; padding: clamp(36px, 6vw, 72px) clamp(24px, 6vw, 88px);
+  background: linear-gradient(180deg, #2a3040, #141925);
+  border: 1px solid rgba(255, 255, 255, .14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2), var(--shadow);
+  color: #eef1f8;
+  display: grid; gap: 32px; align-items: center;
+}
+.capsule h2 { font-size: clamp(1.9rem, 4vw, 3rem); max-width: 16ch; }
+.capsule p { color: #b4bccd; margin-top: 14px; max-width: 46ch; }
+.capsule .cta-row { margin-top: 0; }
+.capsule .btn-status { background: #2b3243; border-color: rgba(255, 255, 255, .2); color: #eef1f8; }
+.capsule .btn-status::before { background: #8cbcff; }
+.capsule .btn-ghost { border-color: rgba(255, 255, 255, .28); color: #eef1f8; }
+.capsule .btn-ghost:hover { background: rgba(140, 188, 255, .14); border-color: #8cbcff; }
+.capsule .btn-primary { background: #8cbcff; color: #07101f; }
+.capsule .bigwave { position: absolute; right: -10px; bottom: 0; top: 0; width: 46%; opacity: .06; gap: 9px; height: auto; align-items: center; pointer-events: none; }
+.capsule .bigwave i { width: 7px; border-radius: 4px; height: 70%; background: #fff; animation: none; }
+@media (min-width: 900px) {
+  .capsule { border-radius: 120px; grid-template-columns: minmax(0, 1.2fr) auto; }
+}
+
+/* ---------- Footer ---------- */
+footer { border-top: 1px solid var(--line); padding-block: 56px 48px; color: var(--ink-2); font-size: .93rem; }
+.foot { display: grid; gap: 40px; }
+.foot h3 { font: 500 .78rem/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 16px; }
+.foot p { max-width: 40ch; margin-top: 14px; }
+.foot li + li { margin-top: 10px; }
+.foot a { text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; transition: text-decoration-color .2s, color .2s; }
+.foot a:hover { color: var(--ink); text-decoration-color: var(--accent); }
+.credits li { max-width: 62ch; }
+.legal { margin-top: 48px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: .86rem; display: flex; flex-wrap: wrap; gap: 8px 28px; justify-content: space-between; }
+@media (min-width: 900px) { .foot { grid-template-columns: 1fr 1.7fr .7fr; gap: 64px; } }
+
+/* ---------- Micro-animations ---------- */
+/* Loops only run while their figure is on screen (see the fx observer in the script). */
+.js .fx:not(.on) *, .js .fx:not(.on) *::before, .js .fx:not(.on) *::after { animation-play-state: paused; }
+.wave.ink i { background: var(--accent); }
+.wave.sm { height: 20px; gap: 3px; }
+.okmark { width: 26px; height: 26px; border-radius: 50%; background: #2a9d6f; position: relative; flex: none; }
+.okmark::after { content: ""; position: absolute; left: 9px; top: 5px; width: 6px; height: 11px; border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: rotate(42deg); }
+.recdot { width: 10px; height: 10px; border-radius: 50%; background: var(--rec); flex: none; }
+
+.glyph {
+  height: 128px; margin-bottom: 18px; position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; gap: 22px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 18px; color: var(--ink-2);
+}
+.proofs { gap: 32px 24px; }
+.proofs li { padding-top: 0; border-top: 0; }
+.proofs p { margin-top: 6px; }
+@media (min-width: 560px) { .proofs { grid-template-columns: 1fr 1fr; } }
+
+/* 1 Local: the wave stays inside the Mac, the packet turns back before the cloud. */
+.g-local .mac { width: 92px; height: 58px; border: 2px solid var(--ink-2); border-radius: 9px; display: grid; place-items: center; position: relative; margin-bottom: 8px; }
+.g-local .mac::after { content: ""; position: absolute; left: -12px; right: -12px; bottom: -9px; height: 4px; border-radius: 3px; background: var(--ink-2); }
+.g-local .packet { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin: 0 -8px; opacity: 0; animation: bounce 3.6s ease-in-out infinite; }
+.g-local .cloud { color: var(--ink-3); opacity: .75; display: grid; }
+.g-local .cloud .strike { stroke: var(--rec); }
+@keyframes bounce { 0%, 20% { opacity: 0; transform: translateX(-10px); } 30% { opacity: 1; } 52% { opacity: 1; transform: translateX(10px); } 80% { opacity: 0; transform: translateX(-10px); } 100% { opacity: 0; transform: translateX(-10px); } }
+
+/* 2 Network: one click, one download, then offline. */
+.g-net { flex-direction: column; gap: 11px; }
+.g-net .ask { font: 500 .8rem/1 var(--font-body); padding: 8px 14px; border-radius: var(--r-pill); background: var(--accent); color: var(--on-accent); animation: click 7s var(--ease) infinite; }
+.g-net .bar { width: 150px; height: 5px; border-radius: 3px; background: var(--line-strong); overflow: hidden; }
+.g-net .bar i { display: block; height: 100%; background: var(--accent); transform-origin: 0 50%; animation: fill 7s ease-in-out infinite; }
+.g-net .state { display: grid; font: 400 .76rem/1 var(--font-mono); color: var(--ink-3); text-align: center; }
+.g-net .state b { grid-area: 1 / 1; font-weight: 400; }
+.g-net .state b:first-child { opacity: 0; animation: st1 7s linear infinite; }
+.g-net .state b:last-child { color: var(--ink); animation: st2 7s linear infinite; }
+@keyframes click { 0%, 6%, 14%, 100% { transform: none; } 10% { transform: scale(.9); } }
+@keyframes fill { 0%, 12% { transform: scaleX(0); } 52%, 100% { transform: scaleX(1); } }
+@keyframes st1 { 0%, 11% { opacity: 0; } 14%, 52% { opacity: 1; } 56%, 100% { opacity: 0; } }
+@keyframes st2 { 0%, 56% { opacity: 0; } 60%, 96% { opacity: 1; } 100% { opacity: 0; } }
+
+/* 3 Microphone light: the indicator is lit exactly while the wave plays. */
+.g-mic .menubar { position: absolute; inset: 0 0 auto 0; height: 28px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-right: 14px; }
+.g-mic .menubar span { width: 14px; height: 6px; border-radius: 3px; background: var(--line-strong); }
+.g-mic .ind { width: 9px; height: 9px; border-radius: 50%; background: #ff9f0a; animation: lamp 6s linear infinite; }
+.g-mic .wave { margin-top: 26px; animation: gate 6s ease-in-out infinite; }
+@keyframes lamp { 0%, 19% { opacity: 0; } 21%, 72% { opacity: 1; } 74%, 100% { opacity: 0; } }
+@keyframes gate { 0%, 19% { transform: scaleY(.1); } 24%, 69% { transform: scaleY(1); } 74%, 100% { transform: scaleY(.1); } }
+
+/* 4 Memory: audio flows straight into the model, no file in between. */
+.g-mem { gap: 12px; }
+.g-mem .flow { width: 56px; height: 6px; position: relative; }
+.g-mem .flow i { position: absolute; left: 0; top: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); transform: translateX(25px); animation: flow 1.8s linear infinite; }
+.g-mem .flow i:nth-child(1) { transform: translateX(4px); }
+.g-mem .flow i:nth-child(2) { animation-delay: -.6s; }
+.g-mem .flow i:nth-child(3) { transform: translateX(46px); animation-delay: -1.2s; }
+@keyframes flow { 0% { transform: translateX(0); opacity: 0; } 20%, 80% { opacity: 1; } 100% { transform: translateX(50px); opacity: 0; } }
+.chip { font: 500 .8rem/1 var(--font-body); padding: 8px 13px; border-radius: var(--r-pill); border: 1px solid var(--line-strong); color: var(--ink); background: var(--surface-2); white-space: nowrap; }
+.g-mem .file { position: absolute; left: 50%; bottom: 14px; margin-left: -9px; width: 18px; height: 22px; border: 1.5px solid var(--ink-3); border-radius: 3px; opacity: .8; }
+.g-mem .file::after { content: ""; position: absolute; left: -7px; right: -7px; top: 9px; height: 2px; border-radius: 1px; background: var(--rec); transform: rotate(-42deg); }
+
+/* 5 Checksum: the digits settle, then the check appears. */
+.g-sum { gap: 14px; font: 400 .95rem/1.3 var(--font-mono); color: var(--ink); }
+.g-sum .lab { color: var(--ink-3); font-size: .76rem; margin-right: 8px; }
+.g-sum .hash { display: flex; align-items: center; }
+.g-sum .col { height: 1.3em; overflow: hidden; display: block; }
+.g-sum .col b { display: block; font-weight: 400; transform: translateY(-83.333%); animation: roll 6s steps(1, end) infinite; }
+.g-sum .col:nth-child(odd) b { animation-delay: -.25s; }
+.g-sum .okmark { animation: pop 6s var(--ease) infinite; }
+@keyframes roll { 0% { transform: translateY(0); } 8% { transform: translateY(-16.666%); } 16% { transform: translateY(-33.333%); } 24% { transform: translateY(-50%); } 32% { transform: translateY(-66.666%); } 40%, 100% { transform: translateY(-83.333%); } }
+@keyframes pop { 0%, 46% { transform: scale(0); } 54%, 100% { transform: scale(1); } }
+
+/* 6 Source: the braces open on the code. */
+.g-src { gap: 12px; }
+.g-src > b { font: 400 2.6rem/1 var(--font-mono); color: var(--ink); animation: braceL 6s var(--ease) infinite; }
+.g-src > b:last-child { animation-name: braceR; }
+.g-src .lines { display: grid; gap: 8px; width: 70px; }
+.g-src .lines i { height: 6px; border-radius: 3px; background: var(--accent); transform-origin: 0 50%; animation: line 6s var(--ease) infinite; }
+.g-src .lines i:nth-child(2) { width: 62%; background: var(--ink-3); animation-delay: .15s; }
+.g-src .lines i:nth-child(3) { width: 84%; background: var(--ink-3); animation-delay: .3s; }
+@keyframes braceL { 0%, 10% { transform: translateX(38px); } 28%, 92% { transform: none; } 100% { transform: translateX(38px); } }
+@keyframes braceR { 0%, 10% { transform: translateX(-38px); } 28%, 92% { transform: none; } 100% { transform: translateX(-38px); } }
+@keyframes line { 0%, 24% { transform: scaleX(0); } 40%, 88% { transform: scaleX(1); } 94%, 100% { transform: scaleX(0); } }
+
+/* Keys that tap in a loop */
+.tapping .key { animation: tap 3.4s var(--ease) infinite; }
+.tapping .key:nth-child(2) { animation-delay: .28s; }
+.tapping .key:nth-child(3) { animation-delay: .56s; }
+@keyframes tap { 0%, 9%, 100% { transform: none; opacity: 1; } 4.5% { transform: translateY(4px); opacity: .6; } }
+
+/* Language chips: the active one moves. */
+.langs { display: flex; flex-wrap: wrap; gap: 8px; }
+.langs i { position: relative; font: 500 .82rem/1 var(--font-body); font-style: normal; padding: 8px 13px; border-radius: var(--r-pill); border: 1px solid var(--line-strong); color: var(--ink-2); }
+.langs i::after { content: attr(data-l); position: absolute; inset: -1px; display: grid; place-items: center; border-radius: inherit; background: var(--accent); color: var(--on-accent); opacity: 0; animation: lit3 6s linear infinite; }
+.langs i:first-child::after { opacity: 1; }
+.langs i:nth-child(2)::after { animation-delay: 2s; }
+.langs i:nth-child(3)::after { animation-delay: 4s; }
+.langs.solo i::after { animation: none; }
+@keyframes lit3 { 0%, 30% { opacity: 1; } 34%, 96% { opacity: 0; } 100% { opacity: 1; } }
+.langs i:nth-child(n+2)::after { animation-name: lit3b; }
+@keyframes lit3b { 0% { opacity: 0; } 2%, 30% { opacity: 1; } 34%, 100% { opacity: 0; } }
+.cell .stream { height: 30px; }
+
+/* Details demos */
+.visual { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; }
+.visual .keys { position: static; opacity: 1; transform: none; height: auto; }
+.pill-live .transcript span i { font-style: normal; animation: guess 5.5s linear infinite; }
+.pill-live .transcript span i:nth-child(2) { animation-delay: .35s; }
+.pill-live .transcript span i:nth-child(3) { animation-delay: .7s; }
+.pill-live .transcript span i:nth-child(4) { animation-delay: 1.05s; }
+.pill-live .transcript span i:nth-child(5) { animation-delay: 1.4s; }
+@keyframes guess { 0%, 8% { opacity: 0; } 12%, 70% { opacity: 1; } 76%, 100% { opacity: 0; } }
+.swap { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; font: 400 1rem/1.2 var(--font-mono); }
+.swap s { color: var(--ink-3); }
+.swap span { display: inline-flex; gap: 10px; animation: fix 5s var(--ease) infinite; }
+.swap b { font-weight: 500; color: var(--accent); }
+@keyframes fix { 0%, 26% { opacity: 0; transform: translateX(-8px); } 38%, 90% { opacity: 1; transform: none; } 100% { opacity: 0; transform: none; } }
+.devs { display: grid; gap: 10px; width: 100%; max-width: 330px; }
+.devs li { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); font-size: .92rem; color: var(--ink); }
+.devs li .wave { margin-left: auto; }
+.devs small { color: var(--ink-3); font-size: .8rem; }
+.media { display: flex; align-items: center; gap: 14px; padding: 14px 20px; border-radius: var(--r-pill); background: var(--surface); border: 1px solid var(--line); font-size: .92rem; color: var(--ink); }
+.media .wave { transform: scaleY(.12); animation: duck 6s ease-in-out infinite; }
+.media .recdot { animation: lamp2 6s linear infinite; margin-left: 10px; }
+@keyframes duck { 0%, 22% { transform: scaleY(1); } 27%, 70% { transform: scaleY(.12); } 75%, 100% { transform: scaleY(1); } }
+@keyframes lamp2 { 0%, 24% { opacity: 0; } 26%, 70% { opacity: 1; } 72%, 100% { opacity: 0; } }
+.menu li { position: relative; z-index: 0; }
+.menu li:first-child { background: none; color: var(--ink-2); }
+.menu li::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: 10px; background: var(--accent-soft); opacity: 0; animation: lit4 8s linear infinite; }
+.menu li:first-child::before { opacity: 1; }
+.menu li:nth-child(2)::before { animation-delay: 2s; }
+.menu li:nth-child(3)::before { animation-delay: 4s; }
+.menu li:nth-child(4)::before { animation-delay: 6s; }
+.menu li:nth-child(n+2)::before { animation-name: lit4b; }
+@keyframes lit4 { 0%, 23% { opacity: 1; } 26%, 97% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes lit4b { 0% { opacity: 0; } 2%, 23% { opacity: 1; } 26%, 100% { opacity: 0; } }
+.faq details p { max-width: 56ch; }
+
+/* ---------- Scroll reveal ---------- */
+.js [data-reveal] { opacity: 0; transform: translateY(18px); transition: opacity .8s var(--ease), transform .8s var(--ease); transition-delay: calc(var(--i, 0) * 80ms); }
+.js [data-reveal].is-in { opacity: 1; transform: none; }
+
+@media (prefers-reduced-transparency: reduce) {
+  .nav { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .js [data-reveal] { opacity: 1; transform: none; }
+  .caret { opacity: 1; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="LocalVoice home">
+      <img src="assets/icon.png" width="30" height="30" alt="">
+      LocalVoice
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#models">Models</a>
+      <a href="#details">Details</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-end">
+      <button class="theme-toggle" type="button" aria-label="Switch between light and dark theme"><span></span></button>
+      <a class="btn btn-ghost" href="https://github.com/Schereo/localvoice">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ================= Hero ================= -->
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">Open-source dictation for macOS</p>
+      <h1>Speak. It lands<br>at your <em>cursor.</em></h1>
+      <p class="lede">Free, fully local dictation for Apple Silicon Macs. Tap a hotkey, talk, and the text appears wherever you are typing.</p>
+      <div class="cta-row">
+        <!--
+          DOWNLOAD CTA
+          There is no public build yet. To switch every "Download coming soon"
+          chip on this page to a real download button, set DOWNLOAD_URL in the
+          script at the bottom of this file. Nothing else needs to change.
+        -->
+        <span class="btn btn-status" data-download-cta>Download coming soon</span>
+        <a class="btn btn-ghost" href="https://github.com/Schereo/localvoice">View on GitHub <span class="arrow" aria-hidden="true">&#8599;</span></a>
+      </div>
+    </div>
+
+    <div class="stage" data-state="rec" style="--level:.55" role="img" aria-label="Animated demonstration with live preview on: after three taps on the Control key a dark recording pill appears. While a sentence is spoken, the waveform follows the voice and the words form inside the pill. When the recording stops, the finished sentence lands at the text cursor.">
+      <p class="stage-text" aria-hidden="true"><span class="landed"></span><span class="caret"></span></p>
+      <div class="slot" aria-hidden="true">
+        <div class="keys"><span class="key">ctrl</span><span class="key">ctrl</span><span class="key">ctrl</span></div>
+        <div class="pill pill-voice">
+          <div class="transcript">Let's move the review to Thursday. <span class="guess">I'll bring the</span></div>
+          <div class="chrome"><span class="dot"></span><span class="wave wave-live" data-bars="34"></span><time>00:03</time></div>
+        </div>
+        <div class="pill pill-ok"><span class="check"></span><span class="two"><b>Text inserted</b><span class="lang">Detected EN</span></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Facts ================= -->
+<section class="facts" aria-label="At a glance">
+  <div class="wrap">
+    <ul>
+      <li><b>Apple Silicon</b><span>Built for M-series Macs</span></li>
+      <li><b>macOS 15 or later</b><span>Native menu bar app</span></li>
+      <li><b>Free, MIT licensed</b><span>The source is on GitHub</span></li>
+      <li><b>Offline by design</b><span>Models run on your Mac</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= How it works ================= -->
+<section class="section" id="how">
+  <div class="wrap">
+    <h2 data-reveal>Three taps, one sentence, done.</h2>
+    <ol class="beats">
+      <li class="beat" data-reveal style="--i:0">
+        <figure class="fx"><div class="keys tapping" aria-hidden="true"><span class="key">ctrl</span><span class="key">ctrl</span><span class="key">ctrl</span></div></figure>
+        <h3>Tap the hotkey</h3>
+        <p>Triple-tap Control, or pick your own modifier.</p>
+      </li>
+      <li class="beat" data-reveal style="--i:1">
+        <figure class="fx"><div class="pill" aria-hidden="true"><span class="dot"></span><span class="wave" data-bars="18"></span><time>00:04</time></div></figure>
+        <h3>Say it</h3>
+        <p>Transcribed on your Mac. Enter finishes, Esc discards.</p>
+      </li>
+      <li class="beat" data-reveal style="--i:2">
+        <figure><img src="assets/pill-success.png" width="420" height="112" loading="lazy" alt="The LocalVoice pill after a dictation: a green check mark, the words Text inserted, and Detected DE"></figure>
+        <h3>It lands at the cursor</h3>
+        <p>Pasted where you were typing, or kept on the clipboard.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================= Privacy ================= -->
+<section class="section privacy" id="privacy">
+  <div class="wrap privacy-grid">
+    <div data-reveal>
+      <p class="eyebrow">Local first</p>
+      <h2>Your voice never leaves <em>your Mac.</em></h2>
+    </div>
+    <ul class="proofs">
+      <li data-reveal style="--i:0">
+        <figure class="glyph fx g-local" aria-hidden="true"><span class="mac"><span class="wave ink sm" data-bars="9"></span></span><span class="packet"></span><span class="cloud"><svg viewBox="0 0 48 32" width="48" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 26h22a8 8 0 0 0 1.5-15.9A11 11 0 0 0 15.2 8.6 9 9 0 0 0 13 26z"/><path class="strike" d="M7 30 41 3"/></svg></span></figure>
+        <h3>Processed on your Mac</h3>
+        <p>Audio and text stay local. No cloud.</p>
+      </li>
+      <li data-reveal style="--i:1">
+        <figure class="glyph fx g-net" aria-hidden="true"><span class="ask">Download model</span><span class="bar"><i></i></span><span class="state"><b>from Hugging Face</b><b>offline from here on</b></span></figure>
+        <h3>Online only when you ask</h3>
+        <p>One model download from Hugging Face, then offline.</p>
+      </li>
+      <li data-reveal style="--i:2">
+        <figure class="glyph fx g-mic" aria-hidden="true"><span class="menubar"><span></span><span></span><i class="ind"></i></span><span class="wave ink" data-bars="16"></span></figure>
+        <h3>An honest microphone light</h3>
+        <p>The mic opens only while you record.</p>
+      </li>
+      <li data-reveal style="--i:3">
+        <figure class="glyph fx g-mem" aria-hidden="true"><span class="wave ink sm" data-bars="6"></span><span class="flow"><i></i><i></i><i></i></span><span class="chip">Whisper</span><span class="file"></span></figure>
+        <h3>No audio files</h3>
+        <p>Whisper reads audio from memory, not from disk.</p>
+      </li>
+      <li data-reveal style="--i:4">
+        <figure class="glyph fx g-sum" aria-hidden="true"><span class="hash"><span class="lab">sha256</span><span class="col"><b>a<br>4<br>c<br>1<br>2<br>9</b></span><span class="col"><b>3<br>b<br>1<br>6<br>1<br>f</b></span><span class="col"><b>2<br>d<br>d<br>2<br>7<br>2</b></span><span class="col"><b>2<br>d<br>1<br>3<br>7<br>c</b></span><span class="lab" style="margin:0 4px">…</span><span class="col"><b>1<br>c<br>1<br>7<br>1<br>a</b></span><span class="col"><b>4<br>9<br>d<br>4<br>3<br>4</b></span><span class="col"><b>9<br>5<br>3<br>6<br>b<br>1</b></span><span class="col"><b>3<br>2<br>1<br>6<br>f<br>e</b></span></span><span class="okmark"></span></figure>
+        <h3>Verified downloads</h3>
+        <p>Pinned revisions, checked by size and SHA-256.</p>
+      </li>
+      <li data-reveal style="--i:5">
+        <figure class="glyph fx g-src" aria-hidden="true"><b>{</b><span class="lines"><i></i><i></i><i></i></span><b>}</b></figure>
+        <h3>Readable source</h3>
+        <p>MIT licensed. Every line is public.</p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= Models ================= -->
+<section class="section" id="models">
+  <div class="wrap">
+    <h2 data-reveal>Pick the model that fits your Mac.</h2>
+    <p class="lede" data-reveal>Six speech models from three families. Download, switch, remove.</p>
+
+    <div class="bento">
+      <article class="cell cell-whisper" data-reveal>
+        <p class="by">OpenAI Whisper on MLX, from mlx-community</p>
+        <h3>Whisper Large V3 Turbo</h3>
+        <p>Automatic, or pinned to one language. Uses your vocabulary.</p>
+        <span class="langs fx" aria-hidden="true"><i data-l="Automatic">Automatic</i><i data-l="Deutsch">Deutsch</i><i data-l="English">English</i></span>
+        <ul class="variants">
+          <li><div><b>Turbo FP16</b><small>Full-precision weights</small></div><span>1.61 GB</span></li>
+          <li><div><b>Turbo Q4</b><small>4-bit quantized</small></div><span>464 MB</span></li>
+        </ul>
+      </article>
+
+      <article class="cell cell-parakeet" data-reveal style="--i:1">
+        <p class="by">NVIDIA and Moondream, Core ML by Fluid Inference</p>
+        <h3>Parakeet</h3>
+        <p>Detects the language on its own.</p>
+        <span class="langs solo" aria-hidden="true"><i data-l="Automatic">Automatic</i></span>
+        <ul class="variants">
+          <li><div><b>Parakeet V3</b><small>macOS 14 or later</small></div><span>483 MB</span></li>
+          <li><div><b>Parakeet Ultra</b><small>macOS 14 or later</small></div><span>632 MB</span></li>
+          <li><div><b>Parakeet Redux</b><small>macOS 15 or later</small></div><span>220 MB</span></li>
+        </ul>
+      </article>
+      <article class="cell cell-nemotron" data-reveal>
+        <p class="by">NVIDIA, Core ML conversion by Fluid Inference</p>
+        <h3>Nemotron Streaming</h3>
+        <p>NVIDIA's multilingual streaming recognizer.</p>
+        <span class="wave ink stream fx" data-bars="30" aria-hidden="true"></span>
+        <ul class="variants">
+          <li><div><b>Streaming Multilingual</b><small>Live streaming, macOS 14 or later</small></div><span>615 MB</span></li>
+        </ul>
+      </article>
+
+      <article class="cell cell-download" data-reveal style="--i:1">
+        <div>
+          <h3>Downloaded once, on request</h3>
+          <p style="margin-top:12px;color:#aeb6c8;max-width:46ch">No model ships in the app. Each download is verified before use.</p>
+        </div>
+        <img src="assets/pill-download.png" width="716" height="112" loading="lazy" alt="The LocalVoice pill during a model download: Downloading model, 1.0 GB of 1.6 GB, a blue progress bar at 39 percent">
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Details ================= -->
+<section class="section" id="details" style="padding-top:0">
+  <div class="wrap">
+    <h2 data-reveal>Small things, done properly.</h2>
+    <p class="lede" data-reveal>A native Settings window and one plain-text file. Edits apply in seconds.</p>
+
+    <div class="tabs" data-reveal>
+      <div class="tablist" role="tablist" aria-label="Everyday details">
+        <button class="tab" role="tab" type="button" id="tab-hotkey" aria-controls="panel-hotkey" aria-selected="true">Hotkey</button>
+        <button class="tab" role="tab" type="button" id="tab-preview" aria-controls="panel-preview" aria-selected="false" tabindex="-1">Live preview</button>
+        <button class="tab" role="tab" type="button" id="tab-vocab" aria-controls="panel-vocab" aria-selected="false" tabindex="-1">Vocabulary</button>
+        <button class="tab" role="tab" type="button" id="tab-mic" aria-controls="panel-mic" aria-selected="false" tabindex="-1">Microphone</button>
+        <button class="tab" role="tab" type="button" id="tab-media" aria-controls="panel-media" aria-selected="false" tabindex="-1">Media pause</button>
+        <button class="tab" role="tab" type="button" id="tab-menu" aria-controls="panel-menu" aria-selected="false" tabindex="-1">Menu bar</button>
+      </div>
+
+      <div class="panels">
+        <div class="panel" role="tabpanel" id="panel-hotkey" aria-labelledby="tab-hotkey">
+          <div>
+            <h3>A hotkey that cannot misfire</h3>
+            <p>One modifier, two to four taps. Any other key cancels it.</p>
+          </div>
+          <div class="visual fx">
+            <div class="keys tapping" aria-hidden="true"><span class="key">cmd</span><span class="key">cmd</span></div>
+            <div class="config">
+              <div class="path">~/.config/localvoice/config</div>
+              <div class="c"># double-tap Command</div>
+              <div><span class="k">hotkey</span> = cmd,2</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" role="tabpanel" id="panel-preview" aria-labelledby="tab-preview" hidden>
+          <div>
+            <h3>Watch the sentence form</h3>
+            <p>Opt-in. Confirmed words in full ink, the live guess dimmed.</p>
+          </div>
+          <div class="visual fx">
+            <div class="pill pill-live" role="img" aria-label="The recording pill with live preview: confirmed words in white, the current guess dimmed, above the waveform and timer">
+              <div class="transcript" aria-hidden="true">Send the draft to Ada before lunch, <span><i>and</i> <i>ask</i> <i>whether</i> <i>the</i> <i>MLX</i></span></div>
+              <div class="chrome" aria-hidden="true"><span class="dot"></span><span class="wave" data-bars="20"></span><time>00:07</time></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" role="tabpanel" id="panel-vocab" aria-labelledby="tab-vocab" hidden>
+          <div>
+            <h3>Teach it your names</h3>
+            <p>Whisper leans toward the spellings you list.</p>
+          </div>
+          <div class="visual fx">
+            <div class="swap" role="img" aria-label="Illustration: the misheard words control speak become ctrlSPEAK"><s>control speak</s><span><i aria-hidden="true">&rarr;</i><b>ctrlSPEAK</b></span></div>
+            <div class="config">
+              <div class="path">~/.config/localvoice/config</div>
+              <div><span class="k">vocabulary</span> = Ada, ctrlSPEAK, MLX</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" role="tabpanel" id="panel-mic" aria-labelledby="tab-mic" hidden>
+          <div>
+            <h3>AirPods keep sounding good</h3>
+            <p>Records with the built-in mic, so headphone audio stays untouched.</p>
+          </div>
+          <div class="visual fx">
+            <ul class="devs" aria-label="Illustration: the built-in microphone records while AirPods keep playing">
+              <li><span class="recdot"></span>Built-in microphone<span class="wave ink sm" data-bars="7" aria-hidden="true"></span></li>
+              <li>AirPods <small>left alone</small></li>
+            </ul>
+            <div class="config">
+              <div><span class="k">microphone</span> = built-in</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" role="tabpanel" id="panel-media" aria-labelledby="tab-media" hidden>
+          <div>
+            <h3>The music waits for you</h3>
+            <p>Optionally pauses Spotify or Apple Music while you record.</p>
+          </div>
+          <div class="visual fx">
+            <div class="media" role="img" aria-label="Illustration: the music level drops flat while the red recording dot is lit, then resumes"><span class="wave ink sm" data-bars="7"></span>Music<span class="recdot"></span>Recording</div>
+            <div class="config">
+              <div><span class="k">pause-media</span> = on</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" role="tabpanel" id="panel-menu" aria-labelledby="tab-menu" hidden>
+          <div>
+            <h3>A native menu bar app</h3>
+            <p>Settings, models and the permission checklist in one menu.</p>
+          </div>
+          <div class="visual fx">
+            <ul class="menu" aria-label="Items in the LocalVoice menu">
+              <li>Settings&hellip;</li>
+              <li>Models&hellip;</li>
+              <li>Set Up Permissions&hellip;</li>
+              <li>Launch at Login</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= FAQ ================= -->
+<section class="section faq" id="faq" style="padding-top:0">
+  <div class="wrap faq-grid">
+    <h2 data-reveal>Questions, answered plainly.</h2>
+    <div data-reveal>
+      <details open>
+        <summary>When can I download it?</summary>
+        <p>Soon. There is no public build yet. Follow the repository on GitHub to catch the first release.</p>
+      </details>
+      <details>
+        <summary>What do I need to run it?</summary>
+        <p>An Apple Silicon Mac with macOS 15 or later, plus 220 MB to 1.61 GB of disk space per model.</p>
+      </details>
+      <details>
+        <summary>Does it really work offline?</summary>
+        <p>Yes. The only network access is a model download you start yourself.</p>
+      </details>
+      <details>
+        <summary>Which languages does it understand?</summary>
+        <p>German and English. Whisper and Nemotron can be pinned to either one, Parakeet detects the language itself.</p>
+      </details>
+      <details>
+        <summary>Why does it ask for three permissions?</summary>
+        <p>Microphone to hear you, Input Monitoring for the hotkey, Accessibility to place the text.</p>
+      </details>
+      <details>
+        <summary>What if the cursor is not in a text field?</summary>
+        <p>Nothing is typed. The transcript stays on your clipboard.</p>
+      </details>
+      <details>
+        <summary>Is the microphone always listening?</summary>
+        <p>No. It opens only while you record, unless you turn on standby for instant starts.</p>
+      </details>
+      <details>
+        <summary>How do I remove it?</summary>
+        <p>Turn off Launch at Login, quit, and move the app to the Trash.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Closing ================= -->
+<section class="closing">
+  <div class="wrap">
+    <div class="capsule" data-reveal>
+      <span class="wave bigwave" data-bars="26" data-static aria-hidden="true"></span>
+      <div>
+        <h2>The first public build is on its way.</h2>
+        <p>Until then, read the source, open an issue, or follow the repository on GitHub to catch the release.</p>
+      </div>
+      <div class="cta-row">
+        <span class="btn btn-status" data-download-cta>Download coming soon</span>
+        <a class="btn btn-ghost" href="https://github.com/Schereo/localvoice">View on GitHub <span class="arrow" aria-hidden="true">&#8599;</span></a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a class="brand" href="#top"><img src="assets/icon.png" width="30" height="30" alt="">LocalVoice</a>
+        <p>Free, fully local dictation for Apple Silicon Macs. Released under the MIT License.</p>
+      </div>
+      <div>
+        <h3>Credits</h3>
+        <ul class="credits">
+          <li>Built on <a href="https://github.com/patelnav/ctrlspeak">ctrlSPEAK</a> by Nav Patel, MIT License.</li>
+          <li><a href="https://github.com/ml-explore/mlx-examples">MLX Whisper</a> by Apple, with <a href="https://huggingface.co/mlx-community/whisper-large-v3-turbo">Whisper Large V3 Turbo</a> weights from mlx-community.</li>
+          <li><a href="https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3">Parakeet TDT 0.6B v3</a> by NVIDIA, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. <a href="https://huggingface.co/moondream/parakeet-ultra">Parakeet Ultra</a> and <a href="https://huggingface.co/moondream/parakeet-redux">Parakeet Redux</a> are adaptations by Moondream under the same license.</li>
+          <li><a href="https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b">Nemotron 3.5 ASR Streaming</a> by NVIDIA. The <a href="https://huggingface.co/FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML">Core ML conversion</a> by Fluid Inference specifies the <a href="https://openmdw.ai/license/1-1/">OpenMDW 1.1 license</a>.</li>
+          <li>Core ML model conversions and the <a href="https://github.com/FluidInference/FluidAudio">FluidAudio</a> library by Fluid Inference.</li>
+          <li>Speech models are installed separately on request and are not part of the app download.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Project</h3>
+        <ul>
+          <li><a href="https://github.com/Schereo/localvoice">Source on GitHub</a></li>
+          <li><a href="https://github.com/Schereo/localvoice/blob/main/LICENSE">MIT License</a></li>
+          <li><a href="https://github.com/Schereo/localvoice/blob/main/NOTICE.md">Third-party notice</a></li>
+          <li><a href="https://github.com/Schereo/localvoice/tree/main/docs">Documentation</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      <span>LocalVoice is an independent open-source project.</span>
+      <span>Mac, macOS, AirPods and Apple Music are trademarks of Apple Inc.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* =====================================================================
+     DOWNLOAD CTA - the one place to change when a public build exists.
+     Set DOWNLOAD_URL to the release link, e.g.
+     "https://github.com/Schereo/localvoice/releases/latest".
+     While it is empty, the page shows "Download coming soon".
+     ===================================================================== */
+  var DOWNLOAD_URL = '';
+  var DOWNLOAD_LABEL = 'Download for Mac';
+
+  if (DOWNLOAD_URL) {
+    document.querySelectorAll('[data-download-cta]').forEach(function (el) {
+      var a = document.createElement('a');
+      a.className = 'btn btn-primary';
+      a.href = DOWNLOAD_URL;
+      a.textContent = DOWNLOAD_LABEL;
+      el.replaceWith(a);
+    });
+  }
+
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* Theme toggle */
+  var root = document.documentElement;
+  document.querySelector('.theme-toggle').addEventListener('click', function () {
+    var current = root.getAttribute('data-theme') ||
+      (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    var next = current === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('lv-theme', next); } catch (e) {}
+  });
+
+  /* Waveform bars. Heights come from a fixed sequence so every load looks the same. */
+  var seq = [.35, .5, .3, .62, .8, .45, .7, .95, .55, .78, .4, .88, .6, .98, .5, .72, .36, .64, .85, .42, .58, .3, .7, .48, .9, .38];
+  document.querySelectorAll('.wave').forEach(function (wave) {
+    var n = parseInt(wave.getAttribute('data-bars'), 10) || 20;
+    for (var i = 0; i < n; i++) {
+      var bar = document.createElement('i');
+      var h = seq[i % seq.length];
+      bar.style.setProperty('--h', h);
+      bar.style.setProperty('--t', (0.55 + ((i * 37) % 50) / 100) + 's');
+      bar.style.setProperty('--d', (-((i * 53) % 90) / 100) + 's');
+      if (wave.hasAttribute('data-static')) bar.style.transform = 'scaleY(' + h + ')';
+      wave.appendChild(bar);
+    }
+  });
+
+  /* Scroll reveal */
+  var revealEls = document.querySelectorAll('[data-reveal]');
+  if (reduced || !('IntersectionObserver' in window)) {
+    revealEls.forEach(function (el) { el.classList.add('is-in'); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) { entry.target.classList.add('is-in'); io.unobserve(entry.target); }
+      });
+    }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
+    revealEls.forEach(function (el) { io.observe(el); });
+  }
+
+  /* Micro-animations run only while on screen. */
+  var fxEls = document.querySelectorAll('.fx');
+  if ('IntersectionObserver' in window) {
+    var fxIO = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) { entry.target.classList.toggle('on', entry.isIntersecting); });
+    }, { threshold: 0.15 });
+    fxEls.forEach(function (el) { fxIO.observe(el); });
+  } else {
+    fxEls.forEach(function (el) { el.classList.add('on'); });
+  }
+
+  /* Tabs */
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+  function selectTab(tab, focus) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+    if (focus) tab.focus();
+  }
+  tabs.forEach(function (tab, i) {
+    tab.addEventListener('click', function () { selectTab(tab, false); });
+    tab.addEventListener('keydown', function (e) {
+      var d = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : (e.key === 'ArrowLeft' || e.key === 'ArrowUp') ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      selectTab(tabs[(i + d + tabs.length) % tabs.length], true);
+    });
+  });
+
+  /* Hero demo: tap, record, insert. Under reduced motion the static markup stays as is. */
+  var stage = document.querySelector('.stage');
+  if (!stage || reduced) return;
+  var landed = stage.querySelector('.landed');
+  var pill = stage.querySelector('.pill-voice');
+  var transcript = pill.querySelector('.transcript');
+  var timer = pill.querySelector('time');
+  var bars = Array.prototype.slice.call(pill.querySelectorAll('.wave i'));
+  var lang = stage.querySelector('.lang');
+  /* Each phrase is spoken in chunks; the pause between chunks confirms the first one. */
+  var phrases = [
+    [["Let's move the review to Thursday.", "I'll bring the numbers."], 'EN'],
+    [['Kannst du mir die Unterlagen', 'bis Freitag schicken?'], 'DE'],
+    [['Fix the race in the onset buffer', 'and add a regression test.'], 'EN']
+  ];
+  var index = 0, visible = true, running = false;
+  var speakingUntil = 0, level = 0, meter = null, clock = null;
+
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /* Waveform and glow follow the voice: lively while a word is spoken, near flat in pauses. */
+  function startMeter() {
+    var started = Date.now(), n = 0;
+    timer.textContent = '00:00';
+    clock = setInterval(function () {
+      var s = Math.floor((Date.now() - started) / 1000);
+      timer.textContent = '00:' + (s < 10 ? '0' : '') + s;
+    }, 250);
+    meter = setInterval(function () {
+      n++;
+      var target = Date.now() < speakingUntil ? .55 + .45 * Math.abs(Math.sin(n * 1.7)) : .04;
+      level += (target - level) * (target > level ? .7 : .35);
+      stage.style.setProperty('--level', level.toFixed(2));
+      bars.forEach(function (bar, i) {
+        var wobble = .55 + .45 * Math.abs(Math.sin(n * 1.3 + i * 2.1));
+        bar.style.transform = 'scaleY(' + Math.max(.14, level * seq[i % seq.length] * wobble * 1.15).toFixed(2) + ')';
+      });
+    }, 90);
+  }
+  function stopMeter() {
+    clearInterval(meter); clearInterval(clock);
+    level = 0; stage.style.setProperty('--level', '0');
+    bars.forEach(function (bar) { bar.style.transform = 'scaleY(.14)'; });
+  }
+
+  /* Transcript: confirmed words in full ink, the running guess dimmed, at most two lines. */
+  var conf = [], guess = [];
+  function render(fresh) {
+    var maxH = parseFloat(getComputedStyle(transcript).lineHeight) * 2 + 20;
+    var drop = 0;
+    do {
+      transcript.textContent = '';
+      var c = conf.slice(drop), g = guess.slice(Math.max(0, drop - conf.length));
+      if (drop) transcript.appendChild(document.createTextNode('… '));
+      if (c.length) transcript.appendChild(document.createTextNode(c.join(' ') + ' '));
+      if (g.length) {
+        var span = document.createElement('span');
+        span.className = 'guess';
+        span.appendChild(document.createTextNode(g.slice(0, -1).join(' ') + (g.length > 1 ? ' ' : '')));
+        var last = document.createElement('span');
+        if (fresh) last.className = 'w';
+        last.textContent = g[g.length - 1];
+        span.appendChild(last);
+        transcript.appendChild(span);
+      }
+      drop++;
+    } while (transcript.offsetHeight > maxH && drop < conf.length + guess.length);
+  }
+
+  function speak(chunks) {
+    var chain = wait(450);
+    chunks.forEach(function (chunk, ci) {
+      chunk.split(' ').forEach(function (word) {
+        var ms = 170 + word.length * 48;
+        chain = chain.then(function () {
+          speakingUntil = Date.now() + ms - 60;
+          guess.push(word);
+          render(true);
+          return wait(ms);
+        });
+      });
+      /* A pause: the phrase is confirmed and turns to full ink. */
+      chain = chain.then(function () { return wait(ci < chunks.length - 1 ? 520 : 420); })
+        .then(function () { conf = conf.concat(guess); guess = []; render(false); return wait(ci < chunks.length - 1 ? 260 : 380); });
+    });
+    return chain;
+  }
+
+  /* The finished sentence travels from the pill to the caret. */
+  function land(text) {
+    var from = transcript.getBoundingClientRect();
+    var fromSize = parseFloat(getComputedStyle(transcript).fontSize);
+    landed.textContent = text;
+    landed.classList.add('fly');
+    stage.classList.add('flying');
+    var to = landed.getBoundingClientRect();
+    var scale = fromSize / parseFloat(getComputedStyle(landed).fontSize);
+    var done = function () { landed.classList.remove('fly'); stage.classList.remove('flying'); };
+    if (!landed.animate) { done(); return; }
+    landed.animate([
+      { transform: 'translate(' + (from.left - to.left + 6) + 'px,' + (from.top - to.top + 15) + 'px) scale(' + scale + ')', opacity: .75 },
+      { transform: 'none', opacity: 1 }
+    ], { duration: 820, easing: 'cubic-bezier(.16, 1, .3, 1)' }).onfinish = done;
+  }
+
+  function cycle() {
+    if (!visible) { running = false; return; }
+    running = true;
+    var phrase = phrases[index % phrases.length];
+    index++;
+    landed.textContent = '';
+    conf = []; guess = [];
+    stage.dataset.state = 'idle';
+    wait(900).then(function () {
+      stage.dataset.state = 'tap';
+      return wait(950);
+    }).then(function () {
+      transcript.textContent = '';
+      stage.dataset.state = 'rec';
+      startMeter();
+      return speak(phrase[0]);
+    }).then(function () {
+      stopMeter();
+      lang.textContent = 'Detected ' + phrase[1];
+      /* Text and the "Text inserted" pill change in the same frame. */
+      land(phrase[0].join(' '));
+      stage.dataset.state = 'done';
+      return wait(3800);
+    }).then(cycle);
+  }
+
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver(function (entries) {
+      visible = entries[0].isIntersecting;
+      if (visible && !running) cycle();
+    }, { threshold: 0.2 }).observe(stage);
+  } else {
+    cycle();
+  }
+})();
+</script>
+</body>
+</html>
