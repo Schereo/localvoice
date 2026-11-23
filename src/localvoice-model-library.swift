@@ -3,7 +3,7 @@ import AppKit
 struct ModelLibraryEntry {
     enum State {
         // Download progress is a fraction from 0 to 1.
-        case notInstalled, downloading(Double), installed, active, unavailable(String)
+        case notInstalled, downloading(Double), installed, loading, active, unavailable(String)
     }
 
     let id: String
@@ -502,6 +502,9 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
     private let primary = NSButton(title: "", target: nil, action: nil)
     private let remove = NSButton()
     private let inUse = NSStackView()
+    // Shown from "Use" until the service reports the model ready.
+    private let loading = NSStackView()
+    private let spinner = NSProgressIndicator()
     private let perform: (ModelLibraryAction) -> Void
     private var primaryAction: ModelLibraryAction?
     private var modelName = ""
@@ -553,6 +556,16 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
         inUse.alignment = .centerY
         inUse.translatesAutoresizingMaskIntoConstraints = false
 
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        let loadingLabel = modelLibraryLabel("Loading…", size: 13, color: .secondaryLabelColor)
+        loading.setViews([spinner, loadingLabel], in: .leading)
+        loading.spacing = 6
+        loading.alignment = .centerY
+        loading.isHidden = true
+        loading.translatesAutoresizingMaskIntoConstraints = false
+
         let text = NSStackView(views: [name, summary])
         text.orientation = .vertical
         text.alignment = .leading
@@ -561,7 +574,7 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
 
         let rule = ModelLibrarySeparator()
         rule.isHidden = !separator
-        for view in [rule, text, languages, sizeStack, remove, primary, inUse] { addSubview(view) }
+        for view in [rule, text, languages, sizeStack, remove, primary, inUse, loading] { addSubview(view) }
         // Rows are rowHeight tall unless their text needs more.
         let height = heightAnchor.constraint(equalToConstant: M.rowHeight)
         height.priority = .defaultHigh - 1
@@ -577,6 +590,8 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
             primary.widthAnchor.constraint(equalToConstant: M.buttonWidth),
             inUse.centerXAnchor.constraint(equalTo: primary.centerXAnchor),
             inUse.centerYAnchor.constraint(equalTo: centerYAnchor),
+            loading.centerXAnchor.constraint(equalTo: primary.centerXAnchor),
+            loading.centerYAnchor.constraint(equalTo: centerYAnchor),
             remove.trailingAnchor.constraint(equalTo: primary.leadingAnchor, constant: -6),
             remove.centerYAnchor.constraint(equalTo: centerYAnchor),
 
@@ -635,6 +650,10 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
             show(.use, title: "Use")
             installed = true
             state = "Downloaded"
+        case .loading:
+            show(nil, loading: true)
+            installed = true
+            state = "Loading"
         case .active:
             show(nil, inUse: true)
             installed = true
@@ -673,12 +692,15 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
         return "Downloading, \(Int(done)) of \(Int(total.rounded())) MB (\(percent) %)"
     }
 
-    private func show(_ action: ModelLibraryAction?, title: String = "", inUse showsInUse: Bool = false) {
+    private func show(_ action: ModelLibraryAction?, title: String = "", inUse showsInUse: Bool = false,
+                      loading showsLoading: Bool = false) {
         primaryAction = action
         primary.title = title
         primary.setAccessibilityLabel("\(title) \(modelName)")
         primary.isHidden = action == nil
         inUse.isHidden = !showsInUse
+        loading.isHidden = !showsLoading
+        if showsLoading { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
     }
 
     @objc private func performPrimary() {
@@ -697,7 +719,7 @@ final class StoreModelLibraryBackend: ModelLibraryBackend {
         case download(String)
         case cancel
         case remove
-        case activate(UUID)
+        case activate(UUID, String)
     }
 
     private let python: URL
@@ -734,6 +756,8 @@ final class StoreModelLibraryBackend: ModelLibraryBackend {
                 state = .downloading(fraction)
             } else if record.status == .notInstalled {
                 state = .notInstalled
+            } else if isLoading(record.id) {
+                state = .loading
             } else {
                 state = selectedModel == record.id ? .active : .installed
             }
@@ -747,9 +771,23 @@ final class StoreModelLibraryBackend: ModelLibraryBackend {
         }
     }
 
-    func refresh() {
-        guard operation == nil else { return }
-        checkStatus(notice: catalog.isEmpty ? "Checking models…" : nil)
+    private func isLoading(_ id: String) -> Bool {
+        if loadingModel == id { return true }
+        if case let .activate(_, target) = operation { return target == id }
+        return false
+    }
+
+    /// Re-read the catalog. `error` stays visible after the refresh finishes.
+    func refresh(error: String? = nil) {
+        guard operation == nil else {
+            if let error { message = error; onChange?() }
+            return
+        }
+        if let error {
+            checkStatus(previousError: error, notice: error)
+        } else {
+            checkStatus(notice: catalog.isEmpty ? "Checking models…" : nil)
+        }
     }
 
     func setActiveModel(_ id: String?) {
@@ -809,11 +847,11 @@ final class StoreModelLibraryBackend: ModelLibraryBackend {
         case .use:
             let token = UUID()
             let revision = selectionRevision
-            operation = .activate(token)
+            operation = .activate(token, modelID)
             message = "Switching model…"
             let completion: @Sendable (Bool) -> Void = { [weak self] success in
                 DispatchQueue.main.async {
-                    guard let self, case let .activate(current) = self.operation, current == token else { return }
+                    guard let self, case let .activate(current, _) = self.operation, current == token else { return }
                     if success, self.selectionRevision == revision { self.selectedModel = modelID }
                     self.operation = nil
                     self.message = success ? nil : "Could not switch models. Try again."
