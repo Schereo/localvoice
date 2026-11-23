@@ -30,6 +30,14 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Added
 
+- A ready screen after setup. When the first model has finished loading after
+  the permissions are set up (and the first time on a new install), a window
+  shows the gesture as an animation: the configured key is tapped as often as
+  the hotkey needs, then the recording pill appears with a moving waveform.
+  Below it, three steps cover how to start, how to insert or discard (Return,
+  Esc) and where Models and Settings are, followed by Open Settings… and
+  Start Dictating. Under Reduce Motion the scene is a still with a "2×" badge.
+  The model library's own ready note stays quiet while the screen is up.
 - A "Ready to dictate" confirmation once a model has finished loading. The
   model library shows a green note above the table that explains how to
   dictate (tap the configured hotkey in any app, tap again to insert the

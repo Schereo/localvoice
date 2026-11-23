@@ -181,7 +181,7 @@ final class ModelLibraryViewController: NSViewController {
     private let languagePopUp = NSPopUpButton()
     private var languageModel: String?
     private var modelIDs: [String] = []
-    private let readyDetail: (() -> String)?
+    private let readyDetail: (() -> String?)?
     private let readyBanner = ModelLibraryLayerView()
     private let readyText = NSTextField(wrappingLabelWithString: "")
     // The active model as of the last refresh with a loaded catalog; nil until then.
@@ -190,7 +190,7 @@ final class ModelLibraryViewController: NSViewController {
     init(backend: any ModelLibraryBackend, notice: String? = nil,
          readLanguage: ((String) -> DictationLanguage)? = nil,
          saveLanguage: ((String, DictationLanguage) -> Bool)? = nil,
-         readyDetail: (() -> String)? = nil) {
+         readyDetail: (() -> String?)? = nil) {
         self.backend = backend
         self.notice = notice
         self.readLanguage = readLanguage
@@ -326,7 +326,7 @@ final class ModelLibraryViewController: NSViewController {
     }
 
     private func showReady(_ model: ModelLibraryEntry) {
-        guard let detail = readyDetail?() else { return }
+        guard let provider = readyDetail, let detail = provider() else { return }
         readyText.stringValue = detail
         readyBanner.setAccessibilityLabel("Ready to dictate with \(model.name). \(detail)")
         let wasHidden = readyBanner.isHidden

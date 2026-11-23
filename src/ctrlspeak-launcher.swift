@@ -1962,6 +1962,393 @@ func runLaunchctl(_ subcommand: [String]) {
     try? launchctl.run()
 }
 
+// MARK: - Ready screen
+
+/// The configured hotkey as a keycap: symbol, key name and tap count (default Control ×3).
+func hotkeyKeycap() -> (symbol: String, name: String, taps: Int) {
+    let parts = (readConfigValue("hotkey") ?? "ctrl,3").lowercased().split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+    let keys = ["ctrl": ("⌃", "control"), "cmd": ("⌘", "command"), "alt": ("⌥", "option"), "shift": ("⇧", "shift")]
+    guard parts.count == 2, let key = keys[parts[0]], let taps = Int(parts[1]), (2...4).contains(taps) else {
+        return ("⌃", "control", 3)
+    }
+    return (key.0, key.1, taps)
+}
+
+/// A looping scene that shows the gesture: the hotkey's keycap is tapped, then the recording
+/// pill appears with a moving waveform. Static (with a "2×" badge) under Reduce Motion.
+@MainActor
+private final class ReadyIllustrationView: NSView {
+    private let keycap = hotkeyKeycap()
+    private let still: Bool
+    private let key = CALayer()
+    private let keyGlow = CALayer()
+    private let keySymbol = CATextLayer()
+    private let keyName = CATextLayer()
+    private let ripple = CALayer()
+    private let badge = CALayer()
+    private let badgeText = CATextLayer()
+    private let pill = CALayer()
+    private let arrow = CAShapeLayer()
+    private let dot = CALayer()
+    private var bars: [CALayer] = []
+    private var animating = false
+
+    static let size = NSSize(width: 464, height: 168)
+    private static let keySize: CGFloat = 76
+    private static let pillSize = NSSize(width: 136, height: 40)
+
+    init(still: Bool) {
+        self.still = still
+        super.init(frame: NSRect(origin: .zero, size: Self.size))
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("Tap \(hotkeyDescription()) to start dictating")
+        guard let root = layer else { return }
+        key.cornerRadius = 16
+        key.cornerCurve = .continuous
+        key.borderWidth = 1
+        key.shadowOpacity = 0.18
+        key.shadowRadius = 5
+        key.shadowOffset = CGSize(width: 0, height: -2)
+        keyGlow.cornerRadius = 16
+        keyGlow.cornerCurve = .continuous
+        keyGlow.opacity = 0
+        for text in [keySymbol, keyName, badgeText] {
+            text.alignmentMode = .center
+            text.contentsScale = 2
+        }
+        keySymbol.string = keycap.symbol
+        keySymbol.font = NSFont.systemFont(ofSize: 30, weight: .regular)
+        keySymbol.fontSize = 30
+        keyName.string = keycap.name
+        keyName.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        keyName.fontSize = 10
+        key.addSublayer(keyGlow)
+        key.addSublayer(keySymbol)
+        key.addSublayer(keyName)
+        ripple.cornerRadius = 20
+        ripple.cornerCurve = .continuous
+        ripple.borderWidth = 2
+        ripple.opacity = 0
+        badge.cornerRadius = 11
+        badgeText.string = "\(keycap.taps)×"
+        badgeText.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        badgeText.fontSize = 12
+        badge.addSublayer(badgeText)
+        badge.isHidden = !still
+
+        pill.cornerRadius = Self.pillSize.height / 2
+        pill.borderWidth = 1
+        pill.shadowOpacity = 0.25
+        pill.shadowRadius = 8
+        pill.shadowOffset = CGSize(width: 0, height: -3)
+        dot.cornerRadius = 4
+        pill.addSublayer(dot)
+        for _ in 0..<9 {
+            let bar = CALayer()
+            bar.cornerRadius = 1.5
+            bars.append(bar)
+            pill.addSublayer(bar)
+        }
+        arrow.fillColor = nil
+        arrow.lineWidth = 2
+        arrow.lineCap = .round
+        arrow.lineJoin = .round
+        for sublayer in [ripple, key, badge, arrow, pill] { root.addSublayer(sublayer) }
+        applyColors()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var intrinsicContentSize: NSSize { Self.size }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let scale = window?.backingScaleFactor ?? 2
+        for text in [keySymbol, keyName, badgeText] { text.contentsScale = scale }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyColors()
+    }
+
+    private func applyColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            key.backgroundColor = (dark ? NSColor(white: 0.24, alpha: 1) : NSColor.white).cgColor
+            key.borderColor = NSColor.separatorColor.cgColor
+            key.shadowColor = NSColor.black.cgColor
+            keyGlow.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(dark ? 0.35 : 0.18).cgColor
+            keySymbol.foregroundColor = NSColor.labelColor.cgColor
+            keyName.foregroundColor = NSColor.secondaryLabelColor.cgColor
+            ripple.borderColor = NSColor.controlAccentColor.cgColor
+            badge.backgroundColor = NSColor.controlAccentColor.cgColor
+            badgeText.foregroundColor = NSColor.white.cgColor
+            pill.backgroundColor = NSColor(white: 0.1, alpha: 0.92).cgColor
+            pill.borderColor = NSColor(white: 1, alpha: dark ? 0.16 : 0.08).cgColor
+            pill.shadowColor = NSColor.black.cgColor
+            dot.backgroundColor = NSColor.systemRed.cgColor
+            arrow.strokeColor = NSColor.tertiaryLabelColor.cgColor
+            for bar in bars { bar.backgroundColor = NSColor.white.withAlphaComponent(0.92).cgColor }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let k = Self.keySize
+        let p = Self.pillSize
+        let gap: CGFloat = 44
+        let total = k + gap + p.width
+        let originX = (bounds.width - total) / 2
+        let midY = bounds.midY
+        key.bounds = CGRect(x: 0, y: 0, width: k, height: k)
+        key.position = CGPoint(x: originX + k / 2, y: midY)
+        keyGlow.frame = key.bounds
+        // Layer coordinates here are bottom-up (the view is not flipped).
+        keySymbol.frame = CGRect(x: 0, y: k / 2 - 8, width: k, height: 36)
+        keyName.frame = CGRect(x: 0, y: 10, width: k, height: 14)
+        ripple.bounds = CGRect(x: 0, y: 0, width: k + 8, height: k + 8)
+        ripple.position = key.position
+        badge.bounds = CGRect(x: 0, y: 0, width: 30, height: 22)
+        badge.position = CGPoint(x: key.position.x + k / 2 - 4, y: midY + k / 2 - 4)
+        badgeText.frame = CGRect(x: 0, y: 3, width: 30, height: 16)
+        pill.bounds = CGRect(origin: .zero, size: p)
+        pill.position = CGPoint(x: originX + k + gap + p.width / 2, y: midY)
+        dot.frame = CGRect(x: 16, y: p.height / 2 - 4, width: 8, height: 8)
+        // A small arrow from the key to the pill: the tap causes the recording.
+        let arrowStart = originX + k + 12, arrowEnd = originX + k + gap - 12
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: arrowStart, y: midY))
+        path.addLine(to: CGPoint(x: arrowEnd, y: midY))
+        path.move(to: CGPoint(x: arrowEnd - 5, y: midY + 5))
+        path.addLine(to: CGPoint(x: arrowEnd, y: midY))
+        path.addLine(to: CGPoint(x: arrowEnd - 5, y: midY - 5))
+        arrow.path = path
+        for (index, bar) in bars.enumerated() {
+            let height = still ? [10, 18, 26, 16, 22, 12, 20, 14, 8][index] : 22
+            bar.bounds = CGRect(x: 0, y: 0, width: 3, height: CGFloat(height))
+            bar.position = CGPoint(x: 38 + CGFloat(index) * 9.5, y: p.height / 2)
+        }
+        CATransaction.commit()
+        if !still && !animating && window != nil { startAnimating() }
+    }
+
+    // One loop: pause, N taps (each with a press and a ripple), the pill appears with a
+    // moving waveform, fades out, pause.
+    private func startAnimating() {
+        animating = true
+        let taps = keycap.taps
+        let lead = 0.5, tapStep = 0.34, pillIn = 0.3, talk = 1.9, pillOut = 0.35, rest = 0.7
+        let pillStart = lead + Double(taps) * tapStep + 0.15
+        let duration = pillStart + pillIn + talk + pillOut + rest
+        func t(_ seconds: Double) -> NSNumber { NSNumber(value: min(max(seconds / duration, 0), 1)) }
+
+        var scaleTimes: [NSNumber] = [0], scaleValues: [CGFloat] = [1]
+        var glowTimes: [NSNumber] = [0], glowValues: [Float] = [0]
+        var rippleTimes: [NSNumber] = [0], rippleScale: [CGFloat] = [1], rippleOpacity: [Float] = [0]
+        for i in 0..<taps {
+            let start = lead + Double(i) * tapStep
+            scaleTimes += [t(start), t(start + 0.08), t(start + 0.2)]
+            scaleValues += [1, 0.9, 1]
+            glowTimes += [t(start), t(start + 0.06), t(start + 0.26)]
+            glowValues += [0, 1, 0]
+            rippleTimes += [t(start + 0.05), t(start + 0.06), t(start + 0.34)]
+            rippleScale += [1, 1, 1.35]
+            rippleOpacity += [0, 0.7, 0]
+        }
+        scaleTimes.append(1); scaleValues.append(1)
+        glowTimes.append(1); glowValues.append(0)
+        rippleTimes.append(1); rippleScale.append(1.35); rippleOpacity.append(0)
+
+        func keyframes(_ path: String, _ times: [NSNumber], _ values: [Any]) -> CAKeyframeAnimation {
+            let animation = CAKeyframeAnimation(keyPath: path)
+            animation.keyTimes = times
+            animation.values = values
+            animation.duration = duration
+            animation.repeatCount = .infinity
+            animation.calculationMode = .linear
+            animation.isRemovedOnCompletion = false
+            return animation
+        }
+        key.add(keyframes("transform.scale", scaleTimes, scaleValues), forKey: "press")
+        keyGlow.add(keyframes("opacity", glowTimes, glowValues), forKey: "glow")
+        let rippleGroup = CAAnimationGroup()
+        rippleGroup.animations = [keyframes("transform.scale", rippleTimes, rippleScale),
+                                  keyframes("opacity", rippleTimes, rippleOpacity)]
+        rippleGroup.duration = duration
+        rippleGroup.repeatCount = .infinity
+        ripple.add(rippleGroup, forKey: "ripple")
+
+        let shown = pillStart + pillIn, hidden = shown + talk
+        pill.opacity = 0
+        let pillGroup = CAAnimationGroup()
+        pillGroup.animations = [
+            keyframes("opacity", [0, t(pillStart), t(shown), t(hidden), t(hidden + pillOut), 1], [0, 0, 1, 1, 0, 0]),
+            keyframes("transform.scale", [0, t(pillStart), t(shown), t(hidden), t(hidden + pillOut), 1],
+                      [0.85, 0.85, 1, 1, 0.92, 0.92]),
+        ]
+        pillGroup.duration = duration
+        pillGroup.repeatCount = .infinity
+        pill.add(pillGroup, forKey: "pill")
+        arrow.opacity = 0
+        arrow.add(keyframes("opacity", [0, t(pillStart - 0.1), t(shown - 0.1), t(hidden), t(hidden + pillOut), 1],
+                            [0, 0, 1, 1, 0, 0]), forKey: "arrow")
+        let blink = CABasicAnimation(keyPath: "opacity")
+        blink.fromValue = 1
+        blink.toValue = 0.35
+        blink.duration = 0.6
+        blink.autoreverses = true
+        blink.repeatCount = .infinity
+        dot.add(blink, forKey: "blink")
+        // Each bar moves on its own short cycle, so the waveform never visibly repeats.
+        for (index, bar) in bars.enumerated() {
+            let wave = CAKeyframeAnimation(keyPath: "transform.scale.y")
+            let pattern: [CGFloat] = [0.35, 1, 0.55, 0.85, 0.4, 0.95, 0.5]
+            wave.values = (0..<pattern.count).map { pattern[($0 + index * 3) % pattern.count] }
+            wave.duration = 0.9 + Double(index % 4) * 0.13
+            wave.repeatCount = .infinity
+            wave.autoreverses = true
+            wave.calculationMode = .cubic
+            bar.add(wave, forKey: "wave")
+        }
+    }
+}
+
+/// Shown once, when the first model is ready after setup: shows the gesture, says how to
+/// insert or discard, and where Settings live.
+@MainActor
+private final class ReadyWindowController: NSWindowController, NSWindowDelegate {
+    var onSettings: (() -> Void)?
+    var onClose: (() -> Void)?
+
+    init(modelName: String?, menuBar: Bool, still: Bool? = nil) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
+                              styleMask: [.titled, .closable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        super.init(window: window)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.title = "LocalVoice"
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+
+        let reduceMotion = still ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let scene = ModelLibraryLayerView()
+        scene.fill = .modelLibraryCard
+        scene.stroke = .separatorColor
+        scene.radius = 14
+        scene.translatesAutoresizingMaskIntoConstraints = false
+        let illustration = ReadyIllustrationView(still: reduceMotion)
+        scene.addSubview(illustration)
+
+        let title = modelLibraryLabel("You’re Ready to Dictate", size: 22, weight: .semibold)
+        title.alignment = .center
+        let subtitle = modelLibraryLabel(
+            modelName.map { "\($0) is loaded and runs entirely on this Mac." } ?? "Your speech model runs entirely on this Mac.",
+            size: 13, color: .secondaryLabelColor)
+        subtitle.alignment = .center
+
+        let hotkey = hotkeyDescription()
+        let steps = NSStackView(views: [
+            Self.step("keyboard", "Tap **\(hotkey)** in any app to start."),
+            Self.step("return", "Tap again or press **Return** to insert the text. **Esc** discards."),
+            Self.step(menuBar ? "waveform.and.mic" : "gearshape",
+                      menuBar ? "Models and **Settings** are under this icon in the menu bar."
+                              : "Open LocalVoice again to change models or **Settings**."),
+        ])
+        steps.orientation = .vertical
+        steps.alignment = .leading
+        steps.spacing = 12
+        steps.translatesAutoresizingMaskIntoConstraints = false
+
+        let settings = NSButton(title: "Open Settings…", target: self, action: #selector(openSettings))
+        settings.bezelStyle = .push
+        let start = NSButton(title: "Start Dictating", target: self, action: #selector(finish))
+        start.bezelStyle = .push
+        start.keyEquivalent = "\r"
+        let buttons = NSStackView(views: [settings, start])
+        buttons.spacing = 10
+        for button in [settings, start] { button.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true }
+
+        let column = NSStackView(views: [scene, title, subtitle, steps, buttons])
+        column.orientation = .vertical
+        column.alignment = .centerX
+        column.spacing = 6
+        column.setCustomSpacing(24, after: scene)
+        column.setCustomSpacing(22, after: subtitle)
+        column.setCustomSpacing(26, after: steps)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView()
+        content.addSubview(column)
+        NSLayoutConstraint.activate([
+            content.widthAnchor.constraint(equalToConstant: 520),
+            scene.widthAnchor.constraint(equalToConstant: 464),
+            scene.heightAnchor.constraint(equalToConstant: ReadyIllustrationView.size.height),
+            illustration.leadingAnchor.constraint(equalTo: scene.leadingAnchor),
+            illustration.trailingAnchor.constraint(equalTo: scene.trailingAnchor),
+            illustration.topAnchor.constraint(equalTo: scene.topAnchor),
+            illustration.bottomAnchor.constraint(equalTo: scene.bottomAnchor),
+            steps.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            column.topAnchor.constraint(equalTo: content.topAnchor, constant: 44),
+            column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
+            column.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+        ])
+        window.contentView = content
+        content.layoutSubtreeIfNeeded()
+        window.setContentSize(NSSize(width: 520, height: content.fittingSize.height))
+        window.center()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private static func step(_ symbol: String, _ markdown: String) -> NSView {
+        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "circle", accessibilityDescription: nil) ?? NSImage())
+        icon.symbolConfiguration = .init(pointSize: 15, weight: .regular)
+        icon.contentTintColor = .controlAccentColor
+        icon.setAccessibilityElement(false)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        let text = NSTextField(labelWithString: "")
+        let styled = (try? NSAttributedString(markdown: markdown)) ?? NSAttributedString(string: markdown)
+        let line = NSMutableAttributedString(attributedString: styled)
+        let range = NSRange(location: 0, length: line.length)
+        line.addAttributes([.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor], range: range)
+        styled.enumerateAttribute(.inlinePresentationIntent, in: range) { value, span, _ in
+            if let raw = value as? UInt, InlinePresentationIntent(rawValue: raw).contains(.stronglyEmphasized) {
+                line.addAttribute(.font, value: NSFont.systemFont(ofSize: 13, weight: .semibold), range: span)
+            }
+        }
+        text.attributedStringValue = line
+        let row = NSStackView(views: [icon, text])
+        row.spacing = 12
+        row.alignment = .centerY
+        icon.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        return row
+    }
+
+    func present() {
+        NSApp.activate(ignoringOtherApps: true)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openSettings() {
+        onSettings?()
+        close()
+    }
+
+    @objc private func finish() { close() }
+
+    func windowWillClose(_ notification: Notification) { onClose?() }
+}
+
 // MARK: - Media pause permission
 
 /// The scriptable players utils/media_pause.py pauses; keep the two lists in sync.
@@ -2688,6 +3075,12 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private var nextModel: String?
     private var stopping = false
     private var permissionChecklist: PermissionChecklist?
+    private var readyWindow: ReadyWindowController?
+    // Set when the permissions were completed in this run; the first ready model then
+    // gets the ready screen (as does the very first ready model of an install).
+    private var setupCompletedThisRun = false
+    private var presentingReady = false
+    private static let readyShownKey = "onboarding.readyShown"
     private var waitingForPermissions = false
     private var mayRetry = true
 
@@ -2817,7 +3210,9 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                 saveLanguage: { id, language in
                     DictationLanguage.canSelect(for: id) && writeConfigValue("language.\(id)", language.rawValue)
                 },
-                readyDetail: {
+                readyDetail: { [weak self] in
+                    // The ready screen says all this when it is up.
+                    if self?.presentingReady == true { return nil }
                     let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
                     return "Tap \(hotkeyDescription()) in any app to start, and again to insert the text. Esc discards."
                         + (menuBar ? " Settings are under the LocalVoice icon in the menu bar." : "")
@@ -2871,6 +3266,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
 
     private func permissionsBecameReady() {
         waitingForPermissions = false
+        setupCompletedThisRun = true
         writeSetupStatus("granted", managed: true)
         if child == nil, let savedModel {
             start(savedModel)
@@ -3012,6 +3408,9 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             }
         }
         runningModel = model
+        // Decide before the library updates, so its own "ready" note stays quiet.
+        let showReady = setupCompletedThisRun || !UserDefaults.standard.bool(forKey: Self.readyShownKey)
+        if showReady { presentingReady = true }
         library?.setActiveModel(model)
         library?.setLoadingModel(nil)
         if let operation = pending {
@@ -3020,6 +3419,25 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         }
         releaseGate()
         permissionChecklist?.serviceDidChange()
+        if showReady { presentReady(model) }
+    }
+
+    private func presentReady(_ model: String) {
+        setupCompletedThisRun = false
+        UserDefaults.standard.set(true, forKey: Self.readyShownKey)
+        // The setup window has done its job; the ready screen takes over.
+        if permissionChecklist?.isPresented == true { permissionChecklist?.close() }
+        let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
+        let name = library?.models.first { $0.id == model }?.name
+        let ready = ReadyWindowController(modelName: name, menuBar: menuBar)
+        ready.onSettings = { [weak self] in self?.showSettings() }
+        ready.onClose = { [weak self] in
+            self?.presentingReady = false
+            self?.readyWindow = nil
+        }
+        readyWindow?.close()
+        readyWindow = ready
+        ready.present()
     }
 
     private func ended(_ process: Process, model: String) {
@@ -3185,6 +3603,39 @@ private enum PermissionPreview {
                                           listenAccess: kIOHIDAccessTypeGranted)
         default:
             break
+        }
+        if scenario.hasPrefix("ready") {
+            let ready = ReadyWindowController(modelName: "Whisper Large V3 Turbo", menuBar: true,
+                                              still: scenario == "ready-still")
+            ready.present()
+            if let path = environment["PERMISSIONS_PREVIEW_SNAPSHOT"] {
+                let delay = Double(environment["PERMISSIONS_PREVIEW_DELAY"] ?? "") ?? 1.0
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    // Render the layer tree as it is on screen right now (mid-animation).
+                    guard let view = ready.window?.contentView, let layer = view.layer else { exit(1) }
+                    let scale = ready.window?.backingScaleFactor ?? 2
+                    let size = view.bounds.size
+                    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale),
+                                                     pixelsHigh: Int(size.height * scale), bitsPerSample: 8,
+                                                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                     colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                          let context = NSGraphicsContext(bitmapImageRep: rep) else { exit(1) }
+                    rep.size = size
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = context
+                    ready.window?.effectiveAppearance.performAsCurrentDrawingAppearance {
+                        NSColor.windowBackgroundColor.setFill()
+                        NSRect(origin: .zero, size: size).fill()
+                    }
+                    context.cgContext.scaleBy(x: scale, y: scale)
+                    (layer.presentation() ?? layer).render(in: context.cgContext)
+                    NSGraphicsContext.restoreGraphicsState()
+                    let data = rep.representation(using: .png, properties: [:])
+                    exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
+                }
+            }
+            withExtendedLifetime(ready) { app.run() }
+            return
         }
         if scenario.hasPrefix("settings") {
             let controller = SettingsViewController()
