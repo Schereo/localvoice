@@ -2385,6 +2385,8 @@ private final class ReadyIllustrationView: NSView {
 private final class ReadyWindowController: NSWindowController, NSWindowDelegate {
     var onSettings: (() -> Void)?
     var onClose: (() -> Void)?
+    // Offered once, pre-checked and visible, applied when the window closes.
+    private let loginToggle = NSButton(checkboxWithTitle: "Open LocalVoice when I log in", target: nil, action: nil)
 
     init(modelName: String?, menuBar: Bool, still: Bool? = nil) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
@@ -2436,13 +2438,16 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
         buttons.spacing = 10
         for button in [settings, start] { button.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true }
 
-        let column = NSStackView(views: [scene, title, subtitle, steps, buttons])
+        loginToggle.state = .on
+        loginToggle.isHidden = SMAppService.mainApp.status == .enabled
+        let column = NSStackView(views: [scene, title, subtitle, steps, loginToggle, buttons])
         column.orientation = .vertical
         column.alignment = .centerX
         column.spacing = 6
         column.setCustomSpacing(24, after: scene)
         column.setCustomSpacing(22, after: subtitle)
-        column.setCustomSpacing(26, after: steps)
+        column.setCustomSpacing(loginToggle.isHidden ? 26 : 18, after: steps)
+        column.setCustomSpacing(22, after: loginToggle)
         column.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
         content.addSubview(column)
@@ -2505,7 +2510,18 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
 
     @objc private func finish() { close() }
 
-    func windowWillClose(_ notification: Notification) { onClose?() }
+    func windowWillClose(_ notification: Notification) {
+        if !loginToggle.isHidden, loginToggle.state == .on {
+            let service = SMAppService.mainApp
+            do {
+                try service.register()
+                if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+            } catch {
+                // The menu's Launch at Login item reports errors; nothing to block here.
+            }
+        }
+        onClose?()
+    }
 }
 
 // MARK: - Media pause permission
@@ -2902,6 +2918,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var setupPermissions: (() -> Void)?
     var restart: (() -> Void)?
     var quit: (() -> Void)?
+    /// A read-only line at the top of the menu, e.g. "Whisper … · Ready".
+    var status: (() -> String?)?
 
     var isVisible: Bool { statusItem != nil }
 
@@ -2940,6 +2958,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+
+        if let line = status?() {
+            let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
 
         if showSettings != nil {
             menu.addItem(actionItem(title: "Settings…", selector: #selector(openSettings), key: ","))
@@ -3105,8 +3130,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 SMAppService.openSystemSettingsLoginItems()
             } else {
                 try service.register()
+                if service.status == .requiresApproval {
+                    // Registered, but macOS wants the user to allow it.
+                    SMAppService.openSystemSettingsLoginItems()
+                }
             }
         } catch {
+            NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Could not change Launch at Login"
             alert.informativeText = error.localizedDescription
@@ -3302,6 +3332,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         menuBar.setupPermissions = { [weak self] in self?.setupPermissions() }
         menuBar.restart = { [weak self] in self?.restart() }
         menuBar.quit = { [weak self] in self?.quit() }
+        menuBar.status = { [weak self] in self?.statusLine }
         menuBar.installApplicationMenu()
         applyMenuVisibility()
         menuTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -3335,6 +3366,18 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             return .starting(library?.models.first { $0.id == childModel }?.name ?? "the speech model")
         }
         return .stopped
+    }
+
+    private func modelName(_ id: String) -> String {
+        library?.models.first(where: { $0.id == id })?.name ?? id
+    }
+
+    /// One line for the top of the menu: what dictation will use right now.
+    private var statusLine: String {
+        if let runningModel { return "\(modelName(runningModel)) · Ready" }
+        if let childModel { return "Loading \(modelName(childModel))…" }
+        if !permissionsGranted { return "Waiting for permissions" }
+        return "Dictation is off"
     }
 
     private var permissionsGranted: Bool {
@@ -3661,7 +3704,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         }
         releaseGate()
         library?.setLoadingModel(nil)
-        library?.refresh()
+        library?.refresh(error: "LocalVoice could not start \(modelName(model)). Click Use to try again.")
         showModels()
         permissionChecklist?.serviceDidChange()
     }
