@@ -1,0 +1,22 @@
+/* Typography, layout, motion and fixed recording UI tokens. */
+:root {
+  /* The pill keeps its dark frosted look in both themes. */
+  --pill-top: rgba(72, 76, 87, .96);
+  --pill-bottom: rgba(36, 39, 47, .97);
+  --pill-ink: #f3f4f7;
+  --pill-dim: rgba(243, 244, 247, .62);
+  --rec: #ff5d5d;
+  --ok: #4fd39b;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Alpino", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --r-pill: 999px;
+  --gutter: 16px;
+  --max: 1180px;
+  --section-space: clamp(42px, 6vw, 80px);
+  --ease: cubic-bezier(.16, 1, .3, 1);
+}
+
+@media (min-width: 720px) { :root { --gutter: 32px; } }

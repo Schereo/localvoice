@@ -1,0 +1,12 @@
+.site-footer {
+  padding-block: 24px 32px;
+  color: var(--ink-muted);
+  border-top: 1px solid var(--rule);
+  font-size: .95rem;
+}
+
+.footer-inner { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px 36px; }
+.footer-name { color: var(--ink); font-weight: 600; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.footer-links a { text-decoration-color: var(--edge); text-underline-offset: 3px; }
+.footer-links a:hover { color: var(--ink); text-decoration-color: currentColor; }

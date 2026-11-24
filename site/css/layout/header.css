@@ -1,0 +1,28 @@
+.site-header { border-bottom: 1px solid var(--rule); }
+.site-header .wrap { display: flex; justify-content: space-between; align-items: center; min-height: 64px; gap: 16px; }
+.brand {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: none;
+  font: 600 1.08rem/1 var(--font-body);
+}
+
+@supports (mask: url("")) {
+  .brand { font-size: 0; }
+  .brand::before {
+    content: "";
+    width: 158px;
+    aspect-ratio: 216.11 / 44;
+    background: currentColor;
+    mask: url("../../assets/wordmark.svg") center / contain no-repeat;
+  }
+}
+.theme-toggle {
+  width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--edge);
+  background: transparent; cursor: pointer; place-items: center; padding: 0;
+}
+.theme-toggle:not([hidden]) { display: grid; }
+.theme-toggle:hover { border-color: var(--ink-muted); }
+.theme-toggle span { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--ink); background: linear-gradient(90deg, var(--ink) 50%, transparent 50%); transition: transform .5s var(--ease); }
+.theme-toggle:hover span { transform: rotate(180deg); }

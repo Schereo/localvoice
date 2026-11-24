@@ -1,0 +1,19 @@
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+img { max-width: 100%; height: auto; display: block; }
+a { color: inherit; }
+h1, h2, p, figure, dl, dd { margin: 0; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.wrap { width: 100%; max-width: calc(var(--max) + 2 * var(--gutter)); margin-inline: auto; padding-inline: var(--gutter); }
+h2 { font: 650 clamp(2rem, 4.6vw, 3.6rem)/1.04 var(--font-display); letter-spacing: -.038em; }
+.skip { position: absolute; left: -999px; top: 8px; background: var(--editor); padding: 10px 14px; border-radius: 5px; z-index: 1; }
+.skip:focus { left: 8px; }

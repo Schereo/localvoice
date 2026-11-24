@@ -1,0 +1,22 @@
+.get-localvoice { padding-bottom: var(--section-space); }
+
+.get-panel {
+  display: grid;
+  align-items: end;
+  gap: 22px 32px;
+  padding: clamp(22px, 5vw, 52px);
+  background: var(--editor);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+}
+
+.get-panel p { max-width: 47ch; margin-top: 14px; color: var(--ink-muted); }
+.get-panel p a { text-decoration-color: var(--edge); text-underline-offset: 4px; }
+.get-panel p a:hover { text-decoration-color: currentColor; }
+
+.get-download { justify-self: start; }
+.get-download p { margin-top: 8px; font-size: .9rem; }
+
+@media (min-width: 700px) {
+  .get-panel { grid-template-columns: 1fr auto; }
+}
