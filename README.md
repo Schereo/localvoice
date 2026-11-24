@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/icon.png" width="110" alt="LocalVoice icon">
+  <img src="assets/icon.png" width="110" alt="LocalVoice icon: three audio bars">
 
   # LocalVoice
 
