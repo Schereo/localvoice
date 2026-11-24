@@ -1,0 +1,14 @@
+.primary-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 46px;
+  padding: 0 16px;
+  border-radius: 5px;
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.primary-link:hover { text-decoration: underline; text-underline-offset: 4px; }

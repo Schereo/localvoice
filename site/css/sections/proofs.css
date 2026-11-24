@@ -1,0 +1,85 @@
+.proof-strip { padding-bottom: var(--section-space); }
+.proof-grid { display: grid; gap: 16px; }
+
+@media (min-width: 700px) {
+  .proof-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.proof-card {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+  background: var(--editor);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+}
+
+.proof-visual {
+  display: grid;
+  place-items: center;
+  min-height: 98px;
+  padding: 16px;
+  color: var(--ink-muted);
+  background: color-mix(in srgb, var(--frame) 30%, var(--editor));
+  border-bottom: 1px solid var(--rule);
+  border-radius: 11px 11px 0 0;
+}
+
+.local-illustration { width: 116px; max-width: 100%; }
+.proof-copy { padding: 18px clamp(18px, 3vw, 26px) 22px; }
+
+.proof-copy h2 {
+  margin: 0 0 8px;
+  font: 650 clamp(1.42rem, 2.5vw, 1.85rem)/1.12 var(--font-display);
+  letter-spacing: -.025em;
+}
+
+.proof-copy p { max-width: 42ch; color: var(--ink-muted); }
+
+.model-transfer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(100%, 205px);
+}
+
+.model-transfer svg { flex: none; }
+.model-transfer-progress { flex: 1; min-width: 0; }
+.model-transfer-status { display: grid; font-size: .93rem; font-weight: 600; }
+.model-transfer-status > span { grid-area: 1 / 1; }
+.model-loading { opacity: 0; }
+
+.model-transfer-track {
+  margin-top: 7px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--frame);
+}
+
+.model-transfer-track::after {
+  display: block;
+  height: 100%;
+  background: var(--ink-muted);
+  transform-origin: left;
+  content: "";
+}
+
+.model-transfer.is-playing .model-transfer-track::after { animation: model-progress 2.6s ease both; }
+.model-transfer.is-playing .model-loading { animation: model-loading 2.6s linear both; }
+.model-transfer.is-playing .model-ready { animation: model-ready 2.6s linear both; }
+
+@keyframes model-progress {
+  0% { transform: scaleX(0); }
+  85%, 100% { transform: scaleX(1); }
+}
+
+@keyframes model-loading {
+  0%, 83% { opacity: 1; }
+  90%, 100% { opacity: 0; }
+}
+
+@keyframes model-ready {
+  0%, 86% { opacity: 0; }
+  94%, 100% { opacity: 1; }
+}

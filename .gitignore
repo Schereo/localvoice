@@ -7,3 +7,5 @@ build/
 .swiftpm/
 __pycache__/
 *.pyc
+# Alpino is licensed for web embedding, not redistribution in this repo.
+/site/assets/fonts/alpino-*.woff2

@@ -1,0 +1,132 @@
+.hero {
+  padding-block: clamp(48px, 7vw, 94px) clamp(40px, 6vw, 76px);
+}
+
+.hero-grid {
+  display: grid;
+  align-items: center;
+  gap: clamp(36px, 5vw, 76px);
+}
+
+.hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2.65rem, 8.6vw, 4.65rem);
+  font-weight: 650;
+  letter-spacing: -.044em;
+  line-height: .98;
+  text-wrap: initial;
+}
+
+.hero h1 span { display: block; }
+
+.hero-intro {
+  max-width: 32ch;
+  margin-top: 24px;
+  color: var(--ink-muted);
+  font-size: clamp(1.125rem, 2vw, 1.36rem);
+  line-height: 1.45;
+}
+
+.hero-link { margin-top: 28px; }
+
+.hero-demo {
+  min-width: 0;
+  background: var(--frame);
+  border: 1px solid var(--edge);
+  border-radius: 22px;
+}
+
+.demo-toolbar {
+  display: flex;
+  justify-content: end;
+  padding: 0 clamp(12px, 2.6vw, 28px);
+  border-top: 1px solid var(--edge);
+}
+.demo-toolbar:not(:has(.demo-control:not([hidden]))) { display: none; }
+
+.demo-control:not([hidden]) { display: inline-flex; align-items: center; gap: 6px; }
+.demo-control {
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font: 600 .9rem/1 var(--font-body);
+}
+.demo-control:hover .demo-control-label { text-decoration: underline; text-underline-offset: 3px; }
+.demo-control:focus-visible { outline-offset: -3px; }
+.demo-icon { display: none; width: 16px; height: 16px; stroke-width: 1.4; }
+.demo-control[data-action="play"] .demo-icon-play,
+.demo-control[data-action="skip"] .demo-icon-skip,
+.demo-control[data-action="replay"] .demo-icon-replay { display: block; }
+
+@media (min-width: 840px) {
+  .hero-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
+  .hero h1 { font-size: clamp(3.1rem, 5.3vw, 4.65rem); }
+}
+
+.stage {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: clamp(335px, 36vw, 465px);
+  padding: clamp(12px, 2.6vw, 28px);
+  gap: 16px;
+  overflow: hidden;
+  border-radius: 22px 22px 0 0;
+}
+
+.stage-editor {
+  min-width: 0;
+  padding: clamp(17px, 3.3vw, 34px);
+  background: var(--editor);
+  border: 1px solid var(--edge);
+  border-radius: 11px;
+}
+
+.stage-note {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-muted);
+  font-size: .95rem;
+  font-weight: 600;
+}
+
+.stage-text {
+  margin-top: 16px;
+  color: var(--ink);
+  font-size: clamp(1.25rem, 2.3vw, 1.8rem);
+  line-height: 1.24;
+  letter-spacing: -.018em;
+  overflow-wrap: anywhere;
+}
+
+.landed.fly { display: inline-block; transform-origin: 0 0; will-change: transform, opacity; }
+.stage.flying .caret { visibility: hidden; }
+.caret { margin-left: 2px; border-left: 2px solid var(--ink); }
+.stage[data-playing] .caret { animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.slot { position: relative; height: 70px; }
+
+.slot > * {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translate(-50%, 12px) scale(.98);
+  opacity: 0;
+  transition: opacity .45s var(--ease), transform .55s var(--ease);
+}
+
+.stage[data-state="rec"] .pill-voice,
+.stage[data-state="done"] .pill-ok {
+  transform: translate(-50%, 0) scale(1);
+  opacity: 1;
+}
+
+:root[data-hero-motion="still"] .stage *,
+:root[data-hero-motion="still"] .stage *::after {
+  animation: none;
+  transition: none;
+}

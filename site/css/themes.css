@@ -1,0 +1,14 @@
+/* Field Recorder (light) and Studio Dark (dark). */
+:root {
+  color-scheme: light dark;
+  --paper: light-dark(#e5e2d5, #242824);
+  --ink: light-dark(#222721, #f0ece1);
+  --ink-muted: light-dark(#4a5044, #c7cbbf);
+  --frame: light-dark(#c8ccbd, #383f37);
+  --edge: light-dark(#a6ad9c, #596256);
+  --editor: light-dark(#e4e6dc, #2d342d);
+  --rule: light-dark(#c9cec1, #454e42);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }

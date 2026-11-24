@@ -1,0 +1,47 @@
+/* ---------- The pill (web approximation of the app's frosted capsule) ---------- */
+.pill {
+  display: inline-flex; align-items: center; gap: 14px;
+  height: 56px; padding: 0 20px 0 14px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(180deg, var(--pill-top), var(--pill-bottom));
+  border: 1px solid rgba(255, 255, 255, .17);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), inset 0 -1px 0 rgba(0, 0, 0, .3), 0 22px 40px -18px rgba(0, 0, 0, .65);
+  color: var(--pill-ink);
+  white-space: nowrap;
+}
+.pill .dot { width: 30px; height: 30px; border-radius: 50%; background: rgba(255, 93, 93, .24); display: grid; place-items: center; flex: none; }
+.pill .dot::after { content: ""; width: 11px; height: 11px; border-radius: 50%; background: var(--rec); }
+.stage[data-playing] .pill .dot::after { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: .35; } }
+.pill time { font: 400 1.05rem/1 var(--font-mono); color: var(--pill-dim); font-variant-numeric: tabular-nums; }
+.wave { display: flex; align-items: center; gap: 4px; height: 26px; }
+.wave i {
+  width: 3px; height: 100%; border-radius: 2px; background: rgba(243, 244, 247, .6);
+  transform: scaleY(var(--h, .4));
+  animation: wave var(--t, 1s) ease-in-out var(--d, 0s) infinite alternate;
+}
+@keyframes wave { from { transform: scaleY(.18); } to { transform: scaleY(var(--h, .8)); } }
+.pill .check { width: 32px; height: 32px; border-radius: 50%; background: rgba(79, 211, 155, .22); flex: none; position: relative; }
+.pill .check::after {
+  content: ""; position: absolute; left: 11px; top: 7px; width: 8px; height: 14px;
+  border: solid #dff8ec; border-width: 0 2.5px 2.5px 0; transform: rotate(42deg); border-radius: 1px;
+}
+.pill .two { display: grid; gap: 5px; line-height: 1; }
+.pill .two b { font-weight: 600; font-size: .98rem; }
+.pill .two span { color: var(--ok); font-size: .82rem; font-weight: 500; }
+
+/* Hero recording pill with live preview: grows upward around the transcript. */
+.pill-voice {
+  display: grid; grid-template-columns: minmax(0, 1fr); height: auto; width: min(100%, 400px); padding: 0 20px 0 14px; gap: 0;
+  border-radius: 28px; white-space: normal; transform-origin: 50% 100%;
+}
+.pill-voice .transcript { padding: 15px 4px 0 6px; font-size: 1rem; line-height: 1.4; min-height: calc(1.4em + 15px); }
+.pill-voice .transcript:empty { display: none; }
+.pill-voice .transcript .guess { color: var(--pill-dim); }
+.pill-voice .transcript .w { animation: word .32s var(--ease) both; }
+@keyframes word { from { opacity: 0; } to { opacity: 1; } }
+.pill-voice .chrome { display: flex; align-items: center; gap: 14px; height: 54px; }
+.pill-voice .chrome time { margin-left: auto; }
+.pill-voice .dot { box-shadow: 0 0 0 calc(var(--level, 0) * 7px) rgba(255, 93, 93, .16); transition: box-shadow .16s ease-out; }
+.wave-live { flex: 1; min-width: 0; overflow: hidden; }
+.wave-live i { flex: none; animation: none; transition: transform .13s ease-out; }

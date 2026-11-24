@@ -24,6 +24,14 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      # Alpino is licensed for web hosting, not redistribution through Git.
+      - name: Stage Alpino webfont
+        run: |
+          font=site/assets/fonts/alpino-variable.woff2
+          curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+            'https://cdn.fontshare.com/wf/XOA57OZMKHW23ICYFRTJOQCQWVSMWZJN/3LCT6HEGSJDUZ6TI5CQWLMN6PA2VPOSL/45F676ZHU3B76JLFL4Y4VZQCPHNNW3ME.woff2' \
+            --output "$font"
+          printf '%s  %s\n' '663b116eff9cc1544042000edcbb3ce28fb038fb33cf46b7e2e0cd74ee1164ec' "$font" | sha256sum -c -
       - name: Deploy site
         uses: cloudflare/wrangler-action@v4
         with:

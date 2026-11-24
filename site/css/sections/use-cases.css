@@ -1,0 +1,29 @@
+.use-cases { padding-bottom: var(--section-space); border-top: 1px solid var(--rule); }
+
+.use-cases-inner {
+  display: grid;
+  gap: clamp(26px, 5vw, 72px);
+  padding-top: var(--section-space);
+}
+
+.use-cases p {
+  max-width: 36ch;
+  margin-top: 18px;
+  color: var(--ink-muted);
+}
+
+.use-case-list { border-top: 1px solid var(--edge); }
+
+.use-case-list > div {
+  display: grid;
+  gap: 3px;
+  padding-block: 13px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.use-case-list dt { font-size: .9rem; font-weight: 600; }
+.use-case-list dd { color: var(--ink-muted); font-size: 1.05rem; }
+
+@media (min-width: 840px) {
+  .use-cases-inner { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
+}
