@@ -1,0 +1,118 @@
+# Every push to main (i.e. every merged PR) runs the checks, builds a portable,
+# ad-hoc-signed dev app and publishes it as a GitHub pre-release.
+# Free for public repos: GitHub-hosted macOS runners cost nothing here.
+name: Dev build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "site/**"
+      - "docs/**"
+      - "wrangler.jsonc"
+      - "*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Queue rather than cancel, so a release is never interrupted halfway.
+concurrency:
+  group: dev-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: write # create the pre-release
+    env:
+      KEEP_DEV_RELEASES: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcrun swift --version
+          python3 --version
+
+      - name: Checks
+        env:
+          LOCALVOICE_CHECK_PYTHON: python3
+        run: ./scripts/check.sh
+
+      - name: Cache Core ML worker build
+        uses: actions/cache@v4
+        with:
+          path: build/parakeet-worker
+          key: parakeet-${{ runner.os }}-${{ hashFiles('providers/parakeet/Package.swift', 'providers/parakeet/Package.resolved', 'providers/parakeet/Sources/**') }}
+
+      - name: Version
+        id: version
+        run: |
+          base="$(tr -d '[:space:]' < VERSION)"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "tag=v$base-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Build portable dev app
+        run: |
+          python3 -B scripts/build-dev-app.py --portable \
+            --version "${{ steps.version.outputs.base }}" \
+            --build-number "$GITHUB_RUN_NUMBER"
+          codesign --verify --deep --strict build/dev/LocalVoice.app
+
+      - name: Package
+        id: package
+        run: |
+          zip="LocalVoice-${{ steps.version.outputs.tag }}-arm64.zip"
+          ditto -c -k --keepParent build/dev/LocalVoice.app "build/$zip"
+          (cd build && shasum -a 256 "$zip" > "$zip.sha256")
+          echo "zip=build/$zip" >> "$GITHUB_OUTPUT"
+
+      - name: Publish pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          name="$(basename "$ZIP")"
+          cat > build/notes.md <<EOF
+          Automatic dev build of \`${GITHUB_SHA::7}\` from \`main\`. **Not signed or notarized**, for testing only.
+
+          ### Install
+
+          1. Download \`$name\` and unzip it.
+          2. Move **LocalVoice.app** wherever you like (e.g. \`/Applications\`).
+          3. The build is not notarized, so macOS blocks the first launch. Remove the quarantine flag once:
+
+             \`\`\`sh
+             xattr -dr com.apple.quarantine "/Applications/LocalVoice.app"
+             \`\`\`
+
+          4. Open the app and follow **Permissions…**. Every dev build is a new identity for macOS, so permissions
+             granted to an earlier build show **Old entry**; use **Re-add…** to grant them again.
+
+          Requires an Apple Silicon Mac with macOS 15 or later. Models are downloaded from the app's **Models…** window.
+          EOF
+          gh release create "$TAG" "$ZIP" "$ZIP.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "LocalVoice $TAG" --notes-file build/notes.md
+
+      - name: Prune old dev releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("-dev\\.[0-9]+$"))] | sort_by(.createdAt) | reverse | .[(env.KEEP_DEV_RELEASES | tonumber):] | .[].tagName' |
+          while read -r tag; do
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          done

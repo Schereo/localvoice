@@ -13,6 +13,11 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Added
 
+- Dev releases: every merge to `main` runs the checks on a GitHub-hosted
+  Apple Silicon runner and publishes a portable, ad-hoc-signed test app as a
+  pre-release (`v<VERSION>-dev.<run>`), with install notes for removing the
+  quarantine flag. `build-dev-app.py --portable` embeds a pinned standalone
+  Python so the app no longer depends on `build/dev/venv`.
 - Settings window redesigned in the style of System Settings: a header with
   the app icon and the current dictation state, grouped cards with a coloured
   symbol per row, and keycaps that show the chosen hotkey gesture. New rows

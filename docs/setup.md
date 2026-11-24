@@ -34,6 +34,26 @@ open build/dev/LocalVoice.app
 
 The build downloads development dependencies and pinned upstream source, not model weights. It uses an isolated virtual environment and ad-hoc signing; no Developer ID or Homebrew installer is needed. Keep the app and `build/dev/venv` where the build put them. Add `--worker /path/to/localvoice-parakeet` to reuse an existing worker. This is a local test build, not a redistributable app.
 
+Add `--portable` to embed a pinned standalone CPython (python-build-standalone) in the app instead of referencing `build/dev/venv`. The bundle can then be moved, zipped and run on another Apple Silicon Mac. `--version` and `--build-number` set the bundle version. Python dependencies other than `mlx-whisper` are not pinned, so two portable builds can differ.
+
+## Dev Releases
+
+Every push to `main` (every merged PR) runs [`.github/workflows/dev-build.yml`](../.github/workflows/dev-build.yml) on a GitHub-hosted Apple Silicon runner: `scripts/check.sh`, then a `--portable` build, published as a pre-release tagged `v<VERSION>-dev.<run>`. The last ten dev releases are kept. Changes that only touch `site/`, `docs/` or Markdown files don't trigger a build. It can also be started manually from the Actions tab.
+
+To install a dev release:
+
+1. Download `LocalVoice-v…-dev.N-arm64.zip` from [Releases](https://github.com/Schereo/localvoice/releases) and unzip it.
+2. Move `LocalVoice.app` wherever you like, for example `/Applications`.
+3. Dev releases are ad-hoc signed and not notarized, so Gatekeeper blocks them. Remove the quarantine flag once:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/LocalVoice.app
+   ```
+
+4. Open the app and follow **Permissions…**. Each dev build is a new identity, so rows from earlier builds show **Old entry**; use **Re-add…**.
+
+Dev releases use the bundle identifier `com.localvoice.dev`, the same as local test builds.
+
 ## Legacy Homebrew Installer
 
 `./install.sh --plan` previews the legacy installer without changing anything. `./install.sh --legacy-homebrew` opts into the changes below. Do not run the legacy installer or uninstaller against an independent ctrlSPEAK installation you want to preserve.
