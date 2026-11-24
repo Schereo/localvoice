@@ -102,10 +102,11 @@ class ModelStoreTests(unittest.TestCase):
              ("parakeet-v3", 483_105_645, "not-installed"),
              ("parakeet-ultra", 632_162_964, "not-installed"),
              ("parakeet-redux", 220_304_193, "not-installed"),
-             ("nemotron-streaming", 615_434_988, "not-installed")],
+             ("nemotron-streaming", 615_434_988, "not-installed"),
+             ("qwen3-asr-1.7b", 2_467_775_902, "not-installed")],
         )
         for row in rows:
-            self.assertEqual(row["available"], row["id"].startswith("whisper-"))
+            self.assertEqual(row["available"], row["id"].startswith(("whisper-", "qwen3-asr-")))
             self.assertIsInstance(row["available"], bool)
             self.assertIsInstance(row["availability_reason"], str)
             self.assertEqual(bool(row["availability_reason"]), not row["available"])
@@ -277,6 +278,42 @@ class ModelStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(store.ModelStoreError, "not installed"):
                 store.resolve_model(self.model.id)
         self.assertFalse(self.app.exists())
+
+    def test_qwen_manifest_pins_the_8bit_mlx_files_the_loader_reads(self):
+        model = store.MODELS["qwen3-asr-1.7b"]
+        self.assertEqual(model.repo, "mlx-community/Qwen3-ASR-1.7B-8bit")
+        self.assertEqual(model.revision, "a8379a2e2f9e313c9292cdf1af4055ab56d50d55")
+        self.assertIsNone(model.minimum_macos)
+        self.assertEqual(
+            {asset.name: asset.size for asset in model.assets},
+            {"config.json": 7188, "model.safetensors": 2463307541, "vocab.json": 2776833,
+             "merges.txt": 1671853, "tokenizer_config.json": 12487},
+        )
+        for asset in model.assets:
+            self.assertRegex(asset.sha256, "^[0-9a-f]{64}$")
+        weights = next(asset for asset in model.assets if asset.name == "model.safetensors")
+        self.assertEqual(weights.sha256, "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c")
+
+    def test_qwen_rejects_any_unverified_safetensors_file(self):
+        self.data = {"config.json": b'{"model_type":"qwen3_asr"}', "model.safetensors": b"fake weights",
+                     "vocab.json": b"{}", "merges.txt": b"#version", "tokenizer_config.json": b"{}"}
+        original = store.MODELS["qwen3-asr-1.7b"]
+        self.model = store.Model(original.id, original.name, original.repo, original.revision,
+                                 tuple(store.Asset(name, len(data), hashlib.sha256(data).hexdigest())
+                                       for name, data in self.data.items()))
+        self.stack.enter_context(patch.dict(store.MODELS, {self.model.id: self.model}))
+        self.assertTrue(self.status_row()["available"])
+        self.install()
+        destination = self.app / self.model.id
+        self.assertEqual(store.resolve_model(self.model.id), destination)
+        # mlx-qwen3-asr loads every *.safetensors file, so an extra one shadows the weights.
+        extra = destination / "model-00002-of-00002.safetensors"
+        extra.write_bytes(b"unverified")
+        self.assertEqual(self.status_row()["status"], "not-installed")
+        with self.assertRaisesRegex(store.ModelStoreError, "not installed"):
+            store.resolve_model(self.model.id)
+        extra.unlink()
+        self.assertEqual(store.resolve_model(self.model.id), destination)
 
     def test_nested_install_repair_and_remove(self):
         self.use_worker_model()

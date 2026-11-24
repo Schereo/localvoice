@@ -133,7 +133,7 @@ class Producer(unittest.TestCase):
             wheelhouse = root / "wheelhouse"
             wheelhouse.mkdir()
             lock = root / "requirements.lock"
-            versions = {name: "0.4.3" if name == "mlx-whisper" else "1.0"
+            versions = {name: runtime.app.PINNED_PACKAGES.get(name, "1.0")
                         for name in runtime.app.REQUIRED_PACKAGES}
             lock.write_text("".join(
                 f"{name}=={version} --hash=sha256:{runtime.app.sha256(wheel(wheelhouse, name, version))}\n"

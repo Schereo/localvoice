@@ -20,7 +20,7 @@ With `live-preview` on, the recording pill shows the transcript as it forms. The
 
 The guess costs extra decodes, so it is built to never compete with the real pipeline: about once a second, and only while the transcription queue is idle, a snapshot of the still-open segment (at most its last 15 s) is queued as a preview job for the same worker thread the real segments use — MLX streams are thread-local, so there is exactly one decoding thread. Each snapshot is stamped with the segment counter; once the audio manager finalizes that audio into a real segment, the stamp no longer matches and the stale guess is dropped instead of racing the confirmed line. The inserted result is byte-for-byte the same with the preview on or off.
 
-Whisper receives mono PCM directly from the queue for both preview and final jobs; it does not write temporary audio files.
+Whisper and Qwen3-ASR receive mono PCM directly from the queue for both preview and final jobs; they do not write temporary audio files.
 
 ## First Launch and Downloads
 

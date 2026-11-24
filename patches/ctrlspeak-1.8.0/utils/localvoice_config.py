@@ -155,7 +155,7 @@ def language():
 
 def model_language(model_id):
     """Read a managed model's preference; Parakeet does not accept a hint."""
-    if model_id in {"whisper-turbo-fp16", "whisper-turbo-q4", "nemotron-streaming"}:
+    if model_id in {"whisper-turbo-fp16", "whisper-turbo-q4", "nemotron-streaming", "qwen3-asr-1.7b"}:
         value = str(effective(f"language.{model_id}") or "").lower()
         if value in VALID_LANGUAGES:
             return value

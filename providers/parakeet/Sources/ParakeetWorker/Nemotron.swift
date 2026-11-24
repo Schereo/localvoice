@@ -60,7 +60,7 @@ actor NemotronSession {
             try requireStart()
             do {
                 _ = try await manager.process(samples: samples)
-                // `process` always returns an empty string in FluidAudio 0.17.7.
+                // `process` always returns an empty string in FluidAudio 0.18.4.
                 return await manager.getPartialTranscript()
             } catch {
                 active = false

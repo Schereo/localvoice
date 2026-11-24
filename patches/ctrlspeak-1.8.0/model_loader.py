@@ -48,6 +48,10 @@ def get_model(*, managed_model_path=None):
             state.stt_model = model_class(
                 state.model_type, managed_model_path, worker=parakeet_worker_path(state.model_type)
             )
+        elif state.model_type.startswith("qwen3-asr-"):
+            from models.qwen3_asr_mlx import Qwen3ASRMLXModel
+
+            state.stt_model = Qwen3ASRMLXModel(managed_model_path)
         else:
             # Never pass the stable ID (or a Hub repo ID) to Whisper.
             from models.whisper_mlx import WhisperMLXModel

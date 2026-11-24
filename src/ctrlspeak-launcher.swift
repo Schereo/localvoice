@@ -3746,7 +3746,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
 
     private static func allowedModel(_ id: String) -> Bool {
         [defaultModel, "whisper-turbo-q4", "parakeet-v3", "parakeet-ultra", "parakeet-redux",
-         "nemotron-streaming"].contains(id)
+         "nemotron-streaming", "qwen3-asr-1.7b"].contains(id)
     }
 
     func begin() {

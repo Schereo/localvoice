@@ -8,6 +8,7 @@ private struct ModelLibrarySmoke {
     private static let q4 = "whisper-turbo-q4"
     private static let parakeet = "parakeet-v3"
     private static let nemotron = "nemotron-streaming"
+    private static let qwen = "qwen3-asr-1.7b"
 
     static func main() {
         do {
@@ -114,10 +115,13 @@ private struct ModelLibrarySmoke {
         backend.perform(.use, modelID: nemotron)
         completeActivation?(true)
         try waitFor("Nemotron selected") { isActive(nemotron) }
+        backend.perform(.use, modelID: qwen)
+        completeActivation?(true)
+        try waitFor("Qwen selected") { isActive(qwen) }
         backend.perform(.use, modelID: fp16)
         completeActivation?(true)
         try waitFor("Whisper selected again") { isActive(fp16) }
-        try expect(activationRequests.suffix(3) == [parakeet, nemotron, fp16],
+        try expect(activationRequests.suffix(4) == [parakeet, nemotron, qwen, fp16],
                    "The picker must pass the stable IDs when switching providers")
         backend.setActiveModel(fp16)
         backend.perform(.remove, modelID: q4)
@@ -187,6 +191,7 @@ private struct ModelLibrarySmoke {
                          model("legacy", "Legacy", 463665005, location="hf-cache"),
                          model("parakeet-v3", "Parakeet v3", 500000000),
                          model("nemotron-streaming", "Nemotron Streaming", 650000000),
+                         model("qwen3-asr-1.7b", "Qwen3-ASR 1.7B", 2467775902),
                          dict(model("parakeet-redux", "Parakeet Redux", 220000000, present=False),
                               available=False, availability_reason="Requires macOS 15+")])
     elif command == "download":

@@ -30,7 +30,7 @@ If you prefer instant starts, enable **Microphone Standby** in Settings. The str
 ## Language modes
 
 **Automatic** is the default. In **Models…**, choose **Deutsch** or **English**
-for Whisper or Nemotron if you want to pin a language. The choice is remembered
+for Whisper, Nemotron or Qwen3-ASR if you want to pin a language. The choice is remembered
 per model and applies to the next dictation. Parakeet always detects automatically.
 
 ## Microphone

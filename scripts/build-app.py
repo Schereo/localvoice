@@ -45,11 +45,13 @@ ENTRYPOINTS = (
     f"{RUNTIME}/bin/ffmpeg",
 )
 REQUIRED_PACKAGES = {
-    "certifi", "huggingface-hub", "mlx", "mlx-whisper", "numpy", "pynput",
+    "certifi", "huggingface-hub", "mlx", "mlx-qwen3-asr", "mlx-whisper", "numpy", "pynput",
     "pyobjc-core", "pyobjc-framework-applicationservices", "pyobjc-framework-cocoa",
     "pyobjc-framework-coretext", "pyobjc-framework-quartz", "pyperclip", "rich",
     "sounddevice", "soundfile", "textual", "torch", "tqdm",
 }
+# The backends rely on these exact releases' loading and decoding behavior.
+PINNED_PACKAGES = {"mlx-whisper": "0.4.3", "mlx-qwen3-asr": "0.4.4"}
 MACH_MAGICS = set(bytes.fromhex(x) for x in (
     "feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca",
     "cafebabf", "bfbafeca",
@@ -205,7 +207,8 @@ def runtime_packages(runtime):
         packages[name] = version
     missing = REQUIRED_PACKAGES - packages.keys()
     require(not missing, f"Missing runtime distributions: {', '.join(sorted(missing))}")
-    require(packages["mlx-whisper"] == "0.4.3", "LocalVoice requires mlx-whisper==0.4.3.")
+    for name, version in PINNED_PACKAGES.items():
+        require(packages[name] == version, f"LocalVoice requires {name}=={version}.")
     return packages
 
 
