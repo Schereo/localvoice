@@ -46,8 +46,6 @@ jobs:
           python3 --version
 
       - name: Checks
-        env:
-          LOCALVOICE_CHECK_PYTHON: python3
         run: ./scripts/check.sh
 
       - name: Cache Core ML worker build
