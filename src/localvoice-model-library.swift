@@ -30,7 +30,7 @@ enum DictationLanguage: String, CaseIterable {
     }
 
     static func canSelect(for model: String) -> Bool {
-        ["whisper-turbo-fp16", "whisper-turbo-q4", "nemotron-streaming"].contains(model)
+        ["whisper-turbo-fp16", "whisper-turbo-q4", "nemotron-streaming", "qwen3-asr-1.7b"].contains(model)
     }
 }
 
@@ -57,6 +57,9 @@ private struct ModelLibraryDetails {
                                 languages: "Detected automatically")
         case "nemotron-streaming":
             ModelLibraryDetails(summary: "Transcribes while you speak.", languages: "German, English")
+        case "qwen3-asr-1.7b":
+            ModelLibraryDetails(summary: "Alibaba, 8-bit. The most accurate, on the GPU.",
+                                languages: "German, English")
         default:
             ModelLibraryDetails(summary: "", languages: "")
         }
@@ -1075,6 +1078,9 @@ private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
         ModelLibraryEntry(id: "nemotron-streaming", name: "Nemotron Streaming", size: "615 MB",
                           source: "FluidInference · Nemotron-3.5-ASR-Streaming-Multilingual", state: .notInstalled,
                           bytes: 615_000_000),
+        ModelLibraryEntry(id: "qwen3-asr-1.7b", name: "Qwen3-ASR 1.7B", size: "2.46 GB",
+                          source: "Hugging Face · mlx-community/Qwen3-ASR-1.7B-8bit", state: .notInstalled,
+                          bytes: 2_463_000_000),
     ]
     var onChange: (() -> Void)?
     private var timer: Timer?
@@ -1158,7 +1164,7 @@ private final class ModelLibraryPreview: NSObject, NSApplicationDelegate {
                               backing: .buffered, defer: false)
         window.title = "LocalVoice"
         window.contentViewController = controller
-        window.setContentSize(ModelLibraryViewController.preferredSize(modelCount: 6))
+        window.setContentSize(ModelLibraryViewController.preferredSize(modelCount: 7))
         window.center()
         self.window = window
         // MODEL_LIBRARY_READY=1 switches models once, as a user would, to show the ready banner.

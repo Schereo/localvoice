@@ -261,7 +261,8 @@ def produce(args, work):
     pins = parse_lock(lock.decode())
     missing = app.REQUIRED_PACKAGES - pins.keys()
     require(not missing, f"Missing required lock entries: {', '.join(sorted(missing))}")
-    require(pins["mlx-whisper"][0] == "0.4.3", "LocalVoice requires mlx-whisper==0.4.3.")
+    for name, version in app.PINNED_PACKAGES.items():
+        require(pins[name][0] == version, f"LocalVoice requires {name}=={version}.")
     wheels = work / "wheels"
     chosen = prepare_wheels(args.wheelhouse, pins, wheels)
     local_lock = work / "requirements.lock"

@@ -6,7 +6,7 @@
   **Free, fully local dictation for Apple Silicon Macs.**
 
   Tap a key, speak, and the text lands wherever your cursor is —
-  transcribed by Whisper, NVIDIA Parakeet or Nemotron, running entirely on your Mac.
+  transcribed by Whisper, NVIDIA Parakeet, Nemotron or Qwen3-ASR, running entirely on your Mac.
 
   ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M5-black)
   ![License](https://img.shields.io/badge/license-MIT-green)
@@ -17,7 +17,7 @@
 
 ## Why
 
-LocalVoice runs **Whisper Large V3 Turbo**, **Parakeet** and **Nemotron Streaming** on your Mac for free. Dictation audio and text are processed locally. The private app's Model Library contacts Hugging Face only when you request a model download. Built on [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), with a native recording pill, automatic speech recognition, and a configurable hotkey.
+LocalVoice runs **Whisper Large V3 Turbo**, **Parakeet**, **Nemotron Streaming** and **Qwen3-ASR** on your Mac for free. Dictation audio and text are processed locally. The private app's Model Library contacts Hugging Face only when you request a model download. Built on [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), with a native recording pill, automatic speech recognition, and a configurable hotkey.
 
 ## Install
 
@@ -50,4 +50,4 @@ For the private app, disable **Launch at Login**, quit LocalVoice, and move the 
 
 ## Credits & license
 
-Built on [ctrlSPEAK](https://github.com/patelnav/ctrlspeak) by Nav Patel (MIT), [MLX Whisper](https://github.com/ml-explore/mlx-examples) by Apple, and [Whisper Large V3 Turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo). MIT — see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+Built on [ctrlSPEAK](https://github.com/patelnav/ctrlspeak) by Nav Patel (MIT), [MLX Whisper](https://github.com/ml-explore/mlx-examples) by Apple, [Whisper Large V3 Turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo), [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr) and [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) by Alibaba's Qwen team. MIT — see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).

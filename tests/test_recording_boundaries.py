@@ -154,7 +154,8 @@ class RecordingBoundaryTests(unittest.TestCase):
         config = self.temp / "config"
         config.write_text(
             "language = en\nlanguage.whisper-turbo-q4 = de\n"
-            "language.nemotron-streaming = en\nlanguage.parakeet-v3 = de\n"
+            "language.nemotron-streaming = en\nlanguage.qwen3-asr-1.7b = de\n"
+            "language.parakeet-v3 = de\n"
             "language.whisper-turbo-fp16 = unknown\n"
         )
         model = Mock(supports_streaming=False)
@@ -164,6 +165,7 @@ class RecordingBoundaryTests(unittest.TestCase):
             os.environ, {"LOCALVOICE_MODEL_ID": "whisper-turbo-q4"}
         ):
             self.assertEqual(self.config.model_language("nemotron-streaming"), "en")
+            self.assertEqual(self.config.model_language("qwen3-asr-1.7b"), "de")
             self.assertEqual(self.config.model_language("parakeet-v3"), "auto")
             self.assertEqual(self.config.model_language("whisper-turbo-fp16"), "auto")
             self.hotkeys._start_recording()
@@ -498,3 +500,41 @@ class RecordingBoundaryTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 model._transcribe_batch(["synthetic.wav"], "en", "en")
             whisper.transcribe.assert_called_once()
+
+    def test_managed_qwen_loads_local_only_maps_language_and_passes_vocabulary(self):
+        from models.qwen3_asr_mlx import Qwen3ASRMLXModel
+
+        local_model = self.temp / "verified-qwen"
+        model = Qwen3ASRMLXModel(local_model)
+        session = Mock()
+        session.transcribe.return_value = SimpleNamespace(text=" Hallo Qwen. ")
+        session_class = Mock(return_value=session)
+        mx = stub("mlx.core", clear_cache=Mock())
+        samples = Samples([0.2] * 1_600)
+        with (
+            patch.dict(sys.modules, {
+                "mlx": stub("mlx", __path__=[], core=mx),
+                "mlx.core": mx,
+                "mlx_qwen3_asr": stub("mlx_qwen3_asr", Session=session_class),
+            }),
+            patch.object(self.config, "vocabulary", return_value=["Qwen", "LocalVoice"]),
+        ):
+            # Without a verified directory the Hub fallback must never be reached.
+            with self.assertRaises(FileNotFoundError):
+                model.transcribe_pcm(samples, "de", "de")
+            session_class.assert_not_called()
+            local_model.mkdir()
+            (local_model / "config.json").write_text("{}")
+            self.assertEqual(model.transcribe_pcm(samples, "de", "de"), "Hallo Qwen.")
+            session_class.assert_called_once_with(str(local_model))
+            self.assertEqual(session.transcribe.call_args.kwargs,
+                             {"language": "German", "context": "Qwen, LocalVoice"})
+            model.transcribe_pcm(samples, "auto", "auto")
+            self.assertIsNone(session.transcribe.call_args.kwargs["language"])
+            self.assertEqual(mx.clear_cache.call_count, 2)
+            # A read-back of the context on silence is not dictation.
+            session.transcribe.return_value = SimpleNamespace(text="Qwen, LocalVoice")
+            self.assertEqual(model.transcribe_pcm(samples, "en", "en"), "")
+            with self.assertRaises(ValueError):
+                model.transcribe_pcm(samples, "fr", "fr")
+            session_class.assert_called_once()

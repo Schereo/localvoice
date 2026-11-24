@@ -1,6 +1,6 @@
 # Parakeet Worker
 
-Optional Apple Silicon executable for offline Parakeet and Nemotron inference with FluidAudio 0.17.7. Requires Swift 6.2 or later to build. Run v3, Ultra, and Nemotron on macOS 14 or later; Redux requires macOS 15 or later.
+Optional Apple Silicon executable for offline Parakeet and Nemotron inference with FluidAudio 0.18.4. Requires Swift 6.2 or later to build. Run v3, Ultra, and Nemotron on macOS 14 or later; Redux requires macOS 15 or later.
 
 ## Build
 

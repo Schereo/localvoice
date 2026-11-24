@@ -35,7 +35,7 @@ mic-standby = off
 |---|---|---|---|
 | `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture |
 | `language` | `de` · `en` · `auto` | `de` | Legacy installs only: transcription language |
-| `language.<model-id>` | `auto` · `de` · `en` | `auto` | Dictation language for Whisper or Nemotron |
+| `language.<model-id>` | `auto` · `de` · `en` | `auto` | Dictation language for Whisper, Nemotron or Qwen3-ASR |
 | `compact` | `on` · `off` | `off` | Legacy installs only: hide the language badge |
 | `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
 | `microphone` | `built-in` · `system` · name | `built-in` | Which microphone records |
@@ -59,8 +59,8 @@ Siri.
 ### `language`
 
 LocalVoice.app defaults to **Automatic**. Whisper chooses between German and
-English; Nemotron and Parakeet use their own automatic modes. Choices for
-Whisper and Nemotron are stored per model (for example,
+English; Nemotron, Qwen3-ASR and Parakeet use their own automatic modes.
+Choices for Whisper, Nemotron and Qwen3-ASR are stored per model (for example,
 `language.whisper-turbo-q4 = de`) and apply to the next dictation. Parakeet
 does not accept a language hint. The old global `language` key is used only
 by legacy installs and remains untouched.
@@ -136,6 +136,9 @@ when it hears them. It is a strong bias, not a hard guarantee. Edits apply
 from the very next recording. Whisper reads at most the last ~224 tokens of
 the prompt, so keep the list to the terms that actually come up — a few
 dozen at most; beyond that the oldest entries silently fall off.
+
+Qwen3-ASR receives the same list as its *context*, the prompt it was trained
+to take domain terms from. Parakeet and Nemotron ignore the list.
 
 ### `live-preview`
 

@@ -27,7 +27,7 @@ SPEC.loader.exec_module(staging)
 
 
 DEPENDENCIES = [
-    "mlx-whisper==0.4.3", "sounddevice", "soundfile", "pynput",
+    *(f"{name}=={version}" for name, version in staging.PINNED_PACKAGES.items()), "sounddevice", "soundfile", "pynput",
     "pyperclip", "rich", "textual", "pyobjc-framework-Cocoa", "pyobjc-framework-Quartz",
     "pyobjc-framework-ApplicationServices", "pyobjc-framework-CoreText",
 ]

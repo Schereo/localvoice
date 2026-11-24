@@ -117,7 +117,7 @@ class NativeTests(unittest.TestCase):
             for name in ("CPython", "FFmpeg"):
                 write(runtime / "licenses" / name / "LICENSE")
             for package in build.REQUIRED_PACKAGES:
-                version = "0.4.3" if package == "mlx-whisper" else "1.0"
+                version = build.PINNED_PACKAGES.get(package, "1.0")
                 info = runtime / "lib/python3.11/site-packages" / f"{package}-{version}.dist-info"
                 write(info / "METADATA", f"Name: {package}\nVersion: {version}\n")
                 write(info / "LICENSE")

@@ -101,8 +101,8 @@ _PARAKEET_COMMON = _compiled_assets("Preprocessor", (
 )
 
 
-# The Whisper revisions, sizes, and LFS hashes are from the Hugging Face model
-# API. The config SHA256s were computed from the small pinned raw files.
+# The Whisper and Qwen revisions, sizes, and LFS hashes are from the Hugging
+# Face model API. The small-file SHA256s were computed from the pinned raw files.
 # This Q4 repo has weights.npz, which mlx-whisper 0.4.3 can load; it does not
 # recognize the similarly named -4bit repo's model.safetensors.
 MODELS = {
@@ -129,7 +129,7 @@ MODELS = {
                       "862bbc832b05f3f4ec19dd632b701d61a6d3f5c7906360a10d72a79870642a80"),
             ),
         ),
-        # FluidAudio v0.17.7 AsrModels.loadLocal, with the default .int8
+        # FluidAudio v0.18.4 AsrModels.loadLocal, with the default .int8
         # encoder for v3. No alternative encoders, CTC head or .mlpackages.
         Model(
             "parakeet-v3", "Parakeet V3",
@@ -200,7 +200,7 @@ MODELS = {
             )) + _PARAKEET_COMMON,
             minimum_macos=15,
         ),
-        # FluidAudio v0.17.7's local multilingual manager computes log-mel in
+        # FluidAudio v0.18.4's local multilingual manager computes log-mel in
         # Swift and can decode with the fused B1 bundle alone. Both compiled
         # graphs target ios17, with explicit cache tensors (no macOS 15 MLState).
         Model(
@@ -225,6 +225,26 @@ MODELS = {
             ),
             minimum_macos=14,
             allow_matching_hf_revisions=False,
+        ),
+        # mlx-qwen3-asr 0.4.4 loads every *.safetensors in the directory and
+        # reads config.json plus the Qwen2 BPE files; it ignores the rest of
+        # the repo (index, chat template, preprocessor and generation config).
+        Model(
+            "qwen3-asr-1.7b", "Qwen3-ASR 1.7B (8-bit)",
+            "mlx-community/Qwen3-ASR-1.7B-8bit",
+            "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
+            (
+                Asset("config.json", 7188,
+                      "1b76b3b6c655fc54595da025f7a96474ad9fa86363303fbdd61a7d8483ccfaf7"),
+                Asset("model.safetensors", 2463307541,
+                      "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c"),
+                Asset("vocab.json", 2776833,
+                      "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"),
+                Asset("merges.txt", 1671853,
+                      "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"),
+                Asset("tokenizer_config.json", 12487,
+                      "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"),
+            ),
         ),
     )
 }
@@ -340,6 +360,9 @@ def _verified(directory, model, blobs=None):
             shadowing = {"CtcHead.mlmodelc"}
         elif model.minimum_macos is None:
             shadowing = {"model.safetensors", "weights.safetensors", "weights.npz"}
+        if model.id.startswith("qwen3-asr-"):
+            # mlx-qwen3-asr merges every *.safetensors file in the directory.
+            shadowing |= {path.name for path in directory.glob("*.safetensors")}
         for name in shadowing - tree.keys():
             unverified = directory / name
             if unverified.exists() or unverified.is_symlink():

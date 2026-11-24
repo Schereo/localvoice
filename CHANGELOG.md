@@ -18,6 +18,15 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   pre-release (`v<VERSION>-dev.<run>`), with install notes for removing the
   quarantine flag. `build-dev-app.py --portable` embeds a pinned standalone
   Python so the app no longer depends on `build/dev/venv`.
+- Qwen3-ASR 1.7B (8-bit MLX, 2.47 GB) in the Model Library: the most accurate
+  open model LocalVoice offers, running on the GPU through mlx-qwen3-asr. It
+  takes the vocabulary list as its context prompt, can be pinned to Deutsch or
+  English like Whisper, and works with the live transcript preview. Release
+  runtimes must lock `mlx-qwen3-asr==0.4.4`.
+- The Core ML worker builds against FluidAudio 0.18.4 (was 0.17.7). Parakeet
+  and Nemotron keep their pinned model files; checked offline with German and
+  English speech, with unchanged load and decode times.
+
 - Settings window redesigned in the style of System Settings: a header with
   the app icon and the current dictation state, grouped cards with a coloured
   symbol per row, and keycaps that show the chosen hotkey gesture. New rows
