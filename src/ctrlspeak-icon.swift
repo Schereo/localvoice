@@ -1,8 +1,7 @@
 import AppKit
 
-// Renders the ctrlSPEAK app icon as a PNG iconset, which install.sh feeds to
-// iconutil. Generated from source rather than checked in as a binary asset,
-// matching how the recording pill is built.
+// Renders the LocalVoice app icon for the legacy .icns build path.
+// The matching unmasked artwork for Icon Composer lives in design/.
 
 let outputDirectory = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "."
 
@@ -23,64 +22,24 @@ func drawIcon(edge: CGFloat) -> NSBitmapImageRep {
     let inset: CGFloat = 100 * scale
     let plate = NSRect(x: inset, y: inset, width: edge - inset * 2, height: edge - inset * 2)
 
-    let background = NSGradient(
-        starting: NSColor(calibratedRed: 0.16, green: 0.20, blue: 0.30, alpha: 1),
-        ending: NSColor(calibratedRed: 0.05, green: 0.06, blue: 0.10, alpha: 1)
-    )!
+    NSColor(srgbRed: 200.0 / 255, green: 204.0 / 255, blue: 189.0 / 255, alpha: 1).setFill()
     let platePath = NSBezierPath(
         roundedRect: plate,
-        xRadius: plate.width * 0.235,
-        yRadius: plate.width * 0.235
+        xRadius: plate.width * 0.22,
+        yRadius: plate.width * 0.22
     )
-    background.draw(in: platePath, angle: -90)
+    platePath.fill()
 
-    NSColor.white.withAlphaComponent(0.10).setStroke()
-    platePath.lineWidth = 3 * scale
-    platePath.stroke()
-
-    let accent = NSColor(calibratedRed: 0.46, green: 0.70, blue: 1, alpha: 1)
-    let centerX = edge / 2
-
-    // Microphone capsule.
-    let capsuleWidth = 210 * scale
-    let capsuleHeight = 350 * scale
-    let capsule = NSRect(
-        x: centerX - capsuleWidth / 2,
-        y: edge * 0.44,
-        width: capsuleWidth,
-        height: capsuleHeight
-    )
-    accent.setFill()
-    NSBezierPath(
-        roundedRect: capsule,
-        xRadius: capsuleWidth / 2,
-        yRadius: capsuleWidth / 2
-    ).fill()
-
-    // Cradle arc under the capsule.
-    let cradleRadius = 165 * scale
-    let cradleCenter = NSPoint(x: centerX, y: capsule.minY + 40 * scale)
-    let cradle = NSBezierPath()
-    cradle.appendArc(
-        withCenter: cradleCenter,
-        radius: cradleRadius,
-        startAngle: 200,
-        endAngle: 340,
-        clockwise: false
-    )
-    cradle.lineWidth = 46 * scale
-    cradle.lineCapStyle = .round
-    accent.withAlphaComponent(0.85).setStroke()
-    cradle.stroke()
-
-    // Stem.
-    let stem = NSBezierPath()
-    stem.move(to: NSPoint(x: centerX, y: cradleCenter.y - cradleRadius))
-    stem.line(to: NSPoint(x: centerX, y: edge * 0.235))
-    stem.lineWidth = 46 * scale
-    stem.lineCapStyle = .round
-    accent.withAlphaComponent(0.85).setStroke()
-    stem.stroke()
+    let unit = plate.width * (1.18 * 0.9 / 32)
+    let barWidth = 4 * unit
+    NSColor(srgbRed: 34.0 / 255, green: 39.0 / 255, blue: 33.0 / 255, alpha: 1).setFill()
+    for (index, height) in ([6, 18, 10] as [CGFloat]).enumerated() {
+        let barHeight = height * unit
+        let centerX = plate.midX + CGFloat(index - 1) * 6 * unit
+        let bar = NSRect(x: centerX - barWidth / 2, y: plate.midY - barHeight / 2,
+                         width: barWidth, height: barHeight)
+        NSBezierPath(roundedRect: bar, xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
+    }
 
     NSGraphicsContext.restoreGraphicsState()
     return rep

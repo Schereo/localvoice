@@ -2379,6 +2379,25 @@ private final class ReadyIllustrationView: NSView {
     }
 }
 
+@MainActor
+private func localVoiceTemplateIcon() -> NSImage {
+    let size = NSSize(width: 18, height: 18)
+    let image = NSImage(size: size, flipped: false) { rect in
+        let unit = min(rect.width, rect.height) / 22
+        let width = 4 * unit
+        NSColor.black.setFill()
+        for (index, height) in ([6, 18, 10] as [CGFloat]).enumerated() {
+            let centerX = rect.midX + CGFloat(index - 1) * 6 * unit
+            let bar = NSRect(x: centerX - width / 2, y: rect.midY - height * unit / 2,
+                             width: width, height: height * unit)
+            NSBezierPath(roundedRect: bar, xRadius: width / 2, yRadius: width / 2).fill()
+        }
+        return true
+    }
+    image.isTemplate = true
+    return image
+}
+
 /// Shown once, when the first model is ready after setup: shows the gesture, says how to
 /// insert or discard, and where Settings live.
 @MainActor
@@ -2420,7 +2439,7 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
         let steps = NSStackView(views: [
             Self.step("keyboard", "Tap **\(hotkey)** in any app to start."),
             Self.step("return", "Tap again or press **Return** to insert the text. **Esc** discards."),
-            Self.step(menuBar ? "waveform.and.mic" : "gearshape",
+            Self.step(menuBar ? localVoiceTemplateIcon() : Self.stepSymbol("gearshape"),
                       menuBar ? "Models and **Settings** are under this icon in the menu bar."
                               : "Open LocalVoice again to change models or **Settings**."),
         ])
@@ -2473,8 +2492,16 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
     required init?(coder: NSCoder) { nil }
 
     private static func step(_ symbol: String, _ markdown: String) -> NSView {
-        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-            ?? NSImage(systemSymbolName: "circle", accessibilityDescription: nil) ?? NSImage())
+        step(stepSymbol(symbol), markdown)
+    }
+
+    private static func stepSymbol(_ symbol: String) -> NSImage {
+        NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "circle", accessibilityDescription: nil) ?? NSImage()
+    }
+
+    private static func step(_ image: NSImage, _ markdown: String) -> NSView {
+        let icon = NSImageView(image: image)
         icon.symbolConfiguration = .init(pointSize: 15, weight: .regular)
         icon.contentTintColor = .controlAccentColor
         icon.setAccessibilityElement(false)
@@ -3400,12 +3427,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if visible && statusItem == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             if let button = item.button {
-                let icon = NSImage(
-                    systemSymbolName: "waveform.and.mic", accessibilityDescription: "LocalVoice"
-                ) ?? NSImage(systemSymbolName: "mic", accessibilityDescription: "LocalVoice")
-                icon?.isTemplate = true
-                button.image = icon
+                button.image = localVoiceTemplateIcon()
                 button.toolTip = "LocalVoice"
+                button.setAccessibilityLabel("LocalVoice")
             }
             let menu = NSMenu()
             menu.delegate = self
