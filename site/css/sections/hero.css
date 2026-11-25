@@ -44,6 +44,8 @@
   border-top: 1px solid var(--edge);
 }
 .demo-toolbar:not(:has(.demo-control:not([hidden]))) { display: none; }
+/* With JavaScript the control will appear, so its row is there from the first paint and nothing shifts. */
+:root[data-js] .demo-toolbar { display: flex; min-height: 45px; }
 
 .demo-control:not([hidden]) { display: inline-flex; align-items: center; gap: 6px; }
 .demo-control {
@@ -127,6 +129,12 @@
 .stage[data-state="done"] .pill-ok {
   transform: translate(-50%, 0) scale(1);
   opacity: 1;
+}
+
+/* Before the demo starts, keep the pill slot empty instead of flashing the static pill. */
+:root[data-motion="on"] .stage:not([data-playing]):not([data-state="done"]) .slot > * {
+  transform: translate(-50%, 12px) scale(.98);
+  opacity: 0;
 }
 
 :root[data-hero-motion="still"] .stage *,
