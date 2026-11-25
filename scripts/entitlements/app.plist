@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements for Contents/MacOS/LocalVoice under the hardened runtime (see scripts/sign-app.py). -->
+<plist version="1.0">
+<dict>
+	<!-- The launcher requests microphone access (AVCaptureDevice). -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Media pause runs osascript; macOS attributes its Apple Events to the app. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

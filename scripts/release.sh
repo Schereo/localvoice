@@ -27,13 +27,12 @@ section for the new version, commits both, and creates an annotated tag.
 
   ./scripts/release.sh 1.2.0
 
-Push it afterwards with:
+Push the commit and the tag afterwards:
 
-  git push && git push --tags
+  git push && git push origin v1.2.0
 
-Then publish the release notes:
-
-  gh release create v1.2.0 --notes "$(./scripts/release.sh --notes 1.2.0)"
+The tag starts the Build workflow, which builds, signs and notarizes the app and
+publishes the GitHub release with the changelog section as its notes.
 
 Options:
   --notes <version>   Print the changelog section for a version and exit.
@@ -129,5 +128,6 @@ git tag -a "v$NEW_VERSION" -m "LocalVoice $NEW_VERSION"
 
 echo "Released $NEW_VERSION."
 echo
-echo "  git push && git push --tags"
-echo "  gh release create v$NEW_VERSION --notes \"\$(./scripts/release.sh --notes $NEW_VERSION)\""
+echo "  git push && git push origin v$NEW_VERSION"
+echo
+echo "The tag starts the Build workflow, which signs, notarizes and publishes the release."
