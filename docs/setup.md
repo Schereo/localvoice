@@ -36,23 +36,35 @@ The build downloads development dependencies and pinned upstream source, not mod
 
 Add `--portable` to embed a pinned standalone CPython (python-build-standalone) in the app instead of referencing `build/dev/venv`. The bundle can then be moved, zipped and run on another Apple Silicon Mac. `--version` and `--build-number` set the bundle version. Python dependencies other than `mlx-whisper` are not pinned, so two portable builds can differ.
 
-## Dev Releases
+## Releases and Dev Releases
 
-Every push to `main` (every merged PR) runs [`.github/workflows/dev-build.yml`](../.github/workflows/dev-build.yml) on a GitHub-hosted Apple Silicon runner: `scripts/check.sh`, then a `--portable` build, published as a pre-release tagged `v<VERSION>-dev.<run>`. The last ten dev releases are kept. Changes that only touch `site/`, `docs/` or Markdown files don't trigger a build. It can also be started manually from the Actions tab.
+Every push to `main` (every merged PR) runs [`.github/workflows/build.yml`](../.github/workflows/build.yml) on a GitHub-hosted Apple Silicon runner: `scripts/check.sh`, then a `--portable` build that is signed with the Developer ID ([`scripts/sign-app.py`](../scripts/sign-app.py)) and packed into a signed disk image, which Apple notarizes ([`scripts/notarize-app.sh`](../scripts/notarize-app.sh)); it is published as a pre-release tagged `v<VERSION>-dev.<run>`. The last ten dev releases are kept. Changes that only touch `site/`, `docs/` or Markdown files don't trigger a build. It can also be started manually from the Actions tab.
 
 To install a dev release:
 
-1. Download `LocalVoice-v…-dev.N-arm64.zip` from [Releases](https://github.com/Schereo/localvoice/releases) and unzip it.
-2. Move `LocalVoice.app` wherever you like, for example `/Applications`.
-3. Dev releases are ad-hoc signed and not notarized, so Gatekeeper blocks them. Remove the quarantine flag once:
+1. Download `LocalVoice-v…-dev.N-arm64.dmg` from [Releases](https://github.com/Schereo/localvoice/releases) and open it.
+2. Drag `LocalVoice.app` onto the **Applications** link (or anywhere else you like).
+3. Open the app and follow **Permissions…**. Signed builds keep their permissions across updates; rows from an older unsigned dev build show **Old entry**, use **Re-add…** once.
 
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/LocalVoice.app
-   ```
+Dev releases up to `v1.2.0-dev.5` were ad-hoc signed and need `xattr -dr com.apple.quarantine /Applications/LocalVoice.app` before the first launch.
 
-4. Open the app and follow **Permissions…**. Each dev build is a new identity, so rows from earlier builds show **Old entry**; use **Re-add…**.
+### Signing secrets
 
-Dev releases use the bundle identifier `com.localvoice.dev`, the same as local test builds.
+The signing job runs in the `release` environment (Settings → Environments), which only `main` and release tags (`vX.Y.Z`, not the `-dev.N` tags) may use. Two repository rulesets guard those refs: changes reach `main` only through a pull request with one approval, and only admins can create, move or delete release tags. Admins can bypass both, so `scripts/release.sh` can still push the release commit and tag. The environment needs these secrets:
+
+| Secret | Content |
+| --- | --- |
+| `MACOS_CERT_P12` | Developer ID Application certificate with its private key, as base64-encoded `.p12` |
+| `MACOS_CERT_PASSWORD` | Password of that `.p12` |
+| `APPLE_API_KEY_P8` | App Store Connect API key (Team key, role Developer), the `.p8` file's content |
+| `APPLE_API_KEY_ID` | That key's ID |
+| `APPLE_API_ISSUER_ID` | The issuer ID shown above the key list in App Store Connect |
+
+The `build` job runs the checks and the build without any secrets and hands the unsigned app on as an artifact. Only the `sign` job, on a fresh runner that runs no build code, uses the environment: it imports the certificate into a throwaway keychain, signs every Mach-O file of the bundle with the hardened runtime, wraps the app in a disk image with an **Applications** link and signs that too, notarizes the image once (the ticket covers the app inside) and staples it, and removes the certificate before publishing. A tag build stops unless the tagged commit is on `main`. Entitlements are in [`scripts/entitlements/`](../scripts/entitlements/). Both scripts also run locally with a Developer ID in the login keychain.
+
+Dev releases use the bundle identifier `com.localvoice.dev` and the name **LocalVoice Test**, the same as local test builds, so they install next to a release.
+
+A release is cut with `./scripts/release.sh <version>` (it moves the Unreleased changelog section under the version and tags `v<version>`). Pushing the tag runs the same workflow, which builds **LocalVoice** with the bundle identifier `com.localvoice.app`, signs and notarizes it, and publishes the GitHub release `v<version>` with `LocalVoice-v<version>-arm64.dmg` and the changelog section as notes. The tag must match `VERSION`.
 
 ## Legacy Homebrew Installer
 

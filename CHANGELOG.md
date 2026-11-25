@@ -14,10 +14,17 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 ### Added
 
 - Dev releases: every merge to `main` runs the checks on a GitHub-hosted
-  Apple Silicon runner and publishes a portable, ad-hoc-signed test app as a
-  pre-release (`v<VERSION>-dev.<run>`), with install notes for removing the
-  quarantine flag. `build-dev-app.py --portable` embeds a pinned standalone
-  Python so the app no longer depends on `build/dev/venv`.
+  Apple Silicon runner and publishes a portable test app as a pre-release
+  (`v<VERSION>-dev.<run>`). `build-dev-app.py --portable` embeds a pinned
+  standalone Python so the app no longer depends on `build/dev/venv`.
+- Signed, notarized app releases: pushing a `v<VERSION>` tag builds
+  **LocalVoice** (`com.localvoice.app`) and publishes it as the GitHub release.
+  Dev and release builds are signed with the Developer ID
+  (`scripts/sign-app.py`, every Mach-O file with the hardened runtime) and
+  notarized (`scripts/notarize-app.sh`), so Gatekeeper opens them without a
+  quarantine workaround and macOS permissions survive updates. Releases ship
+  as a signed, notarized disk image (`LocalVoice-v<VERSION>-arm64.dmg`):
+  open it and drag the app onto Applications.
 - Qwen3-ASR 1.7B (8-bit MLX, 2.47 GB) in the Model Library: the most accurate
   open model LocalVoice offers, running on the GPU through mlx-qwen3-asr. It
   takes the vocabulary list as its context prompt, can be pinned to Deutsch or
