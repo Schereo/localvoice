@@ -9,7 +9,8 @@
 # Two jobs: `build` runs the checks and all third-party build code without any
 # secrets; `sign` gets the unsigned app as an artifact on a fresh runner and only
 # signs, notarizes and publishes it. The signing secrets live in the `release`
-# environment, which only main and v* tags may use, so pull requests never see them.
+# environment, which only main and release tags (vX.Y.Z) may use, so pull requests
+# never see them.
 # Free for public repos: GitHub-hosted macOS runners cost nothing here.
 name: Build
 

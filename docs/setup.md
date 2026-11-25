@@ -50,7 +50,7 @@ Dev releases up to `v1.2.0-dev.5` were ad-hoc signed and need `xattr -dr com.app
 
 ### Signing secrets
 
-The signing job runs in the `release` environment (Settings → Environments), which only `main` and `v*` tags may use. It needs these environment secrets:
+The signing job runs in the `release` environment (Settings → Environments), which only `main` and release tags (`vX.Y.Z`, not the `-dev.N` tags) may use. Two repository rulesets guard those refs: changes reach `main` only through a pull request with one approval, and only admins can create, move or delete release tags. Admins can bypass both, so `scripts/release.sh` can still push the release commit and tag. The environment needs these secrets:
 
 | Secret | Content |
 | --- | --- |
