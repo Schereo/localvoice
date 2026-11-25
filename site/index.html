@@ -35,7 +35,7 @@
         <div class="hero-copy">
           <h1 id="hero-title">Speak. It lands <span>at your cursor.</span></h1>
           <p class="hero-intro">LocalVoice is free, open-source dictation for Mac. Your audio and text stay on your device.</p>
-          <a class="primary-link hero-link" href="#get-localvoice">Get LocalVoice <span aria-hidden="true">&#8595;</span></a>
+          <a class="primary-link hero-link" href="#get-localvoice">Get LocalVoice <span class="primary-link-arrow" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" focusable="false"><path d="M8 3v10m-4-4 4 4 4-4"/><path d="M8 3v10m-4-4 4 4 4-4" transform="translate(0 -56)"/></svg></span></a>
         </div>
 
         <div class="hero-demo">
@@ -55,6 +55,7 @@
           <div class="demo-toolbar">
             <button class="demo-control" type="button" aria-controls="dictation-demo" hidden>
               <svg class="demo-icon demo-icon-play" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 3 7 5-7 5V3Z" stroke="currentColor" stroke-linejoin="round"/></svg>
+              <svg class="demo-icon demo-icon-pause" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5.5 3.5v9m5-9v9" stroke="currentColor" stroke-linecap="round"/></svg>
               <svg class="demo-icon demo-icon-skip" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 3 7 5-7 5V3Zm10 1v8" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <svg class="demo-icon demo-icon-replay" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 6a5 5 0 1 1 0 4m0-4V2m0 4h4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <span class="demo-control-label">Play demo</span>
@@ -68,9 +69,10 @@
       <div class="wrap proof-grid">
         <article class="proof-card">
           <div class="proof-visual" aria-hidden="true">
-            <svg class="local-illustration" viewBox="0 0 176 86" fill="none" focusable="false">
-              <path d="M28 68V16a6 6 0 0 1 6-6h108a6 6 0 0 1 6 6v52M14 68h148v3a5 5 0 0 1-5 5H19a5 5 0 0 1-5-5v-3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-              <path d="M47 40h15l5-8 6 16 7-24 8 29 8-20 7 12 6-5h20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            <svg class="proof-icon" viewBox="0 0 88 48" width="88" height="48" fill="none" focusable="false">
+              <path d="M12 41V6a4 4 0 0 1 4-4h56a4 4 0 0 1 4 4v35"/>
+              <path d="M3 41h34c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2h34v1.5a3.5 3.5 0 0 1-3.5 3.5h-75A3.5 3.5 0 0 1 3 42.5V41Z"/>
+              <path d="M28 18v7M32 15.5v12M36 13.5v16M40 12v19M44 16v11M48 13.5v16M52 17.5v8M56 15v13M60 18.5v6"/>
             </svg>
           </div>
           <div class="proof-copy">
@@ -82,8 +84,10 @@
         <article class="proof-card">
           <div class="proof-visual" aria-hidden="true">
             <div class="model-transfer">
-              <svg viewBox="0 0 38 44" width="38" height="44" fill="none" focusable="false">
-                <path d="M8 2h14l9 9v28a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3Zm14 0v9h9M18 19v13m-5-5 5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <svg class="proof-icon" viewBox="0 0 40 48" width="40" height="48" fill="none" focusable="false">
+                <path d="M26 3H8a4 4 0 0 0-4 4v34a4 4 0 0 0 4 4h24a4 4 0 0 0 4-4V13L26 3Z"/>
+                <path d="M26 3v6a4 4 0 0 0 4 4h6"/>
+                <path d="M20 17v12m-5.5-5.5L20 29l5.5-5.5M14 35h12"/>
               </svg>
               <div class="model-transfer-progress">
                 <div class="model-transfer-status">
@@ -128,14 +132,15 @@
     <section class="get-localvoice" id="get-localvoice" aria-labelledby="get-title">
       <div class="wrap">
         <div class="get-panel">
+          <img class="get-icon" src="assets/icon.png" width="512" height="512" alt="">
           <div>
             <h2 id="get-title">Get LocalVoice.</h2>
             <p>Apple Silicon · macOS 15 or later</p>
-            <p>This development build is for testing only. It isn’t signed or notarized. Follow the <a href="https://github.com/Schereo/localvoice/releases/tag/v1.2.0-dev.2#install">installation instructions</a> before opening it.</p>
+            <p>Open the disk image and drag LocalVoice to your Applications folder. The app walks you through the permissions and the speech model download.</p>
           </div>
           <div class="get-download">
-            <a class="primary-link" href="https://github.com/Schereo/localvoice/releases/download/v1.2.0-dev.2/LocalVoice-v1.2.0-dev.2-arm64.zip" aria-describedby="build-details">Download dev build <span aria-hidden="true">&#8595;</span></a>
-            <p id="build-details">v1.2.0-dev.2 · ZIP · 427 MB</p>
+            <a class="primary-link" href="https://github.com/Schereo/localvoice/releases/download/v1.2.0/LocalVoice-v1.2.0-arm64.dmg" aria-describedby="build-details">Download for Mac <span class="primary-link-arrow" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" focusable="false"><path d="M8 3v10m-4-4 4 4 4-4"/><path d="M8 3v10m-4-4 4 4 4-4" transform="translate(0 -56)"/></svg></span></a>
+            <p id="build-details">Version 1.2.0 · Signed and notarized by Apple</p>
           </div>
         </div>
       </div>
@@ -150,6 +155,8 @@
         <a href="https://github.com/Schereo/localvoice/blob/main/docs/setup.md">Docs</a>
         <a href="https://github.com/Schereo/localvoice/blob/main/LICENSE">MIT License</a>
         <a href="https://github.com/Schereo/localvoice/blob/main/NOTICE.md">Credits</a>
+        <a href="impressum/" lang="de">Impressum</a>
+        <a href="datenschutz/" lang="de">Datenschutz</a>
       </nav>
     </div>
   </footer>

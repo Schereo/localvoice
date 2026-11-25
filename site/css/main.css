@@ -8,6 +8,7 @@
 @import "./sections/proofs.css";
 @import "./sections/use-cases.css";
 @import "./sections/get-localvoice.css";
+@import "./sections/legal.css";
 @import "./components/dictation-pill.css";
 @import "./layout/footer.css";
 @import "./preferences.css";

@@ -6,18 +6,23 @@ export function setupDictationDemo(still) {
   if (!stage || !control) return;
   var controlLabel = control.querySelector('.demo-control-label');
   var landed = stage.querySelector('.landed');
+  var note = stage.querySelector('.stage-note');
   var pill = stage.querySelector('.pill-voice');
   var transcript = pill.querySelector('.transcript');
   var timer = pill.querySelector('time');
   var bars = Array.prototype.slice.call(pill.querySelectorAll('.wave i'));
   var lang = stage.querySelector('.lang');
-  /* Each phrase is spoken in chunks; the pause between chunks confirms the first one. */
+  /* Each phrase is spoken in chunks; the pause between chunks confirms the first one.
+     The third entry names where the text lands, so every round is a different place. */
   var phrases = [
-    [["Let's move the review to Thursday.", "I'll bring the numbers."], 'EN'],
-    [['Kannst du mir die Unterlagen', 'bis Freitag schicken?'], 'DE'],
-    [['Fix the race in the onset buffer', 'and add a regression test.'], 'EN']
+    [["Let's move the review to Thursday.", "I'll bring the numbers."], 'EN', 'Meeting notes'],
+    [['Kannst du mir die Unterlagen', 'bis Freitag schicken?'], 'DE', 'Message to Jonas'],
+    [['Fix the race in the onset buffer', 'and add a regression test.'], 'EN', 'Commit message']
   ];
-  var index = 0, current = null, observer = null;
+  var index = 0, current = null;
+  /* With motion on, the demo loops while it is on screen until someone pauses it. */
+  var looping = !still, inView = false, nextTimer = null;
+  var HOLD_MS = 3200;
   var speakingUntil = 0, level = 0, meter = null, clock = null;
 
   function setControl(action, label) {
@@ -136,18 +141,26 @@ export function setupDictationDemo(still) {
     else landed.textContent = text;
     stage.dataset.state = 'done';
     delete stage.dataset.playing;
-    setControl('replay', 'Replay demo');
+    if (still) setControl('replay', 'Replay demo');
+    else if (looping) { setControl('pause', 'Pause demo'); scheduleNext(); }
+    else setControl('play', 'Play demo');
+  }
+
+  function scheduleNext() {
+    clearTimeout(nextTimer);
+    nextTimer = setTimeout(function () {
+      nextTimer = null;
+      if (looping && inView) play();
+    }, HOLD_MS);
   }
 
   async function play() {
     if (current) return;
-    if (observer) {
-      observer.disconnect();
-      observer = null;
-    }
+    clearTimeout(nextTimer);
+    nextTimer = null;
     var run = { phrase: phrases[index++ % phrases.length], controller: new AbortController() };
+    var signal = run.controller.signal;
     current = run;
-    landed.textContent = '';
     if (landed.getAnimations) landed.getAnimations().forEach(function (animation) { animation.cancel(); });
     landed.classList.remove('fly');
     stage.classList.remove('flying');
@@ -155,8 +168,18 @@ export function setupDictationDemo(still) {
     speakingUntil = 0;
     stage.dataset.playing = '';
     stage.dataset.state = 'idle';
-    setControl('skip', 'Skip demo');
-    var signal = run.controller.signal;
+    setControl(still ? 'skip' : 'pause', still ? 'Skip demo' : 'Pause demo');
+    /* The previous sentence fades out before the next one is spoken. */
+    if (!still && landed.textContent && landed.animate) {
+      landed.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 320, easing: 'ease-out', fill: 'forwards' });
+      if (!await wait(320, signal)) return;
+    }
+    if (landed.getAnimations) landed.getAnimations().forEach(function (animation) { animation.cancel(); });
+    landed.textContent = '';
+    if (note.textContent !== run.phrase[2]) {
+      note.textContent = run.phrase[2];
+      if (!still && note.animate) note.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 360, easing: 'ease-out' });
+    }
     if (!await wait(still ? 0 : 500, signal)) return;
     transcript.textContent = '';
     stage.dataset.state = 'rec';
@@ -165,18 +188,31 @@ export function setupDictationDemo(still) {
   }
 
   control.addEventListener('click', function () {
-    if (current) finish(current, false);
-    else play();
+    if (still) {
+      if (current) finish(current, false);
+      else play();
+    } else if (looping) {
+      looping = false;
+      clearTimeout(nextTimer);
+      nextTimer = null;
+      if (current) finish(current, false);
+      setControl('play', 'Play demo');
+    } else {
+      looping = true;
+      setControl('pause', 'Pause demo');
+      play();
+    }
   });
   setControl('play', 'Play demo');
   control.hidden = false;
   if (still) return;
   if ('IntersectionObserver' in window) {
-    observer = new IntersectionObserver(function ([entry]) {
-      if (observer && entry.isIntersecting) play();
-    }, { threshold: 0.2 });
-    observer.observe(stage);
+    new IntersectionObserver(function ([entry]) {
+      inView = entry.isIntersecting;
+      if (inView && looping && !current && !nextTimer) play();
+    }, { threshold: 0.2 }).observe(stage);
   } else {
+    inView = true;
     play();
   }
 }

@@ -8,6 +8,13 @@
   --edge: light-dark(#a6ad9c, #596256);
   --editor: light-dark(#e4e6dc, #2d342d);
   --rule: light-dark(#c9cec1, #454e42);
+  /* Forest green, a deeper shade of the sage: the main action, the caret, progress. */
+  --accent: light-dark(#33594a, #9bcdb0);
+  --accent-hover: light-dark(#28493c, #b1dcc2);
+  --on-accent: light-dark(#f4f1e6, #1d211c);
+  --grain: light-dark(rgba(34, 39, 33, .075), rgba(240, 236, 225, .04));
+  --sheet-light: light-dark(rgba(255, 255, 255, .6), rgba(255, 255, 255, .05));
+  --shade: light-dark(rgba(46, 52, 40, .5), rgba(0, 0, 0, .7));
 }
 
 :root[data-theme="light"] { color-scheme: light; }

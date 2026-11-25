@@ -1,0 +1,20 @@
+/* Impressum and other legal pages: one readable column. */
+.legal { padding-block: clamp(48px, 7vw, 88px) var(--section-space); }
+.legal-inner { max-width: calc(46rem + 2 * var(--gutter)); }
+
+.legal h1 {
+  margin: 0 0 clamp(24px, 4vw, 40px);
+  font: 650 clamp(2.4rem, 6vw, 3.6rem)/1 var(--font-display);
+  letter-spacing: -.04em;
+}
+
+.legal-lead { max-width: 58ch; margin-bottom: clamp(24px, 4vw, 36px); font-size: 1.15rem; line-height: 1.5; text-wrap: pretty; }
+.legal section { padding-block: 22px; border-top: 1px solid var(--rule); }
+.legal section p + p { margin-top: 12px; }
+.legal .legal-updated { max-width: none; padding-top: 22px; border-top: 1px solid var(--rule); font-size: .9rem; }
+.legal h2 { margin-bottom: 8px; font: 600 1.05rem/1.3 var(--font-body); letter-spacing: 0; }
+.legal p { max-width: 62ch; color: var(--ink-muted); text-wrap: pretty; }
+.legal a { text-decoration-color: var(--edge); text-underline-offset: 3px; }
+.legal a:hover { color: var(--ink); text-decoration-color: currentColor; }
+
+.footer-links a[aria-current="page"] { color: var(--ink); }

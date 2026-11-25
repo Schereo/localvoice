@@ -25,7 +25,16 @@
   border-radius: 11px 11px 0 0;
 }
 
-.local-illustration { width: 116px; max-width: 100%; }
+/* Both icons share one 1.5px stroke and render at 1:1, so their lines match. */
+.proof-icon {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .proof-copy { padding: 18px clamp(18px, 3vw, 26px) 22px; }
 
 .proof-copy h2 {
@@ -34,7 +43,7 @@
   letter-spacing: -.025em;
 }
 
-.proof-copy p { max-width: 42ch; color: var(--ink-muted); }
+.proof-copy p { max-width: 42ch; color: var(--ink-muted); text-wrap: pretty; }
 
 .model-transfer {
   display: flex;
@@ -60,7 +69,7 @@
 .model-transfer-track::after {
   display: block;
   height: 100%;
-  background: var(--ink-muted);
+  background: var(--accent);
   transform-origin: left;
   content: "";
 }

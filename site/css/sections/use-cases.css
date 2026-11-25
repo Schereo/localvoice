@@ -10,19 +10,25 @@
   max-width: 36ch;
   margin-top: 18px;
   color: var(--ink-muted);
+  text-wrap: pretty;
 }
 
 .use-case-list { border-top: 1px solid var(--edge); }
 
 .use-case-list > div {
   display: grid;
-  gap: 3px;
-  padding-block: 13px;
+  gap: 6px;
+  padding-block: 18px 20px;
   border-bottom: 1px solid var(--edge);
 }
 
-.use-case-list dt { font-size: .9rem; font-weight: 600; }
-.use-case-list dd { color: var(--ink-muted); font-size: 1.05rem; }
+/* The label is quiet; the spoken sentence carries the row. */
+.use-case-list dt { color: var(--ink-muted); font-size: .9rem; font-weight: 600; }
+.use-case-list dd {
+  font: 600 clamp(1.2rem, 2.1vw, 1.5rem)/1.2 var(--font-display);
+  letter-spacing: -.02em;
+  text-wrap: balance;
+}
 
 @media (min-width: 840px) {
   .use-cases-inner { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
