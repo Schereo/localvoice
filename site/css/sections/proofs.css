@@ -74,6 +74,11 @@
   content: "";
 }
 
+/* Until the card scrolls into view, it waits at the start of the download. */
+:root[data-motion="on"] .model-transfer:not(.is-playing) .model-transfer-track::after { transform: scaleX(0); }
+:root[data-motion="on"] .model-transfer:not(.is-playing) .model-loading { opacity: 1; }
+:root[data-motion="on"] .model-transfer:not(.is-playing) .model-ready { opacity: 0; }
+
 .model-transfer.is-playing .model-transfer-track::after { animation: model-progress 2.6s ease both; }
 .model-transfer.is-playing .model-loading { animation: model-loading 2.6s linear both; }
 .model-transfer.is-playing .model-ready { animation: model-ready 2.6s linear both; }
