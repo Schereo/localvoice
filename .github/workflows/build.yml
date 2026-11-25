@@ -6,9 +6,11 @@
 #   push of tag v<VERSION>          ->  the release itself, "LocalVoice" (com.localvoice.app),
 #                                       with its notes from CHANGELOG.md
 #
-# The signing secrets live in the `release` environment, which only main and v* tags
-# may use, so pull requests never see them. Free for public repos: GitHub-hosted
-# macOS runners cost nothing here.
+# Two jobs: `build` runs the checks and all third-party build code without any
+# secrets; `sign` gets the unsigned app as an artifact on a fresh runner and only
+# signs, notarizes and publishes it. The signing secrets live in the `release`
+# environment, which only main and v* tags may use, so pull requests never see them.
+# Free for public repos: GitHub-hosted macOS runners cost nothing here.
 name: Build
 
 on:
@@ -35,16 +37,16 @@ jobs:
   build:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-26
-    timeout-minutes: 90
-    environment: release
-    permissions:
-      contents: write # create the release
-    env:
-      KEEP_DEV_RELEASES: 10
+    timeout-minutes: 60
+    outputs:
+      channel: ${{ steps.version.outputs.channel }}
+      tag: ${{ steps.version.outputs.tag }}
+      base: ${{ steps.version.outputs.base }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0 # the tag check below needs main's history
 
       - uses: actions/setup-python@v6
         with:
@@ -72,6 +74,11 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             if [[ "$GITHUB_REF_NAME" != "v$base" ]]; then
               echo "::error::Tag $GITHUB_REF_NAME does not match VERSION ($base). Cut releases with scripts/release.sh."
+              exit 1
+            fi
+            # Release only what is on main.
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::Tag $GITHUB_REF_NAME points at a commit that is not on main."
               exit 1
             fi
             {
@@ -102,9 +109,52 @@ jobs:
             --bundle-identifier "$BUNDLE_ID" \
             --display-name "$DISPLAY_NAME"
           codesign --verify --deep --strict build/dev/LocalVoice.app
+          # ditto keeps the bundle's symlinks and permissions, which the artifact zip would not.
+          ditto -c -k --keepParent build/dev/LocalVoice.app build/LocalVoice-unsigned.zip
 
-      # Only now, after all third-party build code has run, does the certificate
-      # enter the runner, in a throwaway keychain.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-app
+          path: build/LocalVoice-unsigned.zip
+          compression-level: 0 # already compressed
+          retention-days: 3
+          if-no-files-found: error
+
+  # A fresh runner that runs no third-party build code: the certificate never
+  # shares a machine with pip installs or the build.
+  sign:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 75
+    environment: release
+    permissions:
+      contents: write # create the release
+    env:
+      KEEP_DEV_RELEASES: 10
+      CHANNEL: ${{ needs.build.outputs.channel }}
+      TAG: ${{ needs.build.outputs.tag }}
+      VERSION_BASE: ${{ needs.build.outputs.base }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: unsigned-app
+          path: build
+
+      - name: Unpack
+        run: |
+          mkdir -p build/dev
+          ditto -x -k build/LocalVoice-unsigned.zip build/dev
+          rm build/LocalVoice-unsigned.zip
+          codesign --verify --deep --strict build/dev/LocalVoice.app
+
       - name: Import signing certificate
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -159,8 +209,6 @@ jobs:
 
       - name: Package
         id: package
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
         run: |
           zip="LocalVoice-$TAG-arm64.zip"
           ditto -c -k --keepParent build/dev/LocalVoice.app "build/$zip"
@@ -184,10 +232,9 @@ jobs:
           EOF
 
       - name: Publish dev pre-release
-        if: steps.version.outputs.channel == 'dev'
+        if: env.CHANNEL == 'dev'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
           ZIP: ${{ steps.package.outputs.zip }}
         run: |
           {
@@ -202,11 +249,9 @@ jobs:
             --title "LocalVoice $TAG" --notes-file build/notes.md
 
       - name: Publish release
-        if: steps.version.outputs.channel == 'release'
+        if: env.CHANNEL == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION_BASE: ${{ steps.version.outputs.base }}
           ZIP: ${{ steps.package.outputs.zip }}
         run: |
           {
@@ -224,7 +269,7 @@ jobs:
           fi
 
       - name: Prune old dev releases
-        if: steps.version.outputs.channel == 'dev'
+        if: env.CHANNEL == 'dev'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

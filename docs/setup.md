@@ -50,7 +50,7 @@ Dev releases up to `v1.2.0-dev.5` were ad-hoc signed and need `xattr -dr com.app
 
 ### Signing secrets
 
-The workflow job runs in the `release` environment (Settings → Environments), which only `main` and `v*` tags may use. It needs these environment secrets:
+The signing job runs in the `release` environment (Settings → Environments), which only `main` and `v*` tags may use. It needs these environment secrets:
 
 | Secret | Content |
 | --- | --- |
@@ -60,7 +60,7 @@ The workflow job runs in the `release` environment (Settings → Environments), 
 | `APPLE_API_KEY_ID` | That key's ID |
 | `APPLE_API_ISSUER_ID` | The issuer ID shown above the key list in App Store Connect |
 
-The certificate is imported into a throwaway keychain only after the build, signed into every Mach-O file of the bundle with the hardened runtime, and removed again before publishing. Entitlements are in [`scripts/entitlements/`](../scripts/entitlements/). Both scripts also run locally with a Developer ID in the login keychain.
+The `build` job runs the checks and the build without any secrets and hands the unsigned app on as an artifact. Only the `sign` job, on a fresh runner that runs no build code, uses the environment: it imports the certificate into a throwaway keychain, signs every Mach-O file of the bundle with the hardened runtime, notarizes, and removes the certificate before publishing. A tag build stops unless the tagged commit is on `main`. Entitlements are in [`scripts/entitlements/`](../scripts/entitlements/). Both scripts also run locally with a Developer ID in the login keychain.
 
 Dev releases use the bundle identifier `com.localvoice.dev` and the name **LocalVoice Test**, the same as local test builds, so they install next to a release.
 
