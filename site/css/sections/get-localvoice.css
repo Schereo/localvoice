@@ -10,13 +10,27 @@
   border-radius: 12px;
 }
 
-.get-panel p { max-width: 47ch; margin-top: 14px; color: var(--ink-muted); }
+.get-panel p { max-width: 47ch; margin-top: 14px; color: var(--ink-muted); text-wrap: pretty; }
 .get-panel p a { text-decoration-color: var(--edge); text-underline-offset: 4px; }
 .get-panel p a:hover { text-decoration-color: currentColor; }
+
+/* The app icon as it sits in the Dock. The PNG carries its own margin, so it is pulled out to the text edge. */
+.get-icon {
+  width: clamp(92px, 12vw, 132px);
+  margin: -10px;
+  filter: drop-shadow(0 10px 12px var(--shade));
+}
 
 .get-download { justify-self: start; }
 .get-download p { margin-top: 8px; font-size: .9rem; }
 
 @media (min-width: 700px) {
   .get-panel { grid-template-columns: 1fr auto; }
+  .get-icon { grid-column: 1 / -1; }
+}
+
+@media (min-width: 980px) {
+  .get-panel { grid-template-columns: auto 1fr auto; align-items: center; gap: 22px 44px; }
+  .get-icon { grid-column: auto; }
+  .get-download { align-self: end; }
 }

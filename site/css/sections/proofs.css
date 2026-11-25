@@ -43,7 +43,7 @@
   letter-spacing: -.025em;
 }
 
-.proof-copy p { max-width: 42ch; color: var(--ink-muted); }
+.proof-copy p { max-width: 42ch; color: var(--ink-muted); text-wrap: pretty; }
 
 .model-transfer {
   display: flex;
@@ -69,7 +69,7 @@
 .model-transfer-track::after {
   display: block;
   height: 100%;
-  background: var(--ink-muted);
+  background: var(--accent);
   transform-origin: left;
   content: "";
 }
