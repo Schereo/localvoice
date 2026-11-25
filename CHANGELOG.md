@@ -22,7 +22,9 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   Dev and release builds are signed with the Developer ID
   (`scripts/sign-app.py`, every Mach-O file with the hardened runtime) and
   notarized (`scripts/notarize-app.sh`), so Gatekeeper opens them without a
-  quarantine workaround and macOS permissions survive updates.
+  quarantine workaround and macOS permissions survive updates. Releases ship
+  as a signed, notarized disk image (`LocalVoice-v<VERSION>-arm64.dmg`):
+  open it and drag the app onto Applications.
 - Qwen3-ASR 1.7B (8-bit MLX, 2.47 GB) in the Model Library: the most accurate
   open model LocalVoice offers, running on the GPU through mlx-qwen3-asr. It
   takes the vocabulary list as its context prompt, can be pinned to Deutsch or
