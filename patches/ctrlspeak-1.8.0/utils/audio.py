@@ -15,6 +15,7 @@ from collections import deque
 from queue import Queue
 import soundfile as sf
 import torch
+import state
 from state import TranscriptionJob
 from utils.localvoice_vad import load_local_vad
 from rich.console import Console
@@ -401,7 +402,7 @@ class AudioManager:
 
                     # Check minimum length for transcription
                     if segment_duration_s >= self.MIN_CHUNK_DURATION_S:
-                        self._queue_segment(segment_data)
+                        self._queue_segment(segment_data, chunks=len(self.audio_buffer))
 
                 # Reset buffer and state for the next speech segment
                 self.audio_buffer = []
@@ -486,9 +487,35 @@ class AudioManager:
                 self.recording_id += 1
             return True
 
-    def _queue_segment(self, audio):
+    def _queue_segment(self, audio, chunks=None):
+        """Hand a finished segment (`chunks` capture chunks long) to the worker.
+
+        If a preview already decoded all of it and only quiet audio came
+        after, its text is queued instead of the audio: same order, no
+        second decode of the same speech.
+        """
+        text = self._previewed_text(chunks)
         self.segments_queued += 1
-        self.transcription_queue.put(TranscriptionJob(self.recording_id, audio=audio))
+        if text is None:
+            self.transcription_queue.put(TranscriptionJob(self.recording_id, audio=audio))
+        else:
+            self.transcription_queue.put(
+                TranscriptionJob(self.recording_id, "resolved", text=text)
+            )
+            logger.info("Segment transcript taken from its preview; nothing was said after it.")
+
+    def _previewed_text(self, chunks):
+        preview = state.last_preview
+        if preview is None or chunks is None:
+            return None
+        recording, segment, covered, text = preview
+        if recording != self.recording_id or segment != self.segments_queued:
+            return None
+        added = chunks - covered
+        if covered <= 0 or added < 0 or added > self.quiet_tail_chunks:
+            return None
+        state.last_preview = None
+        return text
     
     def stop_recording(self):
         """Freeze and finalize (also used by the shutdown path)."""
@@ -507,7 +534,7 @@ class AudioManager:
 
                 # Check minimum length for the final segment
                 if segment_duration_s >= self.MIN_CHUNK_DURATION_S:
-                    self._queue_segment(segment_data)
+                    self._queue_segment(segment_data, chunks=len(self.audio_buffer))
                     
             except Exception:
                 logger.error("Could not queue the final audio segment.")

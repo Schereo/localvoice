@@ -78,11 +78,9 @@ def _is_current(manager, job):
     if job.recording_id != manager.recording_id:
         return False
     if job.kind == "preview":
-        return (
-            manager.is_collecting
-            and state.live_preview_active
-            and job.preview_segment == manager.segments_queued
-        )
+        # Also runs without the live preview: a decode at the speaker's
+        # pause that the segment may reuse (hotkeys._segment_ticker).
+        return manager.is_collecting and job.preview_segment == manager.segments_queued
     return True
 
 
@@ -105,7 +103,9 @@ def _run_job(model, job, results_list):
         if job.kind == "stream-start":
             backend.init_streaming()
             return
-        if job.kind == "stream-finish":
+        if job.kind == "resolved":
+            text = job.text
+        elif job.kind == "stream-finish":
             text = backend.finalize_streaming()
         elif job.kind == "stream":
             text = backend.stream_chunk(job.audio, is_final=job.is_final)
@@ -119,12 +119,12 @@ def _run_job(model, job, results_list):
                 and job.recording_id == manager.recording_id
                 and job.preview_segment == manager.segments_queued):
             # Kept even when stop froze capture mid-decode: this may be the
-            # finished transcript of the segment (hotkeys._tail_from_preview).
+            # finished transcript of the segment (AudioManager._queue_segment).
             state.last_preview = (job.recording_id, job.preview_segment, job.preview_chunks, text or "")
         if not _is_current(manager, job):
             return
         if job.kind == "preview":
-            if text:
+            if text and state.live_preview_active:
                 from hotkeys import set_overlay_transcript
 
                 set_overlay_transcript(partial=text)

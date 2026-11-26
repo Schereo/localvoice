@@ -29,11 +29,15 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   of a decode) a second time; now the first window is encoded once and that
   encoding serves both the detection and the transcription. The live preview
   gets the same saving every second.
-- With the live preview on, stopping right after a sentence often needs no
-  decode at all: when the newest preview covered the whole open phrase and
-  only quiet audio followed (no speech by VAD, low level), its text is the
-  phrase's transcript. Otherwise the phrase is decoded as before. The log
-  says when this happens.
+- Stopping right after a sentence often needs no decode at all. About a
+  quarter second into every pause, the open phrase is transcribed ahead of
+  time (with or without the live preview). If only quiet audio follows (no
+  speech by VAD, low level), that text is the phrase's transcript, both for
+  the silence cut after a one-second pause and at stop; otherwise the
+  phrase is decoded as before. In a real-time benchmark with Whisper Turbo
+  (14 s of speech), stop to text went from 485/560/228 ms to 367/185/6 ms
+  when stopping 0.3/0.6/1.2 s after the last word. The log says when a
+  transcript is reused.
 - Pausing and resuming Spotify or Music (`pause-media`) no longer holds up
   recording or insertion: both run osascript on their own thread, in order.
 - The first paste after a service start is ~0.25 s faster (the accessibility

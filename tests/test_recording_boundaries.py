@@ -482,6 +482,49 @@ class RecordingBoundaryTests(unittest.TestCase):
         model.transcribe_pcm.assert_called_once()
         self.clipboard.assert_called_once_with("Gerade noch rechtzeitig.")
 
+    def test_pause_in_speech_starts_one_whole_segment_decode_without_live_preview(self):
+        manager = self.manager
+        manager.recording_id += 1
+        manager.set_is_collecting(True)
+        self.state.live_preview_active = False
+        work = self.state.transcription_queue
+
+        def next_job():
+            for _ in range(100):
+                if not work.empty():
+                    job = work.get_nowait()
+                    work.task_done()
+                    return job
+                threading.Event().wait(0.01)
+            return None
+
+        with patch.object(self.hotkeys, "SEGMENT_TICK_S", 0.005):
+            ticker = threading.Thread(
+                target=self.hotkeys._segment_ticker, args=(manager, manager.recording_id), daemon=True
+            )
+            with manager.capture_lock:
+                manager.audio_buffer.extend(Samples([0.3] * 1024) for _ in range(12))
+                manager.quiet_tail_chunks = 3
+            ticker.start()
+            threading.Event().wait(0.05)
+            self.assertTrue(work.empty())  # still speaking, as far as anyone knows
+            with manager.capture_lock:
+                manager.audio_buffer.append(Samples([0.001] * 1024))
+                manager.quiet_tail_chunks = 4
+            job = next_job()
+            self.assertEqual((job.kind, job.preview_chunks, job.preview_segment), ("preview", 13, 0))
+            threading.Event().wait(0.05)
+            self.assertTrue(work.empty())  # once per pause
+            with manager.capture_lock:
+                manager.audio_buffer.extend(Samples([0.3] * 1024) for _ in range(3))
+                manager.quiet_tail_chunks = 0
+                manager.audio_buffer.extend(Samples([0.001] * 1024) for _ in range(4))
+                manager.quiet_tail_chunks = 4
+            self.assertEqual(next_job().preview_chunks, 20)
+            manager.set_is_collecting(False)
+            ticker.join(timeout=1)
+        self.assertFalse(ticker.is_alive())
+
     def test_streaming_stop_decodes_tail_after_close_and_resume(self):
         # A legacy model selection may change the current streaming backend
         # without replacing the persistent worker.

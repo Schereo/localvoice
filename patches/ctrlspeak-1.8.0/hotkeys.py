@@ -451,56 +451,76 @@ PREVIEW_MAX_WINDOW_S = 15.0
 PREVIEW_MIN_AUDIO_S = 0.6
 
 
-def _live_preview_ticker(manager, recording_id):
-    """Feed snapshots of the open segment to the worker while recording."""
+# Decode the open segment as soon as the speaker pauses, live preview or not.
+# If they stop (or pause long enough for the silence cut) without saying more,
+# that decode is the segment's transcript and nothing is left to wait for.
+SPECULATE_QUIET_CHUNKS = 4  # ~0.26 s of quiet audio after speech
+# A whole segment fits one Whisper window; longer ones are decoded as usual.
+SPECULATE_MAX_WINDOW_S = 28.0
+SEGMENT_TICK_S = 0.05
+
+
+def _segment_ticker(manager, recording_id):
+    """Feed snapshots of the open segment to the worker while recording:
+    every second for the live preview, and once per pause in speech."""
     import numpy as np
     from utils.audio import SAMPLE_RATE
 
+    last_preview = time.monotonic()
+    covered = None  # (segment, speech end) of the newest whole snapshot
     while True:
-        time.sleep(PREVIEW_INTERVAL_S)
+        time.sleep(SEGMENT_TICK_S)
         with manager.capture_lock:
-            if not (
-                state.live_preview_active and manager.is_collecting
-                and manager.recording_id == recording_id
-            ):
+            if not (manager.is_collecting and manager.recording_id == recording_id):
                 return
             # Real segments win. Only copy the tail, and make enqueue atomic
             # with freeze so Stop/Esc cannot miss a late producer.
             if state.transcription_queue.unfinished_tasks or not manager.audio_buffer:
                 continue
-            remaining = int(PREVIEW_MAX_WINDOW_S * SAMPLE_RATE)
-            chunks = []
+            chunks = len(manager.audio_buffer)
+            key = (manager.segments_queued, chunks - manager.quiet_tail_chunks)
+            speculate = manager.quiet_tail_chunks >= SPECULATE_QUIET_CHUNKS and key != covered
+            periodic = (state.live_preview_active
+                        and time.monotonic() - last_preview >= PREVIEW_INTERVAL_S)
+            if not (speculate or periodic):
+                continue
+            window = SPECULATE_MAX_WINDOW_S if speculate else PREVIEW_MAX_WINDOW_S
+            remaining = int(window * SAMPLE_RATE)
+            parts = []
             for chunk in reversed(manager.audio_buffer):
-                chunks.append(chunk[-remaining:])
-                remaining -= len(chunks[-1])
+                parts.append(chunk[-remaining:])
+                remaining -= len(parts[-1])
                 if remaining <= 0:
                     break
-            audio = np.concatenate(chunks[::-1])
             # Whole segment (not just its tail): the result can stand in for
-            # the segment's own decode at stop; see _tail_from_preview.
+            # the segment's own decode; see AudioManager._queue_segment.
             whole = remaining > 0
+            if speculate:
+                covered = key  # one try per pause, whole or not
+            last_preview = time.monotonic()
+            audio = np.concatenate(parts[::-1])
             if len(audio) >= int(PREVIEW_MIN_AUDIO_S * SAMPLE_RATE):
+                if whole:
+                    covered = key
                 state.transcription_queue.put(
                     TranscriptionJob(
                         recording_id, "preview", audio, manager.segments_queued,
-                        preview_chunks=len(manager.audio_buffer) if whole else -1,
+                        preview_chunks=chunks if whole else -1,
                     )
                 )
 
 
 def _start_live_preview():
-    """Arm the live preview for this session if the config asks for it."""
+    """Start the segment ticker; the pill shows previews if the config asks."""
     state.live_preview_active = localvoice_config.as_bool("live-preview")
-    if not state.live_preview_active:
-        return
-
     threading.Thread(
-        target=_live_preview_ticker,
+        target=_segment_ticker,
         args=(state.audio_manager, state.audio_manager.recording_id),
-        name="ctrlspeak-live-preview",
+        name="ctrlspeak-segment-ticker",
         daemon=True,
     ).start()
-    logger.info("Live transcript preview enabled for this session.")
+    if state.live_preview_active:
+        logger.info("Live transcript preview enabled for this session.")
 
 
 def _clear_transcript():
@@ -752,14 +772,11 @@ def _end_recording(recording_id, *, discard=False):
                 TranscriptionJob(recording_id, "stream-finish", backend=_streaming_model)
             )
         else:
-            # Earlier segments and an in-flight preview finish first; the
-            # worker is serial, so the tail could not have started sooner.
+            # Earlier segments and an in-flight preview finish first (the
+            # worker is serial, so the tail could not have started sooner);
+            # that preview may already be the tail's transcript.
             state.transcription_queue.join()
-            tail = _tail_from_preview(manager, recording_id)
-            if tail is None:
-                manager.finish_recording()
-            elif tail:
-                state.transcribed_chunks.append(tail)
+            manager.finish_recording()
         state.transcription_queue.join()
 
         final_text = " ".join(state.transcribed_chunks).strip()
@@ -778,32 +795,6 @@ def _end_recording(recording_id, *, discard=False):
         state.recording_start_time = None
         _streaming_model = None
         _release_session_lock()
-
-
-def _tail_from_preview(manager, recording_id):
-    """The open segment's transcript, if a live preview already decoded it.
-
-    A preview that covered the whole segment, followed by nothing but quiet
-    audio (no VAD speech, low level), decoded everything the final decode
-    would hear — usually the case when you finish a sentence and tap the
-    hotkey a moment later. Reusing it saves a full decode (~0.35 s for
-    Whisper Turbo) between the tap and the inserted text. Returns the text
-    ("" for a decoded silence), or None when the tail still needs decoding.
-    """
-    with manager.capture_lock:
-        preview, state.last_preview = state.last_preview, None
-        if preview is None:
-            return None
-        preview_recording, segment, chunks, text = preview
-        if preview_recording != recording_id or segment != manager.segments_queued:
-            return None
-        added = len(manager.audio_buffer) - chunks
-        if chunks <= 0 or added < 0 or added > manager.quiet_tail_chunks:
-            return None
-        manager.set_is_collecting(False)
-        manager.reset_collected_audio()
-    logger.info("Final segment taken from the live preview; nothing was said after it.")
-    return text
 
 
 def _deliver_transcript(text, duration):
