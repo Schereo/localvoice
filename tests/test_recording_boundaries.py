@@ -324,23 +324,93 @@ class RecordingBoundaryTests(unittest.TestCase):
         self.assertNotIn("sensitive words", "\n".join(captured.output))
         self.assertEqual(self.stdout.getvalue(), "")
 
-    def test_media_pause_never_delays_the_microphone_and_resume_follows_it(self):
-        release = threading.Event()
+    def test_media_pause_runs_beside_the_microphone_open_and_capture_waits_for_it(self):
         events = []
 
         def pause():
-            release.wait(2)
-            events.append("pause")
+            threading.Event().wait(0.1)
+            events.append("paused")
 
         self.hotkeys.media_pause.pause_playing = pause
+        self.hotkeys.media_pause.paused_any = lambda: True
         self.resume.side_effect = lambda: events.append("resume")
         self.config.as_bool = Mock(side_effect=lambda key: key == "pause-media")
         self.manager.open_input_stream.side_effect = lambda **_: events.append("open")
+        self.manager._onset_buffer.append(Samples([0.4] * 1024))  # music before the pause
+        self.manager._onset_samples = 1024
+        original = self.manager.start_recording
+        self.manager.start_recording = lambda: (events.append("capture"), original())
         self.hotkeys._start_recording()
+        self.assertEqual(events, ["open", "paused", "capture"])
+        self.assertEqual(len(self.manager._onset_buffer), 0)
         self.hotkeys._end_recording(self.manager.recording_id, discard=True)
-        release.set()
         self.hotkeys._media_queue.join()
-        self.assertEqual(events, ["open", "pause", "resume"])
+        self.assertEqual(events, ["open", "paused", "capture", "resume"])
+
+    def test_pill_appears_only_once_capture_is_live(self):
+        self.hotkeys._start_recording_overlay.side_effect = (
+            lambda: self.assertTrue(self.manager.is_collecting))
+        self.hotkeys._start_recording()
+        self.hotkeys._start_recording_overlay.assert_called_once()
+        self.manager.open_input_stream.side_effect = OSError("no microphone")
+        self.hotkeys._end_recording(self.manager.recording_id, discard=True)
+        with self.assertLogs("ctrlspeak.hotkeys", "ERROR"):
+            self.hotkeys._start_recording()
+        self.hotkeys._start_recording_overlay.assert_called_once()
+
+    def test_language_change_drops_a_preview_decoded_in_the_old_language(self):
+        model = Mock(supports_streaming=False, supports_forced_language=True,
+                     transcribe_pcm=Mock(side_effect=lambda _a, lang, _t: f"text-{lang}"))
+        self.start_worker(model)
+        self.hotkeys._start_recording()
+        manager = self.manager
+        manager.audio_buffer.extend(Samples([0.3] * 1024) for _ in range(10))
+        self.state.source_lang = "de"
+        self.state.transcription_queue.put(self.state.TranscriptionJob(
+            manager.recording_id, "preview", concatenate(manager.audio_buffer),
+            manager.segments_queued, preview_chunks=10))
+        self.state.transcription_queue.join()
+        self.assertIsNotNone(self.state.last_preview)
+        with patch.object(self.config, "set_value"):
+            self.hotkeys._apply_language("en")
+        manager.quiet_tail_chunks = 0
+        self.hotkeys._end_recording(manager.recording_id)
+        self.clipboard.assert_called_once_with("text-en")
+
+    def test_silence_cut_reuses_the_pause_decode_through_real_capture(self):
+        manager = self.manager
+        manager._get_speech_probability = lambda chunk: 0.9 if max(abs(x) for x in chunk) > 0.1 else 0.0
+        manager.recording_id += 1
+        manager.set_is_collecting(True)
+        work = self.state.transcription_queue
+
+        def feed(level, count):
+            for _ in range(count):
+                manager.audio_callback(Samples([level] * 1024), 1024, None, None)
+
+        feed(0.3, 10)
+        feed(0.001, 4)
+        self.assertEqual((len(manager.audio_buffer), manager.quiet_tail_chunks), (14, 4))
+        feed(0.05, 1)  # not speech to VAD, but too loud to count as quiet
+        self.assertEqual(manager.quiet_tail_chunks, 0)
+        feed(0.001, 4)
+        self.state.last_preview = (manager.recording_id, 0, 19, "Ganzer Satz.")
+        feed(0.001, 12)  # reaches the one-second cut
+        job = work.get_nowait()
+        work.task_done()
+        self.assertEqual((job.kind, job.text), ("resolved", "Ganzer Satz."))
+        self.assertEqual(manager.segments_queued, 1)
+        self.assertIsNone(self.state.last_preview)
+        self.assertEqual(manager.quiet_tail_chunks, 0)
+        manager.set_is_collecting(False)
+
+    def test_prewarm_racing_mic_standby_cannot_revive_a_discarded_child(self):
+        manager, _log = self.capture_manager("    sys.stdin.readline()\n")
+        manager.discard_standby_mic()
+        manager._prewarm_if_wanted()  # the background prewarm of an earlier open
+        self.assertIsNone(manager._standby_mic)
+        manager.prewarm_input_stream()  # explicit: standby turned off again
+        self.assertIsNotNone(manager._standby_mic)
 
     def test_escape_drops_queued_audio_and_late_decode_without_waiting(self):
         entered, unblock = threading.Event(), threading.Event()

@@ -334,17 +334,6 @@ def _start_recording_overlay():
     threading.Thread(target=prepare_overlay, name="overlay-prewarm", daemon=True).start()
 
 
-def _fail_recording_overlay(detail):
-    """Turn this session's pill into the start error, or show one."""
-    with _overlay_session_lock:
-        session = _overlay_session
-        if session is not None:
-            session.set_detail(detail)
-            session.set_state("empty")
-    if session is None:
-        _show_start_error(detail)
-
-
 def _show_start_error(detail):
     # Use the existing short-lived status, not the watchdog-only restart mode.
     overlay = _OverlaySession(state.source_lang, initial_mode="empty")
@@ -396,6 +385,8 @@ def _apply_language(language, persist=True):
     with _language_lock:
         state.source_lang = language
         state.target_lang = language
+        # A preview decoded in the old language is not this segment's text.
+        state.last_preview = None
 
         if hasattr(state, "app_state_ref") and state.app_state_ref:
             state.app_state_ref.source_lang = language
@@ -497,6 +488,8 @@ def _segment_ticker(manager, recording_id):
             whole = remaining > 0
             if speculate:
                 covered = key  # one try per pause, whole or not
+            if not whole and not state.live_preview_active:
+                continue  # a tail is only good for the pill, and there is none
             last_preview = time.monotonic()
             audio = np.concatenate(parts[::-1])
             if len(audio) >= int(PREVIEW_MIN_AUDIO_S * SAMPLE_RATE):
@@ -626,24 +619,28 @@ def _start_recording():
 
     opened_on_demand = False
     started = False
-    overlay_shown = False
     try:
         if model_id := os.environ.get("LOCALVOICE_MODEL_ID"):
             # Apply a preference at the recording boundary, including for
             # Nemotron's streaming prompt. Never change it mid-recording.
             state.source_lang = state.target_lang = localvoice_config.model_language(model_id)
-        # The pill answers the hotkey at once; the microphone (~0.1 s) opens
-        # behind it, well before anyone starts speaking, and the start beep
-        # still marks the moment capture is live.
-        _start_recording_overlay()
-        overlay_shown = True
+        paused = None
         if localvoice_config.as_bool("pause-media"):
-            _queue_media(_pause_media)
+            # Runs while the microphone opens instead of before it.
+            paused = threading.Event()
+            _queue_media(lambda: _pause_media(paused))
         with manager.input_stream_lock:
             if not state.mic_standby:
                 opened_on_demand = True
                 # Also readies a standby capture child for the next one.
                 manager.open_input_stream(prepare_next=True)
+            if paused is not None:
+                # Music still playing from the speakers must not open the
+                # dictation. Usually done already (osascript ~50 ms, the
+                # microphone ~100 ms); bounded for a slow Apple Event.
+                paused.wait(PAUSE_MEDIA_WAIT_S)
+                if media_pause.paused_any():
+                    manager.drop_preroll()
             state.recording_start_time = time.monotonic()
             _clear_transcript()
             model = state.stt_model
@@ -656,15 +653,16 @@ def _start_recording():
                 manager.start_recording()
 
         play_start_beep()
+        # Shown once capture is live, so the pill never claims a recording
+        # the microphone is not yet taking (Bluetooth inputs can take
+        # seconds to open). The standby pill makes this ~20 ms, not ~0.2 s.
+        _start_recording_overlay()
         if _streaming_model is None:
             _start_live_preview()
         started = True
     except Exception:
         logger.error("Could not start recording.")
-        if overlay_shown:
-            _fail_recording_overlay("Could not start recording")
-        else:
-            _show_start_error("Could not start recording")
+        _show_start_error("Could not start recording")
     finally:
         if not started:
             if manager.is_collecting:
@@ -714,11 +712,18 @@ def _queue_media(operation):
     _media_queue.put(operation)
 
 
-def _pause_media():
+# How long a recording start waits for media to stop before capturing.
+PAUSE_MEDIA_WAIT_S = 0.5
+
+
+def _pause_media(done=None):
     try:
         media_pause.pause_playing()
     except Exception:
         logger.warning("Could not pause playback.")
+    finally:
+        if done is not None:
+            done.set()
 
 
 def _resume_media():

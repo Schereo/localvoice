@@ -145,6 +145,9 @@ class AudioManager:
         # next recording hands it the device instead of starting a process.
         self._standby_mic = None
         self._standby_lock = threading.Lock()
+        # Cleared by discard_standby_mic (mic standby on, shutdown), so a
+        # background prewarm still on its way cannot bring a child back.
+        self._standby_wanted = True
         self.MIC_BLOCKSIZE = 1024
         self.MIC_START_TIMEOUT_S = 5.0
 
@@ -440,6 +443,13 @@ class AudioManager:
                  logger.error(f"Error updating live display: {e}", exc_info=False) 
                  self.live_display = None
     
+    def drop_preroll(self):
+        """Forget audio captured before the recording started (e.g. music
+        that was still playing while media pause took effect)."""
+        with self.capture_lock:
+            self._onset_buffer.clear()
+            self._onset_samples = 0
+
     def _buffer_onset(self, chunk):
         """Add a chunk to the rolling pre-speech buffer, keeping ~0.45 s."""
         self._onset_buffer.append(chunk)
@@ -697,8 +707,12 @@ class AudioManager:
             self._open_input_stream()
         if prepare_next:
             threading.Thread(
-                target=self.prewarm_input_stream, name="mic-prewarm", daemon=True
+                target=self._prewarm_if_wanted, name="mic-prewarm", daemon=True
             ).start()
+
+    def _prewarm_if_wanted(self):
+        if self._standby_wanted:
+            self.prewarm_input_stream()
 
     def _mic_command(self, device_arg):
         package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -718,6 +732,7 @@ class AudioManager:
         device is only opened when a recording hands it the open line.
         """
         with self._standby_lock:
+            self._standby_wanted = True
             if self._standby_mic is not None and self._standby_mic.poll() is None:
                 return
             try:
@@ -735,6 +750,7 @@ class AudioManager:
     def discard_standby_mic(self):
         """Stop the standby child, if any (shutdown, or mic standby turned on)."""
         with self._standby_lock:
+            self._standby_wanted = False
             process, self._standby_mic = self._standby_mic, None
         self._dispose_mic_process(process)
 

@@ -82,6 +82,11 @@ def pause_playing():
         logger.info(f"Paused for dictation: {', '.join(_paused_apps)}")
 
 
+def paused_any():
+    """Whether the last pause_playing() stopped any player."""
+    return bool(_paused_apps)
+
+
 def resume_paused():
     """Resume exactly the players pause_playing() stopped. No-op otherwise."""
     global _paused_apps

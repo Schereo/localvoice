@@ -93,6 +93,7 @@ def _run_job(model, job, results_list):
         if not _is_current(manager, job):
             return
 
+    language = state.source_lang
     backend = job.backend if job.backend is not None else model
     # Legacy upstream backends may log raw results and exception payloads.
     module = type(backend).__module__
@@ -117,7 +118,8 @@ def _run_job(model, job, results_list):
     with manager.capture_lock:
         if (job.kind == "preview" and job.preview_chunks >= 0
                 and job.recording_id == manager.recording_id
-                and job.preview_segment == manager.segments_queued):
+                and job.preview_segment == manager.segments_queued
+                and language == state.source_lang):
             # Kept even when stop froze capture mid-decode: this may be the
             # finished transcript of the segment (AudioManager._queue_segment).
             state.last_preview = (job.recording_id, job.preview_segment, job.preview_chunks, text or "")
