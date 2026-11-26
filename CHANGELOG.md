@@ -11,6 +11,43 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Changed
+
+- The recording pill appears about 0.1–0.15 s after the hotkey instead of
+  ~0.4–0.5 s. A hidden pill is started ahead of time (no CPU while it waits)
+  and shown the moment the microphone is live (~20 ms instead of a fresh
+  process launch). It still never appears before capture does, so a slow
+  Bluetooth microphone cannot eat the first words. Its fade-in is 80 ms
+  instead of 180 ms.
+- Recording starts about 0.2 s sooner. The microphone process used to be
+  started (Python plus PortAudio) on every hotkey tap; a standby process is now
+  prepared ahead of time and only opens the device when you start dictating.
+  It holds no stream while waiting, so the microphone indicator stays off. The
+  log records how long each open took (`Microphone open after … ms`).
+- Whisper with the language on Auto transcribes about twice as fast: ~0.35 s
+  instead of ~0.65 s per decode with Turbo, the same as with a fixed
+  language. Detecting German or English used to run the audio encoder (most
+  of a decode) a second time; now the first window is encoded once and that
+  encoding serves both the detection and the transcription. The live preview
+  gets the same saving every second.
+- Stopping right after a sentence often needs no decode at all. About a
+  quarter second into every pause, the open phrase is transcribed ahead of
+  time (with or without the live preview). If only quiet audio follows (no
+  speech by VAD, low level), that text is the phrase's transcript, both for
+  the silence cut after a one-second pause and at stop; otherwise the
+  phrase is decoded as before. In a real-time benchmark with Whisper Turbo
+  (14 s of speech), stop to text went from 485/560/228 ms to 367/185/6 ms
+  when stopping 0.3/0.6/1.2 s after the last word. The log says when a
+  transcript is reused.
+- Pausing and resuming Spotify or Music (`pause-media`) no longer holds up
+  recording or insertion: both run osascript on their own thread, in order.
+  The pause overlaps with opening the microphone, and capture still begins
+  only once the player has stopped (at most 0.5 s), so music from the
+  speakers does not open the dictation.
+- The first paste after a service start is ~0.25 s faster (the accessibility
+  bindings are loaded at startup), and the pause before Cmd+V is 50 ms
+  instead of 100 ms.
+
 ## [1.3.0] — 2026-11-25
 
 ### Added

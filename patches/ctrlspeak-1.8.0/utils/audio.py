@@ -15,6 +15,7 @@ from collections import deque
 from queue import Queue
 import soundfile as sf
 import torch
+import state
 from state import TranscriptionJob
 from utils.localvoice_vad import load_local_vad
 from rich.console import Console
@@ -85,6 +86,10 @@ def resolve_input_device(setting):
     logger.warning(f"No input device matches '{setting}'; using the system default input.")
     return None
 
+class _CaptureExited(RuntimeError):
+    """The capture child ended before reporting whether the device opened."""
+
+
 class AudioManager:
     """Class to manage audio recording and state.
 
@@ -135,6 +140,14 @@ class AudioManager:
         # track it and the thread pumping its frames into audio_callback.
         self._mic_process = None
         self._mic_reader = None
+        # A capture child started ahead of time in standby: Python is up and
+        # PortAudio loaded, but no stream is open (see mic_capture.py). The
+        # next recording hands it the device instead of starting a process.
+        self._standby_mic = None
+        self._standby_lock = threading.Lock()
+        # Cleared by discard_standby_mic (mic standby on, shutdown), so a
+        # background prewarm still on its way cannot bring a child back.
+        self._standby_wanted = True
         self.MIC_BLOCKSIZE = 1024
         self.MIC_START_TIMEOUT_S = 5.0
 
@@ -143,6 +156,10 @@ class AudioManager:
         self.MIN_CHUNK_DURATION_S = 0.5 # Avoid transcribing tiny blips
         self.current_silence_s = 0.0
         self.is_potentially_speaking = False # Track if we heard sound recently
+        # Consecutive chunks at the end of the open segment that were neither
+        # speech (VAD) nor loud (RMS): what may follow a preview whose text
+        # is reused as the segment's transcript.
+        self.quiet_tail_chunks = 0
         self.last_rms = 0.0 # Store last RMS value for app_state updates
 
         # Streaming mode state
@@ -250,6 +267,7 @@ class AudioManager:
         """Reset the collected audio buffer, silence state, and VAD buffer"""
         self.audio_buffer = []
         self._vad_buffer = []
+        self.quiet_tail_chunks = 0
         # Phase 3: Reset silence tracking state as well
         self.current_silence_s = 0.0
         self.is_potentially_speaking = False
@@ -363,6 +381,7 @@ class AudioManager:
                 self._flush_onset_into_buffer()
             # Speech detected by VAD
             self.audio_buffer.append(chunk) # Buffer this chunk
+            self.quiet_tail_chunks = 0
             # Reset silence duration because we heard sound
             self.current_silence_s = 0.0 
             self.is_potentially_speaking = True
@@ -386,16 +405,22 @@ class AudioManager:
 
                     # Check minimum length for transcription
                     if segment_duration_s >= self.MIN_CHUNK_DURATION_S:
-                        self._queue_segment(segment_data)
+                        self._queue_segment(segment_data, chunks=len(self.audio_buffer))
 
                 # Reset buffer and state for the next speech segment
                 self.audio_buffer = []
+                self.quiet_tail_chunks = 0
                 self.current_silence_s = 0.0
                 self.is_potentially_speaking = False # Stay silent until speech is detected again
             else:
                 # Silence continues but hasn't reached threshold yet.
                 # Keep buffering the silence chunks in case speech resumes quickly.
                  self.audio_buffer.append(chunk)
+                 # A loud chunk VAD calls silence could still be a word.
+                 if rms < self.FALLBACK_RMS_THRESHOLD:
+                     self.quiet_tail_chunks += 1
+                 else:
+                     self.quiet_tail_chunks = 0
                  
         else:
             # Silence with no active speech: previously dropped outright,
@@ -418,6 +443,13 @@ class AudioManager:
                  logger.error(f"Error updating live display: {e}", exc_info=False) 
                  self.live_display = None
     
+    def drop_preroll(self):
+        """Forget audio captured before the recording started (e.g. music
+        that was still playing while media pause took effect)."""
+        with self.capture_lock:
+            self._onset_buffer.clear()
+            self._onset_samples = 0
+
     def _buffer_onset(self, chunk):
         """Add a chunk to the rolling pre-speech buffer, keeping ~0.45 s."""
         self._onset_buffer.append(chunk)
@@ -465,9 +497,35 @@ class AudioManager:
                 self.recording_id += 1
             return True
 
-    def _queue_segment(self, audio):
+    def _queue_segment(self, audio, chunks=None):
+        """Hand a finished segment (`chunks` capture chunks long) to the worker.
+
+        If a preview already decoded all of it and only quiet audio came
+        after, its text is queued instead of the audio: same order, no
+        second decode of the same speech.
+        """
+        text = self._previewed_text(chunks)
         self.segments_queued += 1
-        self.transcription_queue.put(TranscriptionJob(self.recording_id, audio=audio))
+        if text is None:
+            self.transcription_queue.put(TranscriptionJob(self.recording_id, audio=audio))
+        else:
+            self.transcription_queue.put(
+                TranscriptionJob(self.recording_id, "resolved", text=text)
+            )
+            logger.info("Segment transcript taken from its preview; nothing was said after it.")
+
+    def _previewed_text(self, chunks):
+        preview = state.last_preview
+        if preview is None or chunks is None:
+            return None
+        recording, segment, covered, text = preview
+        if recording != self.recording_id or segment != self.segments_queued:
+            return None
+        added = chunks - covered
+        if covered <= 0 or added < 0 or added > self.quiet_tail_chunks:
+            return None
+        state.last_preview = None
+        return text
     
     def stop_recording(self):
         """Freeze and finalize (also used by the shutdown path)."""
@@ -486,7 +544,7 @@ class AudioManager:
 
                 # Check minimum length for the final segment
                 if segment_duration_s >= self.MIN_CHUNK_DURATION_S:
-                    self._queue_segment(segment_data)
+                    self._queue_segment(segment_data, chunks=len(self.audio_buffer))
                     
             except Exception:
                 logger.error("Could not queue the final audio segment.")
@@ -638,34 +696,99 @@ class AudioManager:
         """Check if currently in streaming mode."""
         return self._streaming_mode and self.is_collecting
 
-    def open_input_stream(self):
-        """Start capturing, in a child process that owns the microphone."""
+    def open_input_stream(self, prepare_next=False):
+        """Start capturing, in a child process that owns the microphone.
+
+        prepare_next starts a standby child for the following recording once
+        this one is capturing; on-demand recording passes it, standby mode
+        (one stream held open for good) does not.
+        """
         with self.input_stream_lock:
             self._open_input_stream()
+        if prepare_next:
+            threading.Thread(
+                target=self._prewarm_if_wanted, name="mic-prewarm", daemon=True
+            ).start()
 
-    def _open_input_stream(self):
-        if self._mic_process is not None and self._mic_process.poll() is None:
-            return
+    def _prewarm_if_wanted(self):
+        if self._standby_wanted:
+            self.prewarm_input_stream()
 
+    def _mic_command(self, device_arg):
         package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        command = [
+        return [
             sys.executable,
             os.path.join(package_dir, "mic_capture.py"),
             str(SAMPLE_RATE),
             str(CHANNELS),
             str(self.MIC_BLOCKSIZE),
-            "-" if self.input_device is None else str(self.input_device),
+            device_arg,
         ]
 
-        logger.info("AudioManager: Starting audio input stream...")
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
-        )
+    def prewarm_input_stream(self):
+        """Have a standby capture child waiting for the next recording.
 
-        # Wait for the child to confirm the device is open, so a failure
-        # surfaces here as an exception instead of as silent dead air.
+        It costs one idle Python process and no microphone access: the
+        device is only opened when a recording hands it the open line.
+        """
+        with self._standby_lock:
+            self._standby_wanted = True
+            if self._standby_mic is not None and self._standby_mic.poll() is None:
+                return
+            try:
+                self._standby_mic = subprocess.Popen(
+                    self._mic_command("--standby"),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=0,
+                )
+            except OSError as exc:
+                self._standby_mic = None
+                logger.warning(f"Could not prepare a standby capture process: {exc}")
+
+    def discard_standby_mic(self):
+        """Stop the standby child, if any (shutdown, or mic standby turned on)."""
+        with self._standby_lock:
+            self._standby_wanted = False
+            process, self._standby_mic = self._standby_mic, None
+        self._dispose_mic_process(process)
+
+    @classmethod
+    def _dispose_mic_process(cls, process):
+        """Kill a capture child that never became the active one, pipes and all."""
+        if process is None:
+            return
+        cls._kill_mic_process(process)
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
+
+    def _take_standby_mic(self, device_arg):
+        """Hand the standby child its device; None if there is no live one."""
+        with self._standby_lock:
+            process, self._standby_mic = self._standby_mic, None
+        if process is None:
+            return None
+        if process.poll() is None:
+            try:
+                process.stdin.write(f"open {device_arg}\n".encode("utf-8"))
+                process.stdin.flush()
+                return process
+            except (OSError, ValueError):
+                pass
+        self._dispose_mic_process(process)
+        return None
+
+    def _await_capture(self, process):
+        """Wait for the child to confirm the device is open, so a failure
+        surfaces here as an exception instead of as silent dead air."""
         ready = threading.Event()
         failure = []
+        exited = []
 
         def watch_stderr():
             for raw in iter(process.stderr.readline, b""):
@@ -675,16 +798,52 @@ class AudioManager:
                 elif line.startswith("open-failed:"):
                     failure.append(line[len("open-failed:"):].strip())
                     ready.set()
-                elif line:
+                elif line and line != "standby":
                     logger.warning(f"mic_capture: {line}")
+            # Exited without a verdict: fail now, not after the timeout.
+            if not ready.is_set():
+                exited.append(True)
+                ready.set()
 
         threading.Thread(target=watch_stderr, name="mic-stderr", daemon=True).start()
 
-        if not ready.wait(self.MIC_START_TIMEOUT_S) or failure:
+        if not ready.wait(self.MIC_START_TIMEOUT_S) or failure or exited:
             self._kill_mic_process(process)
+            if exited and not failure:
+                raise _CaptureExited("microphone capture did not start: the capture process exited")
             reason = failure[0] if failure else "timed out while opening the device"
             raise RuntimeError(f"microphone capture did not start: {reason}")
 
+    def _open_input_stream(self):
+        if self._mic_process is not None and self._mic_process.poll() is None:
+            return
+
+        logger.info("AudioManager: Starting audio input stream...")
+        started = time.monotonic()
+        device_arg = "-" if self.input_device is None else str(self.input_device)
+        process = self._take_standby_mic(device_arg)
+        source = "standby"
+        if process is not None:
+            try:
+                self._await_capture(process)
+            except _CaptureExited:
+                # The standby child died before it could open (killed, or
+                # crashed while waiting); a fresh one decides for real.
+                logger.warning("Standby capture process was gone; starting a new one.")
+                self._dispose_mic_process(process)
+                process = None
+        if process is None:
+            source = "new"
+            process = subprocess.Popen(
+                self._mic_command(device_arg),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            )
+            self._await_capture(process)
+
+        logger.info(
+            f"AudioManager: Microphone open after {1000 * (time.monotonic() - started):.0f} ms "
+            f"({source} capture process)."
+        )
         self._mic_process = process
         self._mic_reader = threading.Thread(
             target=self._pump_frames, args=(process,), name="mic-reader", daemon=True
@@ -742,7 +901,7 @@ class AudioManager:
             return
 
         self._kill_mic_process(process)
-        for pipe in (process.stdout, process.stderr):
+        for pipe in (process.stdin, process.stdout, process.stderr):
             try:
                 if pipe is not None:
                     pipe.close()

@@ -149,9 +149,11 @@ def _start_config_watcher():
                 logger.info(f"Microphone standby: {'on' if standby else 'off (on-demand)'}")
                 try:
                     if standby:
+                        audio.discard_standby_mic()
                         audio.open_input_stream()
                     elif not audio.is_collecting:
                         audio.close_input_stream()
+                        audio.prewarm_input_stream()
                 except Exception as exc:
                     logger.warning(f"Could not apply the microphone standby change: {exc}")
 
@@ -255,6 +257,23 @@ def _write_ready_file(filename):
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+
+
+def _prepare_fast_start():
+    """Have the first recording after startup as fast as every later one:
+    a hidden pill waiting, and the paste helpers imported."""
+    try:
+        import hotkeys
+
+        hotkeys.prepare_overlay()
+    except Exception as exc:
+        logger.debug(f"Could not prepare the recorder overlay: {exc}")
+    try:
+        from utils import clipboard
+
+        clipboard.prepare()
+    except Exception as exc:
+        logger.debug(f"Could not preload the paste helpers: {exc}")
 
 
 def _hotkeys_ready(manager):
@@ -543,6 +562,9 @@ def run_app(args):
             logger.info(f"Microphone standby: {'on' if state.mic_standby else 'off (on-demand)'}")
             if state.mic_standby:
                 state.audio_manager.open_input_stream()
+            else:
+                # The first recording gets a capture child that is already up.
+                state.audio_manager.prewarm_input_stream()
 
             if not state.keyboard_manager.start_listening():
                 logger.error("Could not start the hotkey listener.")
@@ -553,6 +575,7 @@ def run_app(args):
                 return 1
 
             _start_config_watcher()
+            threading.Thread(target=_prepare_fast_start, name="fast-start", daemon=True).start()
             if ready_file:
                 if not state.main_loop_active:
                     return 0
@@ -644,6 +667,10 @@ def run_app(args):
                 state.audio_manager.set_is_running(False)
             except Exception as e_aud_run:
                 logger.error(f"Error setting audio manager not running in finally: {e_aud_run}")
+            try:
+                state.audio_manager.discard_standby_mic()
+            except Exception:
+                logger.warning("Could not stop the standby capture process.")
 
         from models.parakeet_coreml import ParakeetCoreMLModel
         if isinstance(state.stt_model, ParakeetCoreMLModel):

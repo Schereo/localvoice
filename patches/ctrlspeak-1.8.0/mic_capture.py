@@ -11,6 +11,14 @@ roll stay in the parent, fed by the raw frames this writes to stdout.
 
 Usage: mic_capture.py <samplerate> <channels> <blocksize> [device]
 Frames are little-endian float32, blocksize * channels values per block.
+
+With "--standby" as the device argument, the child starts, loads numpy and
+PortAudio, prints "standby" on stderr and waits for one stdin line,
+"open <device>" ("-" for the system default). Starting Python and importing
+sounddevice takes ~0.2 s, which was the first stretch of every recording's
+start delay; a standby child pays it before the hotkey is pressed. It holds no
+stream until the open line arrives, so the microphone indicator stays off.
+EOF on stdin (the service is gone) ends it.
 """
 
 import queue
@@ -18,19 +26,37 @@ import sys
 import threading
 
 
+def _parse_device(value):
+    if value in (None, "", "-"):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 def main():
     samplerate = int(sys.argv[1])
     channels = int(sys.argv[2])
     blocksize = int(sys.argv[3])
-    device = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "-" else None
-    if device is not None:
-        try:
-            device = int(device)
-        except ValueError:
-            pass
+    device_arg = sys.argv[4] if len(sys.argv) > 4 else "-"
 
     import numpy as np
     import sounddevice as sd
+
+    if device_arg == "--standby":
+        print("standby", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if not line.startswith("open"):
+            return 0  # EOF or anything else: the service no longer wants us
+        device = _parse_device(line[len("open"):].strip())
+        # PortAudio's device list is a snapshot from import time. Taking it
+        # again costs a few milliseconds and finds a microphone plugged in
+        # (or AirPods connected) while this child was waiting.
+        sd._terminate()
+        sd._initialize()
+    else:
+        device = _parse_device(device_arg)
 
     # The audio callback must never block, so it hands blocks to a writer
     # thread. Bounded, because a stalled reader must cost us the oldest audio

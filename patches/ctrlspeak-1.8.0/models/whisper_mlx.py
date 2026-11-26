@@ -1,5 +1,6 @@
 """MLX Whisper backend with explicit language selection for Apple Silicon."""
 
+from contextlib import contextmanager, nullcontext
 import logging
 from pathlib import Path
 import re
@@ -83,12 +84,26 @@ class WhisperMLXModel(BaseSTTModel):
         return self.model
 
     def detect_language(self, audio) -> str:
-        """Choose between German and English for one recording.
+        """Choose between German and English for one recording."""
+        language, _ = self._detect_language_once(audio)
+        return language
+
+    def _detect_language_once(self, audio):
+        """Detect the language from the first window's encoding, and keep it.
 
         Whisper's own detection ranks all 99 languages it knows, and readily
         returns Dutch or Afrikaans for German speech — which then decodes as
         nonsense. Comparing only the two probabilities this setup supports
         keeps a wrong guess from leaving the pair.
+
+        Detection needs the audio encoder, and the encoder is most of a
+        decode: ~0.3 s for Turbo, the same again when transcribe() encodes
+        the window a second time. So the window is built exactly the way
+        transcribe() builds its first one, encoded once, and returned with a
+        context that hands transcribe() this encoding instead of recomputing
+        it. "auto" then costs one decoder step instead of a second encode.
+
+        Returns (language, context manager for the following transcribe()).
         """
         import mlx.core as mx
         from mlx_whisper.audio import (
@@ -106,13 +121,16 @@ class WhisperMLXModel(BaseSTTModel):
             n_mels=model.dims.n_mels,
             padding=N_SAMPLES,
         )
-        # The spectrogram is (frames, n_mels); trim on the time axis, the same
-        # way transcribe.py does internally.
-        segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16)
-        _, probabilities = model.detect_language(segment)
+        # Same slicing as transcribe.py's first seek window: the content
+        # frames (at most 30 s), then zero-padded to a full window.
+        content_frames = mel.shape[-2] - N_FRAMES
+        window = pad_or_trim(mel[: min(N_FRAMES, content_frames)], N_FRAMES, axis=-2)
+        window = window.astype(mx.float16)[None]
+        features = model.encoder(window)
+        _, probabilities = model.detect_language(features[0])
 
         scores = {code: float(probabilities.get(code, 0.0)) for code in self.SUPPORTED_LANGUAGES}
-        return max(scores, key=scores.get)
+        return max(scores, key=scores.get), _reused_encoding(model.encoder, window, features)
 
     def transcribe_pcm(self, samples, source_lang, target_lang):
         """Decode the recorder's mono 16 kHz float PCM without writing it to disk."""
@@ -174,27 +192,28 @@ class WhisperMLXModel(BaseSTTModel):
         transcriptions = []
         for audio_path in audio_paths:
             if source_lang == self.AUTOMATIC:
-                language = self.detect_language(audio_path)
+                language, encoding = self._detect_language_once(audio_path)
             else:
-                language = source_lang
+                language, encoding = source_lang, nullcontext()
 
-            result = mlx_whisper.transcribe(
-                audio_path,
-                path_or_hf_repo=self._checked_model_name(),
-                language=language,
-                task="transcribe",
-                temperature=self.DECODE_TEMPERATURES,
-                # Whisper's default, and what carries the vocabulary past the
-                # first 30-second window: the prompt buffer keeps the initial
-                # prompt plus the decoded text, so later windows still see the
-                # taught spellings — reinforced by the correctly spelled text
-                # itself. The repetition loops this used to risk are handled
-                # by the temperature ladder: any fallback above 0.5 makes
-                # mlx_whisper reset the prompt buffer for the next window.
-                condition_on_previous_text=True,
-                initial_prompt=initial_prompt,
-                verbose=None,
-            )
+            with encoding:
+                result = mlx_whisper.transcribe(
+                    audio_path,
+                    path_or_hf_repo=self._checked_model_name(),
+                    language=language,
+                    task="transcribe",
+                    temperature=self.DECODE_TEMPERATURES,
+                    # Whisper's default, and what carries the vocabulary past the
+                    # first 30-second window: the prompt buffer keeps the initial
+                    # prompt plus the decoded text, so later windows still see the
+                    # taught spellings — reinforced by the correctly spelled text
+                    # itself. The repetition loops this used to risk are handled
+                    # by the temperature ladder: any fallback above 0.5 makes
+                    # mlx_whisper reset the prompt buffer for the next window.
+                    condition_on_previous_text=True,
+                    initial_prompt=initial_prompt,
+                    verbose=None,
+                )
 
             self._repair_looped_segments(result, audio_path, language)
             text = self._clean_text(self._assemble_text(result))
@@ -316,3 +335,30 @@ class WhisperMLXModel(BaseSTTModel):
     @property
     def name(self):
         return f"WhisperMLX-{self.model_name.split('/')[-1]}"
+
+
+@contextmanager
+def _reused_encoding(encoder, window, features):
+    """Answer the encoder from `features` while it is asked for `window`.
+
+    Scoped to one transcribe() call on the transcription worker, the only
+    thread that runs MLX. Any other input — later 30 s windows, clipped
+    re-decodes — is encoded as usual. The temperature fallback re-encodes the
+    same window for every retry, so it is answered from here as well.
+    """
+    import mlx.core as mx
+
+    encoder_class = type(encoder)
+    original = encoder_class.__call__
+
+    def call(self, x):
+        if (self is encoder and x.shape == window.shape and x.dtype == window.dtype
+                and mx.array_equal(x, window).item()):
+            return features
+        return original(self, x)
+
+    encoder_class.__call__ = call
+    try:
+        yield
+    finally:
+        encoder_class.__call__ = original
