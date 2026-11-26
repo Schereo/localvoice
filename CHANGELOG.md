@@ -11,6 +11,35 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Changed
+
+- The recording pill appears right after the hotkey (~20 ms instead of
+  ~0.4 s). A hidden pill is started ahead of time (no CPU while it waits) and
+  only shown on the hotkey, before the microphone opens instead of after it;
+  the start beep still marks the moment capture is live. Its fade-in is
+  80 ms instead of 180 ms.
+- Recording starts about 0.2 s sooner. The microphone process used to be
+  started (Python plus PortAudio) on every hotkey tap; a standby process is now
+  prepared ahead of time and only opens the device when you start dictating.
+  It holds no stream while waiting, so the microphone indicator stays off. The
+  log records how long each open took (`Microphone open after … ms`).
+- Whisper with the language on Auto transcribes about twice as fast: ~0.35 s
+  instead of ~0.65 s per decode with Turbo, the same as with a fixed
+  language. Detecting German or English used to run the audio encoder (most
+  of a decode) a second time; now the first window is encoded once and that
+  encoding serves both the detection and the transcription. The live preview
+  gets the same saving every second.
+- With the live preview on, stopping right after a sentence often needs no
+  decode at all: when the newest preview covered the whole open phrase and
+  only quiet audio followed (no speech by VAD, low level), its text is the
+  phrase's transcript. Otherwise the phrase is decoded as before. The log
+  says when this happens.
+- Pausing and resuming Spotify or Music (`pause-media`) no longer holds up
+  recording or insertion: both run osascript on their own thread, in order.
+- The first paste after a service start is ~0.25 s faster (the accessibility
+  bindings are loaded at startup), and the pause before Cmd+V is 50 ms
+  instead of 100 ms.
+
 ## [1.3.0] — 2026-11-25
 
 ### Added

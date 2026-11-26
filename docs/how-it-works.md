@@ -42,7 +42,7 @@ Three rules keep a wedged subsystem from taking dictation down with it.
 
 **A watchdog owns the last resort.** A deadlock leaves the process alive, so launchd's `KeepAlive` never fires — dictation is dead while the service looks healthy. If a command makes no progress for 90 seconds, a watchdog thread shows a pill and calls `os._exit(1)`, the only exit that works with threads stuck in a kernel mutex. The LaunchAgent restarts the service seconds later.
 
-**The microphone lives in its own process.** CoreAudio's HAL deadlocks in the stream teardown path, and a mutex wedged inside our own process cannot be broken from Python — that is what repeatedly killed dictation for good. `mic_capture.py` owns the stream and writes raw frames to the parent over a pipe; silence detection, buffering and the onset roll stay in the parent, unchanged. Releasing the microphone is then a `kill`, which the kernel always honours: immediate, deadlock-proof, and the macOS indicator goes out with the process. Opening is bounded too — the child reports `ready` or `open-failed`, and a timeout raises instead of hanging.
+**The microphone lives in its own process.** CoreAudio's HAL deadlocks in the stream teardown path, and a mutex wedged inside our own process cannot be broken from Python — that is what repeatedly killed dictation for good. `mic_capture.py` owns the stream and writes raw frames to the parent over a pipe; silence detection, buffering and the onset roll stay in the parent, unchanged. Releasing the microphone is then a `kill`, which the kernel always honours: immediate, deadlock-proof, and the macOS indicator goes out with the process. Opening is bounded too — the child reports `ready` or `open-failed`, and a timeout raises instead of hanging. Starting that child (Python plus PortAudio, ~0.2 s) used to open every recording; now a standby child is started ahead of time, waits with PortAudio loaded but no stream open (the indicator stays off), and only receives `open <device>` when the hotkey fires. It refreshes PortAudio's device list on open (a few ms), so a microphone connected meanwhile is still found; if the standby child is gone, a new one is started as before.
 
 ## Why the first word is not swallowed
 
@@ -51,3 +51,14 @@ Two mechanisms used to eat word onsets: audio arriving before the recording flag
 ## Naming
 
 The app appears everywhere as **LocalVoice** (`com.localvoice.app`). The engine underneath is [ctrlSPEAK](https://github.com/patelnav/ctrlspeak). The private app stages its own patched copy and runtime without using Homebrew. Helpers retain their `ctrlspeak-*` names. LocalVoice preferences are in `~/.config/localvoice/config`; the private app keeps its selections, owned models, and bounded service logs under `~/Library/Application Support/LocalVoice`.
+
+## Fast paths in the stop path
+
+**Language detection reuses the encoding.** For Whisper on Auto, the first 30-second window is built exactly as `mlx_whisper.transcribe()` builds it, encoded once, and the German/English choice is read from that encoding. During the following `transcribe()` call the encoder answers that same window from the kept result (`_reused_encoding` in `models/whisper_mlx.py`), so Auto costs one decoder step rather than a second encoder pass — about 0.3 s per decode with Turbo, previews included.
+
+**A finished preview can be the final transcript.** A live preview that covered the whole open segment is remembered with the number of capture chunks it saw, even if stop froze capture while it was decoding. At stop, the worker first finishes what is already running; if everything recorded after that preview is quiet (VAD silence and an RMS below the fallback threshold, tracked as `quiet_tail_chunks`), the preview's text is used and the segment is not decoded again. Any louder chunk, a preview of only the segment's tail, or a newer segment falls back to the normal decode.
+
+**Media control is off the critical path.** `pause-media` pauses and resumes players through osascript on one serial thread, so neither the microphone open nor the transcription waits for Apple Events, and a resume can never overtake its pause.
+
+**The pill is waiting before the hotkey.** `ctrlspeak-overlay standby` builds the window hidden with its animation clock stopped; `show <language>` puts it on screen within a frame. The service keeps one such pill ready (started at launch and again with every recording) and shows it before opening the microphone, so the pill answers the tap while capture opens behind it. If the standby pill is gone, a new overlay process is launched as before.
+

@@ -115,6 +115,12 @@ def _run_job(model, job, results_list):
     # Checking and publishing together prevents Esc or the next recording
     # from landing between the check and a late result/preview update.
     with manager.capture_lock:
+        if (job.kind == "preview" and job.preview_chunks >= 0
+                and job.recording_id == manager.recording_id
+                and job.preview_segment == manager.segments_queued):
+            # Kept even when stop froze capture mid-decode: this may be the
+            # finished transcript of the segment (hotkeys._tail_from_preview).
+            state.last_preview = (job.recording_id, job.preview_segment, job.preview_chunks, text or "")
         if not _is_current(manager, job):
             return
         if job.kind == "preview":

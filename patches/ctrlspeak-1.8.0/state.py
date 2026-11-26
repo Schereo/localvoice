@@ -57,6 +57,9 @@ class TranscriptionJob(NamedTuple):
     preview_segment: int = -1
     is_final: bool = False
     backend: object = None
+    # For a preview of the whole open segment: how many capture chunks the
+    # snapshot held (-1 when it held only the segment's tail).
+    preview_chunks: int = -1
 
 keyboard_manager = None
 
@@ -75,6 +78,11 @@ mic_standby = False
 # Read from the config once per session start, so a mid-recording edit of
 # "live-preview" cannot half-apply.
 live_preview_active = False
+
+# The newest preview that covered a whole open segment, as (recording_id,
+# segment, chunks, text). If nothing but quiet audio followed it, it already
+# is that segment's transcript, and stop needs no decode of its own.
+last_preview = None
 
 # Recording timing
 recording_start_time = None

@@ -57,6 +57,20 @@ def copy_to_clipboard(text):
         return False
 
 
+def prepare():
+    """Import the accessibility bindings ahead of the first paste.
+
+    PyObjC's ApplicationServices takes ~0.25 s to import. Done lazily, the
+    first dictation after every service start paid it between the finished
+    transcript and Cmd+V. Called once from a background thread at startup.
+    """
+    try:
+        import ApplicationServices  # noqa: F401
+        from pynput import keyboard  # noqa: F401
+    except Exception as exc:
+        logger.debug(f"Could not preload the paste helpers: {exc}")
+
+
 def _focused_element_accepts_text():
     """Best-effort check whether the focused UI element can take a paste.
 
@@ -145,8 +159,9 @@ def paste_from_clipboard():
     from pynput import keyboard
     kb = keyboard.Controller()
 
-    # Small delay to ensure clipboard is ready
-    time.sleep(0.1)
+    # pbcopy has returned, so the pasteboard already holds the transcript;
+    # this only gives the target app a beat before the keystroke arrives.
+    time.sleep(0.05)
 
     # Simulate Command+V to paste
     with kb.pressed(keyboard.Key.cmd):

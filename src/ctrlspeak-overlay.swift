@@ -119,10 +119,21 @@ final class RecorderHUDView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        startAnimating()
+    }
 
+    /// The 30 Hz animation clock. A standby pill waits hidden, possibly for
+    /// hours, and must not wake the CPU thirty times a second meanwhile.
+    func startAnimating() {
+        guard animationTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
         RunLoop.main.add(timer, forMode: .common)
         animationTimer = timer
+    }
+
+    func stopAnimating() {
+        animationTimer?.invalidate()
+        animationTimer = nil
     }
 
     required init?(coder: NSCoder) {
@@ -918,6 +929,7 @@ final class OverlayController: NSObject {
     private let containerView: ShadowContainerView
     private var inputBuffer = Data()
     private var isClosing = false
+    private var isStandby = false
     private var previewTimer: Timer?
 
     init(application: NSApplication, launchMode: String, language: String) {
@@ -928,7 +940,8 @@ final class OverlayController: NSObject {
         // their two text lines need. The configured compact pill drops the
         // badge as well and shrinks the capsule accordingly.
         let hideBadge = managedApp || loadCompactSetting()
-        let recordingCapsule = launchMode == "recording" || launchMode == "preview"
+        // A standby pill becomes a recording pill when it is shown.
+        let recordingCapsule = launchMode == "recording" || launchMode == "preview" || launchMode == "standby"
         let capsuleSize: NSSize
         if recordingCapsule {
             capsuleSize = NSSize(width: hideBadge ? 240 : 300, height: 44)
@@ -1023,6 +1036,16 @@ final class OverlayController: NSObject {
         panel.contentView = containerView
 
         positionPanel(panelSize: panelSize)
+
+        if launchMode == "standby" {
+            // Started ahead of the hotkey: AppKit, the window and the blur
+            // are ready, so "show" puts the pill on screen within a frame
+            // instead of after a process launch (~0.15-0.25 s).
+            isStandby = true
+            hudView.stopAnimating()
+            startReadingCommands()
+            return
+        }
         showPanel()
 
         if launchMode == "preview" {
@@ -1153,7 +1176,9 @@ final class OverlayController: NSObject {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            // Short: the pill is the answer to the hotkey and should read as
+            // instant; a longer fade made the start feel sluggish.
+            context.duration = 0.08
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
         }
@@ -1193,6 +1218,15 @@ final class OverlayController: NSObject {
         guard let action = parts.first else { return }
 
         switch action {
+        case "show":
+            guard isStandby else { return }
+            isStandby = false
+            hudView.setLanguage(parts.count == 2 ? parts[1] : "de")
+            hudView.setMode(.recording)
+            hudView.startAnimating()
+            // The active screen may have changed while the pill waited.
+            positionPanel(panelSize: panel.frame.size)
+            showPanel()
         case "level" where parts.count == 2:
             if let value = Double(parts[1]) {
                 hudView.setLevel(value)

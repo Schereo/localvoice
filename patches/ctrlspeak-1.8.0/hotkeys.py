@@ -218,14 +218,23 @@ class _OverlaySession:
         terminal_deadline = None
 
         try:
-            process = subprocess.Popen(
-                [_OVERLAY_PATH, self.initial_mode, self.language],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                bufsize=1,
-            )
+            if self.initial_mode == "recording":
+                process = _take_standby_overlay()
+                if process is not None:
+                    try:
+                        self._write(process, f"show {self.language}")
+                    except (BrokenPipeError, OSError):
+                        process.kill()
+                        process = None
+            if process is None:
+                process = subprocess.Popen(
+                    [_OVERLAY_PATH, self.initial_mode, self.language],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    bufsize=1,
+                )
             threading.Thread(
                 target=self._read_events,
                 args=(process,),
@@ -274,6 +283,43 @@ class _OverlaySession:
                         process.terminate()
 
 
+# A pill started ahead of the hotkey in the overlay's "standby" mode: AppKit
+# is up and the window built, but nothing is on screen. "show <language>"
+# brings it up within a frame (~20 ms) instead of after a process launch
+# (~0.15-0.25 s), which was most of the wait between hotkey and pill.
+_standby_overlay = None
+_standby_overlay_lock = threading.Lock()
+
+
+def prepare_overlay():
+    """Have a hidden pill waiting for the next recording. Never raises."""
+    global _standby_overlay
+    with _standby_overlay_lock:
+        if _standby_overlay is not None and _standby_overlay.poll() is None:
+            return
+        try:
+            _standby_overlay = subprocess.Popen(
+                [_OVERLAY_PATH, "standby", state.source_lang],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            _standby_overlay = None
+            logger.warning(f"Could not prepare the recorder overlay: {exc}")
+
+
+def _take_standby_overlay():
+    global _standby_overlay
+    with _standby_overlay_lock:
+        process, _standby_overlay = _standby_overlay, None
+    if process is not None and process.poll() is None:
+        return process
+    return None
+
+
 def _start_recording_overlay():
     """Start a fresh persistent overlay for this recording session."""
     global _overlay_session
@@ -284,6 +330,19 @@ def _start_recording_overlay():
 
         _overlay_session = _OverlaySession(state.source_lang)
         _overlay_session.start()
+    # The next recording's pill gets ready while this one is up.
+    threading.Thread(target=prepare_overlay, name="overlay-prewarm", daemon=True).start()
+
+
+def _fail_recording_overlay(detail):
+    """Turn this session's pill into the start error, or show one."""
+    with _overlay_session_lock:
+        session = _overlay_session
+        if session is not None:
+            session.set_detail(detail)
+            session.set_state("empty")
+    if session is None:
+        _show_start_error(detail)
 
 
 def _show_start_error(detail):
@@ -417,9 +476,15 @@ def _live_preview_ticker(manager, recording_id):
                 if remaining <= 0:
                     break
             audio = np.concatenate(chunks[::-1])
+            # Whole segment (not just its tail): the result can stand in for
+            # the segment's own decode at stop; see _tail_from_preview.
+            whole = remaining > 0
             if len(audio) >= int(PREVIEW_MIN_AUDIO_S * SAMPLE_RATE):
                 state.transcription_queue.put(
-                    TranscriptionJob(recording_id, "preview", audio, manager.segments_queued)
+                    TranscriptionJob(
+                        recording_id, "preview", audio, manager.segments_queued,
+                        preview_chunks=len(manager.audio_buffer) if whole else -1,
+                    )
                 )
 
 
@@ -440,6 +505,7 @@ def _start_live_preview():
 
 def _clear_transcript():
     state.transcribed_chunks.clear()
+    state.last_preview = None
     if getattr(state, "app_state_ref", None):
         state.app_state_ref.accumulated_text = ""
 
@@ -540,17 +606,24 @@ def _start_recording():
 
     opened_on_demand = False
     started = False
+    overlay_shown = False
     try:
         if model_id := os.environ.get("LOCALVOICE_MODEL_ID"):
             # Apply a preference at the recording boundary, including for
             # Nemotron's streaming prompt. Never change it mid-recording.
             state.source_lang = state.target_lang = localvoice_config.model_language(model_id)
+        # The pill answers the hotkey at once; the microphone (~0.1 s) opens
+        # behind it, well before anyone starts speaking, and the start beep
+        # still marks the moment capture is live.
+        _start_recording_overlay()
+        overlay_shown = True
         if localvoice_config.as_bool("pause-media"):
-            media_pause.pause_playing()
+            _queue_media(_pause_media)
         with manager.input_stream_lock:
             if not state.mic_standby:
                 opened_on_demand = True
-                manager.open_input_stream()
+                # Also readies a standby capture child for the next one.
+                manager.open_input_stream(prepare_next=True)
             state.recording_start_time = time.monotonic()
             _clear_transcript()
             model = state.stt_model
@@ -563,13 +636,15 @@ def _start_recording():
                 manager.start_recording()
 
         play_start_beep()
-        _start_recording_overlay()
         if _streaming_model is None:
             _start_live_preview()
         started = True
     except Exception:
         logger.error("Could not start recording.")
-        _show_start_error("Could not start recording")
+        if overlay_shown:
+            _fail_recording_overlay("Could not start recording")
+        else:
+            _show_start_error("Could not start recording")
     finally:
         if not started:
             if manager.is_collecting:
@@ -586,11 +661,55 @@ def _start_recording():
                     _release_session_lock()
 
 
-def _resume_playback():
+# Pausing and resuming media players runs osascript (~50 ms with no player
+# open, more once Apple Events reach Spotify or Music), which used to sit in
+# front of the microphone on every start and in front of the transcription on
+# every stop. One serial thread takes them off both paths and keeps their
+# order, so a resume can never overtake the pause it undoes, nor the pause of
+# a recording started right after it.
+# A daemon, unlike a ThreadPoolExecutor's workers: a pending osascript must
+# never hold up the service's exit.
+_media_queue = queue.Queue()
+_media_thread = None
+_media_thread_lock = threading.Lock()
+
+
+def _media_worker():
+    while True:
+        operation = _media_queue.get()
+        try:
+            operation()
+        finally:
+            _media_queue.task_done()
+
+
+def _queue_media(operation):
+    global _media_thread
+    with _media_thread_lock:
+        if _media_thread is None:
+            _media_thread = threading.Thread(
+                target=_media_worker, name="ctrlspeak-media", daemon=True
+            )
+            _media_thread.start()
+    _media_queue.put(operation)
+
+
+def _pause_media():
+    try:
+        media_pause.pause_playing()
+    except Exception:
+        logger.warning("Could not pause playback.")
+
+
+def _resume_media():
     try:
         media_pause.resume_paused()
     except Exception:
         logger.warning("Could not resume playback.")
+
+
+def _resume_playback():
+    _queue_media(_resume_media)
 
 
 def _end_recording(recording_id, *, discard=False):
@@ -633,7 +752,14 @@ def _end_recording(recording_id, *, discard=False):
                 TranscriptionJob(recording_id, "stream-finish", backend=_streaming_model)
             )
         else:
-            manager.finish_recording()
+            # Earlier segments and an in-flight preview finish first; the
+            # worker is serial, so the tail could not have started sooner.
+            state.transcription_queue.join()
+            tail = _tail_from_preview(manager, recording_id)
+            if tail is None:
+                manager.finish_recording()
+            elif tail:
+                state.transcribed_chunks.append(tail)
         state.transcription_queue.join()
 
         final_text = " ".join(state.transcribed_chunks).strip()
@@ -652,6 +778,32 @@ def _end_recording(recording_id, *, discard=False):
         state.recording_start_time = None
         _streaming_model = None
         _release_session_lock()
+
+
+def _tail_from_preview(manager, recording_id):
+    """The open segment's transcript, if a live preview already decoded it.
+
+    A preview that covered the whole segment, followed by nothing but quiet
+    audio (no VAD speech, low level), decoded everything the final decode
+    would hear — usually the case when you finish a sentence and tap the
+    hotkey a moment later. Reusing it saves a full decode (~0.35 s for
+    Whisper Turbo) between the tap and the inserted text. Returns the text
+    ("" for a decoded silence), or None when the tail still needs decoding.
+    """
+    with manager.capture_lock:
+        preview, state.last_preview = state.last_preview, None
+        if preview is None:
+            return None
+        preview_recording, segment, chunks, text = preview
+        if preview_recording != recording_id or segment != manager.segments_queued:
+            return None
+        added = len(manager.audio_buffer) - chunks
+        if chunks <= 0 or added < 0 or added > manager.quiet_tail_chunks:
+            return None
+        manager.set_is_collecting(False)
+        manager.reset_collected_audio()
+    logger.info("Final segment taken from the live preview; nothing was said after it.")
+    return text
 
 
 def _deliver_transcript(text, duration):

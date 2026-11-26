@@ -207,6 +207,83 @@ class RecordingBoundaryTests(unittest.TestCase):
         self.assertIn("OverflowError", str(logs.output))
         self.assertNotIn("private exception payload", str(logs.output))
 
+    def capture_manager(self, standby_body):
+        """A real AudioManager whose capture child is a fake mic_capture.py."""
+        script = self.temp / "fake_capture.py"
+        log = self.temp / "capture.log"
+        script.write_text(
+            "import sys, time\n"
+            f"log = open({str(log)!r}, 'a')\n"
+            "if sys.argv[4] == '--standby':\n"
+            "    print('standby', file=sys.stderr, flush=True)\n"
+            f"{standby_body}"
+            "else:\n"
+            "    log.write('new ' + sys.argv[4] + '\\n'); log.flush()\n"
+            "print('ready', file=sys.stderr, flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        manager = self.audio.AudioManager(self.state.transcription_queue)
+        manager._mic_command = lambda device: [sys.executable, str(script), "16000", "1", "1024", device]
+        manager.input_device = "MacBook Air-Mikrofon"
+        self.addCleanup(manager.discard_standby_mic)
+        self.addCleanup(manager.close_input_stream)
+        return manager, log
+
+    def test_recording_opens_the_device_in_the_prewarmed_capture_child(self):
+        manager, log = self.capture_manager(
+            "    log.write('standby ' + sys.stdin.readline()); log.flush()\n"
+        )
+        manager.prewarm_input_stream()
+        standby = manager._standby_mic
+        manager.open_input_stream(prepare_next=True)
+        self.assertIs(manager._mic_process, standby)
+        self.assertEqual(log.read_text(), "standby open MacBook Air-Mikrofon\n")
+        # The next recording gets its own standby child, prepared in the background.
+        for _ in range(100):
+            if manager._standby_mic is not None:
+                break
+            threading.Event().wait(0.02)
+        self.assertIsNotNone(manager._standby_mic)
+        self.assertIsNot(manager._standby_mic, standby)
+        manager.close_input_stream()
+        self.assertIsNotNone(standby.poll())
+
+    def test_recording_pill_is_the_prepared_standby_overlay(self):
+        script = self.temp / "fake_overlay.py"
+        log = self.temp / "overlay.log"
+        script.write_text(
+            "#!" + sys.executable + "\n"
+            "import sys\n"
+            f"log = open({str(log)!r}, 'a')\n"
+            "log.write('start ' + ' '.join(sys.argv[1:]) + '\\n'); log.flush()\n"
+            "for line in sys.stdin:\n"
+            "    if not line.startswith('level'):\n"
+            "        log.write(line); log.flush()\n"
+            "    if line.strip() == 'quit':\n"
+            "        break\n"
+        )
+        script.chmod(0o755)
+        with patch.object(self.hotkeys, "_OVERLAY_PATH", str(script)):
+            self.state.source_lang = "en"
+            self.hotkeys.prepare_overlay()
+            standby = self.hotkeys._standby_overlay
+            session = self.hotkeys._OverlaySession("de")
+            session.start()
+            session.close()
+            session.thread.join(timeout=3)
+        self.assertIsNone(self.hotkeys._standby_overlay)
+        self.assertEqual(standby.wait(timeout=3), 0)
+        self.assertEqual(log.read_text(), "start standby en\nshow de\nquit\n")
+
+    def test_dead_standby_child_falls_back_to_a_new_capture_process(self):
+        # Dies after taking the open line, before reporting: always the fallback path.
+        manager, log = self.capture_manager("    sys.stdin.readline(); sys.exit(0)\n")
+        manager.prewarm_input_stream()
+        with self.assertLogs("ctrlspeak.audio", "WARNING"):
+            manager.open_input_stream()
+        self.assertEqual(log.read_text(), "new MacBook Air-Mikrofon\n")
+        self.assertIsNone(manager._standby_mic)
+
     def test_stop_freezes_before_close_beep_resume_and_drain(self):
         text = "literal [/markup] [link=bad]\nsensitive words"
         model = Mock(transcribe_pcm=None)
@@ -235,13 +312,35 @@ class RecordingBoundaryTests(unittest.TestCase):
         with self.assertLogs("ctrlspeak", level="DEBUG") as captured:
             logging.getLogger("ctrlspeak").debug("Test log capture.")
             self.hotkeys._end_recording(self.manager.recording_id)
+        self.hotkeys._media_queue.join()
 
-        self.assertEqual(events, ["close", "beep", "resume", "tail", "clipboard"])
+        # Resuming media runs beside the transcription, never in front of it.
+        self.assertEqual([e for e in events if e != "resume"], ["close", "beep", "tail", "clipboard"])
+        self.assertEqual(events.count("resume"), 1)
+        self.assertLess(events.index("close"), events.index("resume"))
         self.clipboard.assert_called_once_with(text)
         self.history.add_entry.assert_called_once()
         self.assertEqual(self.history.add_entry.call_args.kwargs["text"], text)
         self.assertNotIn("sensitive words", "\n".join(captured.output))
         self.assertEqual(self.stdout.getvalue(), "")
+
+    def test_media_pause_never_delays_the_microphone_and_resume_follows_it(self):
+        release = threading.Event()
+        events = []
+
+        def pause():
+            release.wait(2)
+            events.append("pause")
+
+        self.hotkeys.media_pause.pause_playing = pause
+        self.resume.side_effect = lambda: events.append("resume")
+        self.config.as_bool = Mock(side_effect=lambda key: key == "pause-media")
+        self.manager.open_input_stream.side_effect = lambda **_: events.append("open")
+        self.hotkeys._start_recording()
+        self.hotkeys._end_recording(self.manager.recording_id, discard=True)
+        release.set()
+        self.hotkeys._media_queue.join()
+        self.assertEqual(events, ["open", "pause", "resume"])
 
     def test_escape_drops_queued_audio_and_late_decode_without_waiting(self):
         entered, unblock = threading.Event(), threading.Event()
@@ -327,6 +426,62 @@ class RecordingBoundaryTests(unittest.TestCase):
             self.state.transcription_queue.join()
             preview.assert_not_called()
 
+    def preview_then_stop(self, decode, after_preview, *, block=None):
+        """Record ten speech chunks, preview them whole, then stop."""
+        model = Mock(supports_streaming=False, transcribe_pcm=Mock(side_effect=decode))
+        self.start_worker(model)
+        self.hotkeys._start_recording()
+        self.state.live_preview_active = True
+        manager = self.manager
+        manager.audio_buffer.extend(Samples([0.3] * 1024) for _ in range(10))
+        with patch.object(self.hotkeys, "set_overlay_transcript"):
+            self.state.transcription_queue.put(self.state.TranscriptionJob(
+                manager.recording_id, "preview", concatenate(manager.audio_buffer),
+                manager.segments_queued, preview_chunks=10,
+            ))
+            if block is None:
+                self.state.transcription_queue.join()
+            after_preview(manager)
+            self.hotkeys._end_recording(manager.recording_id)
+        return model
+
+    def test_stop_reuses_a_whole_segment_preview_when_only_quiet_audio_followed(self):
+        def quiet_tail(manager):
+            manager.audio_buffer.extend(Samples([0.001] * 1024) for _ in range(3))
+            manager.quiet_tail_chunks = 3
+
+        model = self.preview_then_stop(lambda *_: "Fertiger Satz.", quiet_tail)
+        model.transcribe_pcm.assert_called_once()
+        self.clipboard.assert_called_once_with("Fertiger Satz.")
+
+    def test_stop_decodes_the_tail_when_anything_but_quiet_followed_the_preview(self):
+        texts = iter(["Fertiger", "Fertiger Satz, und noch mehr."])
+
+        def more_speech(manager):
+            manager.audio_buffer.extend(Samples([0.3] * 1024) for _ in range(3))
+            manager.quiet_tail_chunks = 1  # only the last chunk was quiet
+
+        model = self.preview_then_stop(lambda *_: next(texts), more_speech)
+        self.assertEqual(model.transcribe_pcm.call_count, 2)
+        self.clipboard.assert_called_once_with("Fertiger Satz, und noch mehr.")
+
+    def test_preview_still_decoding_at_stop_is_used_once_it_finishes(self):
+        entered, unblock = threading.Event(), threading.Event()
+
+        def decode(*_args):
+            entered.set()
+            unblock.wait(2)
+            return "Gerade noch rechtzeitig."
+
+        def stop_mid_preview(manager):
+            self.assertTrue(entered.wait(1))
+            # Stop arrives while the preview decodes; let it finish shortly after.
+            threading.Timer(0.05, unblock.set).start()
+
+        model = self.preview_then_stop(decode, stop_mid_preview, block=True)
+        model.transcribe_pcm.assert_called_once()
+        self.clipboard.assert_called_once_with("Gerade noch rechtzeitig.")
+
     def test_streaming_stop_decodes_tail_after_close_and_resume(self):
         # A legacy model selection may change the current streaming backend
         # without replacing the persistent worker.
@@ -356,8 +511,10 @@ class RecordingBoundaryTests(unittest.TestCase):
             self.manager.audio_callback(Samples([0.2] * 1024), 1024, None, None)
             self.hotkeys._end_recording(self.manager.recording_id)
             backend_log.info("ordinary status")
+        self.hotkeys._media_queue.join()
         self.assertEqual(captured.output, ["INFO:synthetic_backend:ordinary status"])
-        self.assertEqual(events, ["close", "resume", "tail", "final"])
+        self.assertEqual([e for e in events if e != "resume"], ["close", "tail", "final"])
+        self.assertEqual(events.count("resume"), 1)
         model.init_streaming.assert_called_once()
         model.stream_chunk.assert_called_once()
         self.assertTrue(model.stream_chunk.call_args.kwargs["is_final"])
@@ -402,6 +559,7 @@ class RecordingBoundaryTests(unittest.TestCase):
             self.resume.side_effect = ValueError("secret")
             with self.assertLogs("ctrlspeak", "WARNING") as capture:
                 self.hotkeys._end_recording(self.manager.recording_id)
+                self.hotkeys._media_queue.join()
             self.assertNotIn("secret", "\n".join(capture.output))
             self.history.add_entry.assert_called_once()
             fcntl.flock(launcher, fcntl.LOCK_EX | fcntl.LOCK_NB)
