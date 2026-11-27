@@ -1,3 +1,6 @@
+# Deploys site/ with its download pointing at the latest published release.
+# Besides site changes, the Build workflow starts it after publishing a release,
+# so a release reaches the website without a commit.
 name: Deploy to Cloudflare Workers
 
 on:
@@ -6,6 +9,7 @@ on:
     paths:
       - "site/**"
       - "wrangler.jsonc"
+      - "scripts/stamp-site-release.py"
       - ".github/workflows/cloudflare-workers.yml"
   workflow_dispatch:
 
@@ -32,6 +36,20 @@ jobs:
             'https://cdn.fontshare.com/wf/XOA57OZMKHW23ICYFRTJOQCQWVSMWZJN/3LCT6HEGSJDUZ6TI5CQWLMN6PA2VPOSL/45F676ZHU3B76JLFL4Y4VZQCPHNNW3ME.woff2' \
             --output "$font"
           printf '%s  %s\n' '663b116eff9cc1544042000edcbb3ce28fb038fb33cf46b7e2e0cd74ee1164ec' "$font" | sha256sum -c -
+      # Latest = newest published release that is not a pre-release, so dev
+      # builds never reach the website. A release without its disk image
+      # stops the deploy rather than linking a download that does not exist.
+      - name: Point the download at the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName,assets)"
+          tag="$(jq -r .tagName <<<"$release")"
+          if ! jq -e --arg name "LocalVoice-$tag-arm64.dmg" 'any(.assets[]; .name == $name)' <<<"$release" >/dev/null; then
+            echo "::error::Release $tag has no LocalVoice-$tag-arm64.dmg; not deploying a broken download."
+            exit 1
+          fi
+          python3 scripts/stamp-site-release.py "$tag"
       - name: Deploy site
         uses: cloudflare/wrangler-action@v4
         with:

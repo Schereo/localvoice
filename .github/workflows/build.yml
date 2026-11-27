@@ -5,7 +5,8 @@
 #   push to main (every merged PR)  ->  dev pre-release v<VERSION>-dev.<run>,
 #                                       "LocalVoice Test" (com.localvoice.dev)
 #   push of tag v<VERSION>          ->  the release itself, "LocalVoice" (com.localvoice.app),
-#                                       with its notes from CHANGELOG.md
+#                                       with its notes from CHANGELOG.md; then the website
+#                                       is redeployed with the new download
 #
 # Two jobs: `build` runs the checks and all third-party build code without any
 # secrets; `sign` gets the unsigned app as an artifact on a fresh runner and only
@@ -131,6 +132,7 @@ jobs:
     environment: release
     permissions:
       contents: write # create the release
+      actions: write # start the website deploy after a release
     env:
       KEEP_DEV_RELEASES: 10
       CHANNEL: ${{ needs.build.outputs.channel }}
@@ -287,6 +289,15 @@ jobs:
               --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "LocalVoice $VERSION_BASE" --notes-file build/notes.md
           fi
+
+      # A release made with this job's token starts no workflows by itself
+      # (GitHub's loop guard); a dispatch is the exception. The deploy stamps
+      # the download with the latest release, which is now this one.
+      - name: Update the website
+        if: env.CHANNEL == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run cloudflare-workers.yml --repo "$GITHUB_REPOSITORY" --ref main
 
       - name: Prune old dev releases
         if: env.CHANNEL == 'dev'

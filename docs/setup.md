@@ -64,7 +64,7 @@ The `build` job runs the checks and the build without any secrets and hands the 
 
 Dev releases use the bundle identifier `com.localvoice.dev` and the name **LocalVoice Test**, the same as local test builds, so they install next to a release.
 
-A release is cut with `./scripts/release.sh <version>` (it moves the Unreleased changelog section under the version and tags `v<version>`). Pushing the tag runs the same workflow, which builds **LocalVoice** with the bundle identifier `com.localvoice.app`, signs and notarizes it, and publishes the GitHub release `v<version>` with `LocalVoice-v<version>-arm64.dmg` and the changelog section as notes. The tag must match `VERSION`.
+A release is cut with `./scripts/release.sh <version>` (it moves the Unreleased changelog section under the version and tags `v<version>`). Pushing the tag runs the same workflow, which builds **LocalVoice** with the bundle identifier `com.localvoice.app`, signs and notarizes it, and publishes the GitHub release `v<version>` with `LocalVoice-v<version>-arm64.dmg` and the changelog section as notes. The tag must match `VERSION`. Once the release is published, the workflow starts the website deploy ([`.github/workflows/cloudflare-workers.yml`](../.github/workflows/cloudflare-workers.yml)), which points the download button and its version label at the latest published release ([`scripts/stamp-site-release.py`](../scripts/stamp-site-release.py)); pre-releases are skipped. The link in `site/index.html` therefore never needs a manual bump; the committed page keeps the version it was written with.
 
 ## Legacy Homebrew Installer
 
