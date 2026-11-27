@@ -542,6 +542,8 @@ def run_app(args):
         from utils.audio import AudioManager, resolve_input_device
         from hotkeys import (
             on_activate,
+            press_to_talk,
+            release_to_insert,
             is_recording,
             cancel_recording,
             finish_recording,
@@ -594,6 +596,8 @@ def run_app(args):
                 try:
                     app_control.start({
                         "toggle": on_activate,
+                        "start": press_to_talk,
+                        "stop": release_to_insert,
                         "finish": finish_recording,
                         "discard": cancel_recording,
                         # Off the reader thread: stopping a recording can

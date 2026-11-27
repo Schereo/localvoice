@@ -603,6 +603,26 @@ def on_activate():
     return _dispatch("activate", _start_recording)
 
 
+def press_to_talk():
+    """Queue a start for hold-to-talk; a running recording is left alone."""
+    return _dispatch("start", _start_recording)
+
+
+def release_to_insert():
+    """Queue stop-and-insert for hold-to-talk.
+
+    Unlike finish, this does not look at the recording now: it queues behind
+    the start, so a press shorter than the microphone takes to open still
+    ends the recording it began instead of leaving it running.
+    """
+    def stop():
+        manager = state.audio_manager
+        if manager is not None and manager.is_collecting:
+            _end_recording(manager.recording_id)
+
+    return _dispatch("stop", stop)
+
+
 def _start_recording():
     global _streaming_model, _session_lock_handle
     manager = state.audio_manager

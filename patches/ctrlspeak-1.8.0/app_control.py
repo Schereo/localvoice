@@ -6,7 +6,7 @@ LOCALVOICE_HOTKEYS=app. The service then runs no keyboard listener of its
 own. Its stdin is one end of a Unix socket pair, carrying a line protocol in
 both directions (see docs/how-it-works.md):
 
-    app -> service   toggle | finish | discard | quit
+    app -> service   toggle | start | stop | finish | discard | quit
     service -> app   ready | recording 1 | recording 0
 
 "ready" is sent once the service accepts commands; the app drops gestures
