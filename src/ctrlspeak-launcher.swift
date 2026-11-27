@@ -2380,7 +2380,8 @@ private final class ReadyIllustrationView: NSView {
 }
 
 @MainActor
-private func localVoiceTemplateIcon() -> NSImage {
+/// The three bars; `badge` adds a dot above the right one (an update is waiting).
+private func localVoiceTemplateIcon(badge: Bool = false) -> NSImage {
     let size = NSSize(width: 18, height: 18)
     let image = NSImage(size: size, flipped: false) { rect in
         let unit = min(rect.width, rect.height) / 22
@@ -2391,6 +2392,12 @@ private func localVoiceTemplateIcon() -> NSImage {
             let bar = NSRect(x: centerX - width / 2, y: rect.midY - height * unit / 2,
                              width: width, height: height * unit)
             NSBezierPath(roundedRect: bar, xRadius: width / 2, yRadius: width / 2).fill()
+        }
+        if badge {
+            let radius = 2.6 * unit
+            let center = NSPoint(x: rect.maxX - radius - 0.5, y: rect.maxY - radius - 0.5)
+            NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius,
+                                        width: 2 * radius, height: 2 * radius)).fill()
         }
         return true
     }
@@ -2587,6 +2594,19 @@ struct SettingsStatus {
     enum Level { case ready, busy, attention, off }
     let text: String
     let level: Level
+}
+
+/// The Updates row in Settings, for builds with an updater.
+struct SettingsUpdates {
+    /// Whether the updater runs yet; it starts once setup is done.
+    var started: () -> Bool
+    /// The version of a found update that waits to be installed.
+    var available: () -> String?
+    /// Whether LocalVoice looks for updates on its own, once a day.
+    var automatic: () -> Bool
+    var setAutomatic: (Bool) -> Void
+    /// Opens Sparkle's window: looks now, or shows the update already found.
+    var check: () -> Void
 }
 
 /// Launch at Login, for the menu bar item and the Settings switch. Only ever runs from a
@@ -3122,6 +3142,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     var onPageChange: ((SettingsPage) -> Void)?
     /// Something changed height; the window may need to grow.
     var onContentChange: (() -> Void)?
+    /// The Updates row under General. Without it (no updater in this build) the row is left out.
+    var updates: SettingsUpdates?
     private(set) var page: SettingsPage = .dictation
 
     private let modifier = NSPopUpButton()
@@ -3136,8 +3158,11 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private let pauseMedia = NSSwitch()
     private let menuBar = NSSwitch()
     private let login = NSSwitch()
+    private let autoUpdate = NSSwitch()
+    private let updateAction = NSButton(title: "", target: nil, action: nil)
     private var pauseRow: SettingsRow?
     private var loginRow: SettingsRow?
+    private var updatesRow: SettingsRow?
     private var vocabularyRow: SettingsRow?
     private let vocabularyAction = NSButton(title: "Choose Model…", target: nil, action: nil)
     private var vocabularySupported = true
@@ -3246,12 +3271,31 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
                         accessory: standby),
             pause,
         ])
-        let general = card("General", [
+        var generalRows = [
             SettingsRow(symbol: "menubar.rectangle", tint: .systemTeal, title: "Show in Menu Bar",
                         detail: "When hidden, open LocalVoice again to come back here.",
                         accessory: menuBar, separator: false),
             loginItem,
-        ])
+        ]
+        if updates != nil {
+            autoUpdate.controlSize = .small
+            autoUpdate.target = self
+            autoUpdate.action = #selector(changeAutoUpdate)
+            autoUpdate.setAccessibilityLabel("Check for Updates Automatically")
+            updateAction.bezelStyle = .push
+            updateAction.controlSize = .small
+            updateAction.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            updateAction.target = self
+            updateAction.action = #selector(performUpdateAction)
+            let controls = NSStackView(views: [updateAction, autoUpdate])
+            controls.spacing = 10
+            // Room for the longer title ("Update to 1.4.0 (312)…"), so the switch stays put.
+            let row = SettingsRow(symbol: "arrow.down.circle.fill", tint: .systemBlue, title: "Updates",
+                                  detail: "", accessory: controls, reserve: 200)
+            updatesRow = row
+            generalRows.append(row)
+        }
+        let general = card("General", generalRows)
 
         message.isHidden = true
         message.setAccessibilityRole(.staticText)
@@ -3441,6 +3485,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         guard isViewLoaded else { return }
         onStatus?(status?() ?? SettingsStatus(text: "Dictation is off", level: .off))
         updateVocabularyAvailability()
+        refreshUpdates()
         let service = SMAppService.mainApp.status
         login.state = service == .enabled ? .on : .off
         if service == .requiresApproval {
@@ -3507,6 +3552,37 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     }
 
     @objc private func chooseModel() { show(.models) }
+
+    // MARK: Updates
+
+    func refreshUpdates() {
+        guard isViewLoaded, let updates, let row = updatesRow else { return }
+        let current = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+            .map { " You have \($0)." } ?? ""
+        autoUpdate.state = updates.automatic() ? .on : .off
+        let started = updates.started()
+        updateAction.isEnabled = started
+        autoUpdate.isEnabled = started
+        if !started {
+            updateAction.title = "Check Now"
+            row.setDetail("Available once setup is done.\(current)")
+        } else if let version = updates.available() {
+            updateAction.title = "Update to \(version)…"
+            row.setDetail("\(bundleDisplayName()) \(version) is ready.\(current)",
+                          symbol: "arrow.down.circle.fill", tint: .systemBlue)
+        } else {
+            updateAction.title = "Check Now"
+            row.setDetail("Looks for a new version on GitHub once a day.\(current)")
+        }
+        autoUpdate.setAccessibilityHelp(row.detail.stringValue)
+    }
+
+    @objc private func changeAutoUpdate() {
+        updates?.setAutomatic(autoUpdate.state == .on)
+        refreshUpdates()
+    }
+
+    @objc private func performUpdateAction() { updates?.check() }
 
     private func saveVocabulary() {
         vocabularySave?.cancel()
@@ -3710,8 +3786,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var quit: (() -> Void)?
     /// A read-only line at the top of the menu, e.g. "Whisper … · Ready".
     var status: (() -> String?)?
+    /// The version of a found update that waits to be installed.
+    var availableUpdate: (() -> String?)?
+    /// Opens Sparkle's window: looks for an update, or shows the one found. Without it
+    /// (no updater in this build) the update items are left out.
+    var checkForUpdates: (() -> Void)?
+    private var badged = false
 
     var isVisible: Bool { statusItem != nil }
+
+    /// Puts a dot on the menu bar icon while an update waits.
+    func setBadge(_ badge: Bool) {
+        badged = badge
+        statusItem?.button?.image = localVoiceTemplateIcon(badge: badge)
+        statusItem?.button?.setAccessibilityLabel(badge ? "LocalVoice, update available" : "LocalVoice")
+    }
 
     func installApplicationMenu() {
         let main = NSMenu()
@@ -3729,9 +3818,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if visible && statusItem == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             if let button = item.button {
-                button.image = localVoiceTemplateIcon()
+                button.image = localVoiceTemplateIcon(badge: badged)
                 button.toolTip = "LocalVoice"
-                button.setAccessibilityLabel("LocalVoice")
+                button.setAccessibilityLabel(badged ? "LocalVoice, update available" : "LocalVoice")
             }
             let menu = NSMenu()
             menu.delegate = self
@@ -3749,6 +3838,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if let line = status?() {
             let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
             item.isEnabled = false
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
+        if checkForUpdates != nil, let version = availableUpdate?() {
+            let item = actionItem(title: "Update to \(bundleDisplayName()) \(version)…",
+                                  selector: #selector(openUpdate))
+            item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
             menu.addItem(item)
             menu.addItem(.separator())
         }
@@ -3792,6 +3888,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         if showSettings == nil {
             menu.addItem(actionItem(title: "Open Config File", selector: #selector(openConfig), key: ","))
+        }
+        if checkForUpdates != nil && availableUpdate?() == nil {
+            menu.addItem(actionItem(title: "Check for Updates…", selector: #selector(openUpdate)))
         }
         menu.addItem(actionItem(title: "Restart Service", selector: #selector(restartService)))
         menu.addItem(.separator())
@@ -3902,6 +4001,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func openModels() { showModels?() }
     @objc private func openPermissions() { setupPermissions?() }
+    @objc private func openUpdate() { checkForUpdates?() }
 
     @objc private func toggleLogin() { toggleLaunchAtLogin() }
 }
@@ -4013,6 +4113,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private let instanceLock: Int32
     private let menuBar = MenuBarController()
     private var library: StoreModelLibraryBackend?
+    private var updater: AppUpdater?
     private var settingsWindow: NSWindow?
     private var menuTimer: Timer?
     private var child: Process?
@@ -4093,12 +4194,21 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         menuBar.restart = { [weak self] in self?.restart() }
         menuBar.quit = { [weak self] in self?.quit() }
         menuBar.status = { [weak self] in self?.statusLine }
+        if let updater = AppUpdater.make() {
+            self.updater = updater
+            updater.menuBarVisible = { [weak self] in self?.menuBar.isVisible ?? false }
+            updater.onChange = { [weak self] in self?.updatesChanged() }
+            menuBar.availableUpdate = { [weak self] in
+                self?.updater?.isStarted == true ? self?.updater?.availableVersion : nil
+            }
+        }
         menuBar.installApplicationMenu()
         applyMenuVisibility()
         menuTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.applyMenuVisibility() }
         }
         if permissionsGranted {
+            startUpdater()
             start(savedModel ?? Self.defaultModel)
             // Relaunched mid-setup (Quit & Reopen): finish on the setup window, which
             // opens Models on Done if no model is chosen yet.
@@ -4152,6 +4262,21 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         menuBar.setVisible(["on", "true", "1", "yes"].contains(value))
     }
 
+    /// Starts in-app updates once setup is done (permissions granted, a model chosen); the
+    /// menu and Settings show them from then on. Sparkle asks its one question (check
+    /// automatically?) on the second launch it is started in, so it never lands on the
+    /// setup windows: the run that finishes setup is the first.
+    private func startUpdater() {
+        guard let updater, !updater.isStarted, permissionsGranted, savedModel != nil else { return }
+        menuBar.checkForUpdates = { [weak self] in self?.updater?.checkForUpdates() }
+        updater.start()
+    }
+
+    private func updatesChanged() {
+        menuBar.setBadge(updater?.availableVersion != nil)
+        (settingsWindow?.contentViewController as? SettingsSplitViewController)?.settings.refreshUpdates()
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if permissionChecklist?.isPresented == true || !permissionsGranted {
             setupPermissions()
@@ -4201,6 +4326,15 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             }
             // What the next dictation will run: the model starting or running, else the saved choice.
             controller.selectedModel = { [weak self] in self?.childModel ?? self?.savedModel }
+            if updater != nil {
+                controller.updates = SettingsUpdates(
+                    started: { [weak self] in self?.updater?.isStarted ?? false },
+                    available: { [weak self] in self?.updater?.availableVersion },
+                    automatic: { [weak self] in self?.updater?.automaticallyChecks ?? false },
+                    setAutomatic: { [weak self] value in self?.updater?.automaticallyChecks = value },
+                    check: { [weak self] in self?.updater?.checkForUpdates() }
+                )
+            }
             let split = SettingsSplitViewController(settings: controller)
             let window = NSWindow(contentViewController: split)
             window.isReleasedWhenClosed = false
@@ -4237,6 +4371,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private func permissionsBecameReady() {
         waitingForPermissions = false
         setupCompletedThisRun = true
+        startUpdater()
         writeSetupStatus("granted", managed: true)
         if child == nil, let savedModel {
             start(savedModel)
@@ -4393,6 +4528,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         }
         runningModel = model
         readySince = ProcessInfo.processInfo.systemUptime
+        startUpdater()
         // Decide before the library updates, so its own "ready" note stays quiet.
         let showReady = setupCompletedThisRun || !UserDefaults.standard.bool(forKey: Self.readyShownKey)
         if showReady { presentingReady = true }
@@ -4667,6 +4803,7 @@ private enum PermissionPreview {
 //   SETTINGS_PREVIEW_STATUS = ready | loading | permissions | off  (the sidebar's state line)
 //   SETTINGS_PREVIEW_PAGE = general | dictation | recording | models
 //   SETTINGS_PREVIEW_MODEL = <model id in use>   (e.g. parakeet-v3; the demo library's models)
+//   SETTINGS_PREVIEW_UPDATES = auto | off | available | none   (the Updates row; none hides it)
 //   SETTINGS_PREVIEW_ICON = <image for the header>    (the preview has no app bundle)
 //   LOCALVOICE_CONFIG_DIR = <directory holding `config`>
 // Without LOCALVOICE_CONFIG_DIR the preview makes an empty temporary one, so it never
@@ -4722,6 +4859,12 @@ private enum SettingsPreview {
         controller.modelEntries = { backend.models }
         controller.selectedModel = {
             backend.models.first { if case .active = $0.state { true } else { false } }?.id
+        }
+        let updates = environment["SETTINGS_PREVIEW_UPDATES"] ?? "auto"
+        if updates != "none" {
+            controller.updates = SettingsUpdates(
+                started: { true }, available: { updates == "available" ? "1.4.1" : nil },
+                automatic: { updates != "off" }, setAutomatic: { _ in }, check: {})
         }
         let split = SettingsSplitViewController(settings: controller)
         let window = SettingsPreviewWindow(contentViewController: split)

@@ -13,6 +13,17 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Added
 
+- LocalVoice updates itself. A new version puts a dot on the menu bar icon,
+  leads the menu with **Update to LocalVoice x.y.z…** and shows up under
+  **Settings › General › Updates**; installing replaces the app in place and
+  reopens it, with permissions, models and settings kept. Most updates are a
+  delta patch of a few MB instead of the 540-MB disk image. LocalVoice asks
+  once, on the second launch after setup, before it checks GitHub on its own
+  (once a day); **Check for Updates…** looks right away. Built on
+  [Sparkle](https://sparkle-project.org) 2.10.1; updates are signed with an
+  EdDSA key and the Developer ID. The release workflow publishes the feed and
+  patches from the last two releases with each build. Coming from 1.3.0 or
+  older, install the next release by hand once.
 - LocalVoice can be installed with Homebrew:
   `brew install --cask schereo/tap/localvoice`. The cask lives in
   [Schereo/homebrew-tap](https://github.com/Schereo/homebrew-tap), and the

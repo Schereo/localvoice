@@ -276,6 +276,7 @@ xcrun swiftc \
   -module-cache-path "$BUILD_DIR/module-cache" \
   "$PROJECT_DIR/src/ctrlspeak-launcher.swift" \
   "$PROJECT_DIR/src/localvoice-model-library.swift" \
+  "$PROJECT_DIR/src/localvoice-updater.swift" \
   -o "$BUILD_DIR/LocalVoice-launcher"
 
 xcrun swiftc \
