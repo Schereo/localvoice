@@ -19,6 +19,9 @@ built against is pinned separately, in `UPSTREAM_VERSION` in
   LaunchAgent mode. LocalVoice is the app; [setup](docs/setup.md#coming-from-the-old-homebrew-installer)
   shows how to move an old install over. `preview-overlay.sh` now builds the
   pill from source instead of using the Homebrew copy.
+- The language badge on the recording pill and the `compact` setting that hid
+  it. LocalVoice.app never showed the badge; it was left over from the legacy
+  install. The language is chosen per model in Settings.
 
 ### Changed
 
@@ -40,12 +43,14 @@ built against is pinned separately, in `UPSTREAM_VERSION` in
   the circle, records, transcribes in the circle and lands two sentences at a
   free-standing cursor. The mock editor window and the demo controls are gone;
   with reduced motion the pill stands still.
+- The app now detects the hotkey itself and drives the dictation service over
+  its stdin; the service's own keyboard listener only runs when it is started
+  on its own.
 
-### Removed
+### Fixed
 
-- The language badge on the recording pill and the `compact` setting that hid
-  it. LocalVoice.app never showed the badge; it was left over from the legacy
-  install. The language is chosen per model in Settings.
+- Enter and Esc pressed to end a recording no longer also reach the app you
+  are typing in (Enter used to send the message in Slack and similar apps).
 
 ## [1.4.0] — 2026-11-27
 

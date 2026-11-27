@@ -19,6 +19,7 @@ Please include:
 | `src/ctrlspeak-overlay.swift` | The pill UI — a standalone AppKit process driven by a line protocol on stdin. |
 | `src/ctrlspeak-launcher.swift` | The native launcher inside `LocalVoice.app`, including the permission wizard (`--setup`). |
 | `src/localvoice-updater.swift` | In-app updates through [Sparkle](https://sparkle-project.org); a stub in builds without Sparkle. |
+| `src/localvoice-shortcuts.swift` | Global shortcuts (event tap, Carbon hotkeys) and the command channel to the service. |
 | `src/ctrlspeak-icon.swift` | Generates the app icon at install time. |
 | `patches/ctrlspeak-1.8.0/` | Files that replace their [ctrlSPEAK](https://github.com/patelnav/ctrlspeak) counterparts when the app is built. |
 | `scripts/` | Building, signing and releasing the app (`build-app`, `build-dev-app`, `build-runtime`, `sign-app`, …), `check.sh`, and `preview-overlay.sh`. |
