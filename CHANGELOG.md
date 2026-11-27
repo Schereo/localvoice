@@ -19,6 +19,9 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 - The recording pill answers the hotkey at once: a small circle appears while
   the microphone opens and grows into the pill as soon as it records, instead
   of the pill fading in only after the microphone was ready.
+- Inserted text is confirmed by the pill folding into a circle with a green
+  check, without the "Text inserted" label. Every pill now leaves by folding
+  back into a point instead of fading out; the other outcomes keep their text.
 - The website's Homebrew command sits in its own box with a copy button.
 
 ### Removed

@@ -109,11 +109,14 @@ final class RecorderHUDView: NSView {
 
     func setMode(_ newMode: OverlayMode) {
         mode = newMode
+        modeChangedAt = Date()
         if newMode == .recording {
             recordingStartedAt = Date()
         }
         needsDisplay = true
     }
+
+    private var modeChangedAt = Date()
 
     func setLevel(_ newLevel: Double) {
         targetLevel = CGFloat(max(0, min(1, newLevel)))
@@ -250,7 +253,8 @@ final class RecorderHUDView: NSView {
             return NSSize(width: RecorderHUDView.processingCapsuleWidth, height: 44)
         case .permission, .download:
             return NSSize(width: 358, height: 56)
-        case .arming:
+        case .arming, .success:
+            // Circles: the controller sizes them itself, centred on the band.
             return nil
         default:
             guard let title = RecorderHUDView.resultTitle(mode) else { return nil }
@@ -327,11 +331,7 @@ final class RecorderHUDView: NSView {
         case .processing:
             drawProcessing()
         case .success:
-            drawResult(
-                title: RecorderHUDView.resultTitle(mode)!,
-                color: NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1),
-                symbol: "checkmark"
-            )
+            drawSuccessMark()
         case .empty, .failed:
             drawResult(
                 title: RecorderHUDView.resultTitle(mode)!,
@@ -537,6 +537,46 @@ final class RecorderHUDView: NSView {
     // Quiet by design: a small icon and a regular-weight line. The pill only
     // confirms what already happened — bold shouting made it the loudest
     // thing on screen for the least interesting moment.
+    // Inserted text needs no words: the pill folds into a circle and a green
+    // check draws itself in, straight on the glass like the dots and the
+    // waveform. Every other outcome keeps its label.
+    private func drawSuccessMark() {
+        let color = emphasized(NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1))
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+
+        // Stroke the check progressively over its first 0.28 s.
+        let elapsed = Date().timeIntervalSince(modeChangedAt)
+        let t = CGFloat(max(0, min(1, (elapsed - 0.06) / 0.28)))
+        let progress = 1 - pow(1 - t, 3)
+        // About 15 x 11 pt, optically centred (the long stroke pulls right).
+        let points = [
+            NSPoint(x: center.x - 6.6, y: center.y + 0.4),
+            NSPoint(x: center.x - 1.9, y: center.y - 4.6),
+            NSPoint(x: center.x + 7.0, y: center.y + 5.6),
+        ]
+        let lengths = [hypot(points[1].x - points[0].x, points[1].y - points[0].y),
+                       hypot(points[2].x - points[1].x, points[2].y - points[1].y)]
+        var remaining = (lengths[0] + lengths[1]) * progress
+        guard remaining > 0 else { return }
+
+        let mark = NSBezierPath()
+        mark.lineWidth = 2.6
+        mark.lineCapStyle = .round
+        mark.lineJoinStyle = .round
+        mark.move(to: points[0])
+        for index in 0..<2 {
+            let step = min(remaining, lengths[index])
+            let fraction = step / lengths[index]
+            let from = points[index], to = points[index + 1]
+            mark.line(to: NSPoint(x: from.x + (to.x - from.x) * fraction,
+                                  y: from.y + (to.y - from.y) * fraction))
+            remaining -= step
+            if remaining <= 0 { break }
+        }
+        color.setStroke()
+        mark.stroke()
+    }
+
     private func drawResult(title: String, color rawColor: NSColor, symbol: String) {
         let centerY = bounds.midY
         let color = emphasized(rawColor)
@@ -837,7 +877,9 @@ final class OverlayController: NSObject {
     private var growCompletion: (() -> Void)?
 
     private static let seedDiameter: CGFloat = 12
-    private static let armDiameter: CGFloat = 36
+    // The pill's own height: circle and pill are one shape, only the
+    // width changes between them.
+    private static let armDiameter: CGFloat = 44
     private static let controlBandHeight: CGFloat = 44
 
     init(application: NSApplication, launchMode: String) {
@@ -1026,7 +1068,10 @@ final class OverlayController: NSObject {
     private func applyCapsule(_ rect: NSRect, settled: Bool) {
         let radius = capsuleRadius(forHeight: rect.height)
         effectView.frame = rect
-        effectView.maskImage = settled
+        // The stretchable mask needs room for both end caps; circles get an
+        // exact one.
+        let stretchable = settled && rect.width >= rect.height + 4
+        effectView.maskImage = stretchable
             ? OverlayController.capsuleMask(size: rect.size)
             : OverlayController.exactMask(size: rect.size)
         effectView.layer?.cornerRadius = radius
@@ -1051,6 +1096,7 @@ final class OverlayController: NSObject {
         to size: NSSize,
         duration: CFTimeInterval,
         fadeInContent: Bool = false,
+        collapse: Bool = false,
         completion: (() -> Void)? = nil
     ) {
         growTimer?.invalidate()
@@ -1072,8 +1118,9 @@ final class OverlayController: NSObject {
                 self.finishGrow()
                 return
             }
-            // Underdamped spring: about 4 % overshoot, settled by t = 1.
-            let spring = CGFloat(1 - exp(-6 * t) * cos(6 * t))
+            // Underdamped spring: about 4 % overshoot, settled by t = 1. A
+            // collapse instead accelerates into nothing (ease-in cubic).
+            let spring = collapse ? CGFloat(t * t * t) : CGFloat(1 - exp(-6 * t) * cos(6 * t))
             let width = start.width + (size.width - start.width) * spring
             // The height must not overshoot: the chrome sits on a fixed band.
             let height = start.height + (size.height - start.height) * min(spring, 1)
@@ -1081,6 +1128,12 @@ final class OverlayController: NSObject {
             if fadeInContent {
                 let x = max(0, min(1, (t - 0.28) / 0.45))
                 self.hudView.contentAlpha = CGFloat(x * x * (3 - 2 * x))
+            }
+            if collapse {
+                // Content leaves first, so nothing shows squeezed; the
+                // capsule itself goes transparent only at the very end.
+                self.hudView.contentAlpha = CGFloat(max(0, 1 - t / 0.35))
+                self.panel.alphaValue = CGFloat(max(0, min(1, (1 - t) / 0.3)))
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -1093,10 +1146,25 @@ final class OverlayController: NSObject {
         timer.invalidate()
         growTimer = nil
         applyCapsule(capsuleRect(size: growTargetSize), settled: true)
-        hudView.contentAlpha = 1
+        if !isClosing {
+            hudView.contentAlpha = 1
+        }
         let completion = growCompletion
         growCompletion = nil
         completion?()
+    }
+
+    /// Resize for the mode just set: the success circle grows (or shrinks)
+    /// into place on the spring, everything else morphs as before.
+    private func fitToMode() {
+        guard hudView.mode == .success else {
+            syncPanelSize()
+            return
+        }
+        finishGrow()
+        let circle = NSSize(width: OverlayController.armDiameter, height: OverlayController.armDiameter)
+        capsuleTarget = circle
+        grow(to: circle, duration: 0.42)
     }
 
     private var seedSize: NSSize {
@@ -1274,11 +1342,11 @@ final class OverlayController: NSObject {
         case "state" where parts.count == 2:
             guard let newMode = OverlayMode(rawValue: parts[1]) else { return }
             hudView.setMode(newMode)
-            syncPanelSize()
+            fitToMode()
 
             switch newMode {
             case .success:
-                close(after: 1.35)
+                close(after: 1.0)
             case .empty, .failed:
                 close(after: 1.8)
             case .cancelled:
@@ -1324,8 +1392,8 @@ final class OverlayController: NSObject {
                 self.syncPanelSize()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
                     self.hudView.setMode(.success)
-                    self.syncPanelSize()
-                    self.close(after: 1.35)
+                    self.fitToMode()
+                    self.close(after: 1.0)
                 }
             }
         }
@@ -1342,16 +1410,14 @@ final class OverlayController: NSObject {
         isClosing = true
         FileHandle.standardInput.readabilityHandler = nil
         previewTimer?.invalidate()
+        // The way it came: the capsule folds back into a point and is gone,
+        // starting from wherever a running grow has got to.
         growTimer?.invalidate()
         growTimer = nil
-
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.20
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        grow(to: seedSize, duration: 0.26, collapse: true) { [weak self] in
+            self?.panel.alphaValue = 0
             self?.application.terminate(nil)
-        })
+        }
     }
 }
 
