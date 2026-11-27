@@ -6,10 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Versions refer to LocalVoice itself. The ctrlSPEAK release the patch set is
-built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
-`install.sh`, and moves on its own schedule.
+built against is pinned separately, in `UPSTREAM_VERSION` in
+`scripts/build-app.py`, and moves on its own schedule.
 
 ## [Unreleased]
+
+### Removed
+
+- The legacy Homebrew installer (`install.sh --legacy-homebrew`,
+  `uninstall.sh`) and the scripts that only served it (`doctor.sh`,
+  `restart.sh`, `setup-permissions.sh`), along with the launcher's
+  LaunchAgent mode. LocalVoice is the app; [setup](docs/setup.md#coming-from-the-old-homebrew-installer)
+  shows how to move an old install over. `preview-overlay.sh` now builds the
+  pill from source instead of using the Homebrew copy.
 
 ### Changed
 

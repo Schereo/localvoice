@@ -25,7 +25,7 @@ CONFIG_DIR = Path(
 CONFIG_FILE = CONFIG_DIR / "config"
 
 # Where the pre-1.2 preference files live; ~/.config/ctrlspeak stays the home
-# of the service's internal state (setup-status, installed-version, lock).
+# of the service's internal state (the service lock).
 _LEGACY_DIR = Path.home() / ".config" / "ctrlspeak"
 _LEGACY_FILES = {"hotkey": "hotkey", "language": "language", "mic-standby": "mic-standby"}
 

@@ -28,8 +28,6 @@ The private app opens the Model Library independently of the dictation service. 
 
 Model activation is separate from download. Switching is allowed only between recording sessions; the launcher stops the previous service before loading the candidate and saves the selection only after the hotkey listener is ready. If the candidate fails to start, the launcher attempts to restore the previous model. The service receives a verified local path and does not download weights.
 
-The explicit legacy Homebrew install still starts the Hub download from the service on a cold cache and reports it in the recording pill.
-
 ## Updates
 
 Release and dev builds embed [Sparkle](https://sparkle-project.org). The launcher starts it only after setup; from then on it checks GitHub once a day unless that is switched off in Settings, and dictation never waits on it. A found update is a reminder in the menu bar menu and in Settings, not a window. Updates are signed twice: with the EdDSA key the app trusts (`SUPublicEDKey`) and with the same Developer ID as the installed app. Most updates arrive as a delta patch of a few MB that rebuilds the new bundle from the installed one, file by file, after checking that the installed one is unchanged. Details: [setup](setup.md#in-app-updates).

@@ -7,24 +7,21 @@ this page tells you where things live and how to work on them.
 
 Please include:
 
-- the output of `./scripts/doctor.sh`
-- the last ~30 lines of `~/Library/Logs/ctrlspeak.log` (and `ctrlspeak.error.log` if it has content)
+- the LocalVoice version (Settings › General, or the app's Get Info)
+- the last ~30 lines of `~/Library/Application Support/LocalVoice/service.log`
+- what **Permissions…** in the menu shows
 - your macOS version and Mac model
-
-If the service is loaded but not running, `doctor.sh` already asks the app for
-its permission state — that output usually contains the answer.
 
 ## How the project is laid out
 
 | Path | What it is |
 |---|---|
-| `install.sh` / `uninstall.sh` | The whole lifecycle. Everything is installed from here; nothing is hand-placed. |
 | `src/ctrlspeak-overlay.swift` | The pill UI — a standalone AppKit process driven by a line protocol on stdin. |
 | `src/ctrlspeak-launcher.swift` | The native launcher inside `LocalVoice.app`, including the permission wizard (`--setup`). |
 | `src/localvoice-updater.swift` | In-app updates through [Sparkle](https://sparkle-project.org); a stub in builds without Sparkle. |
 | `src/ctrlspeak-icon.swift` | Generates the app icon at install time. |
-| `patches/ctrlspeak-1.8.0/` | Files that replace their [ctrlSPEAK](https://github.com/patelnav/ctrlspeak) counterparts at install time. Originals are backed up as `*.local-voice-backup` and restored on uninstall. |
-| `scripts/` | `restart`, `doctor`, `setup-permissions`, `preview-overlay`. |
+| `patches/ctrlspeak-1.8.0/` | Files that replace their [ctrlSPEAK](https://github.com/patelnav/ctrlspeak) counterparts when the app is built. |
+| `scripts/` | Building, signing and releasing the app (`build-app`, `build-dev-app`, `build-runtime`, `sign-app`, …), `check.sh`, and `preview-overlay.sh`. |
 
 ## Working on the pill UI
 
@@ -34,12 +31,8 @@ You never need to record to see your changes:
 ./scripts/preview-overlay.sh [preview|recording|permission|download|language]
 ```
 
-builds nothing — it drives the installed pill binary. After editing the Swift
-source, rebuild and install it with `./install.sh`, or manually:
-
-```bash
-xcrun swiftc src/ctrlspeak-overlay.swift -o /opt/homebrew/bin/ctrlspeak-overlay
-```
+compiles `src/ctrlspeak-overlay.swift` into a temporary directory and drives
+that build, so it always shows your current source.
 
 The pill speaks a line protocol on stdin — `state <mode>`, `level <0..1>`,
 `progress <0..1>` (negative = indeterminate), `detail <text>`, `quit` — so you
@@ -48,19 +41,19 @@ can also puppet it directly from a shell.
 ## Working on the patches
 
 Keep diffs against upstream ctrlSPEAK as small as possible: the patch set is
-re-verified against one exact upstream version (see `SUPPORTED_CTRLSPEAK_VERSION`
-in `install.sh`), and every extra divergence makes the next version bump harder.
+re-verified against one exact upstream version (see `UPSTREAM_VERSION` in
+`scripts/build-app.py`), and every extra divergence makes the next version bump harder.
 New functionality that does not need to live inside upstream files should be a
 new module (like `overlay.py` or `model_download.py`).
 
-After changing a patch file, deploy it with `./install.sh` (it re-copies all
-patches and byte-compiles them) and restart the service.
+To try a change in the app, build a test app with `python3 -B scripts/build-dev-app.py`
+(see [setup](docs/setup.md#local-test-app)); `./scripts/check.sh` runs the tests and
+every native build without launching anything.
 
 ## Pull requests
 
 - One topic per PR, with a commit message that explains *why*.
-- `bash -n` all touched shell scripts; make sure `./scripts/doctor.sh` passes
-  after a fresh `./install.sh`.
+- `./scripts/check.sh` passes.
 - UI changes: include a screenshot (the preview script makes this easy).
 
 ## License

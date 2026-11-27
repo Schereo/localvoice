@@ -33,8 +33,6 @@ Releases after 1.3.0 update themselves: a new version shows up in the menu bar m
 
 To build it yourself: the private ARM64 app is staged with [`scripts/build-app.sh`](scripts/build-app.sh). It keeps its runtime inside the app and does not use or change Homebrew on the target Mac. Build the [Core ML worker](docs/development-checks.md#nvidia-providers) to include the NVIDIA models. In the app, use **Models…** to download or select a model, **Set Up Permissions…** to enable dictation, and optionally **Launch at Login**. See [Setup](docs/setup.md) for build inputs and release checks.
 
-The previous source installer is available as an explicit compatibility option. Run `./install.sh --plan` before deciding whether to use `./install.sh --legacy-homebrew`.
-
 ## Use
 
 | Key | Action |
@@ -49,7 +47,7 @@ For the private app, disable **Launch at Login**, quit LocalVoice, and move the 
 
 ## More
 
-- **[docs/setup.md](docs/setup.md)** — installer steps, permissions wizard, code signing, health checks, uninstall
+- **[docs/setup.md](docs/setup.md)** — building the app, permissions, releases and in-app updates, uninstall
 - **[docs/configuration.md](docs/configuration.md)** — the config file: hotkey, language, microphone, mic standby
 - **[docs/usage.md](docs/usage.md)** — keys, language modes, insertion behaviour
 - **[docs/how-it-works.md](docs/how-it-works.md)** — architecture: app identity, pill protocol, download pipeline, onset buffer
