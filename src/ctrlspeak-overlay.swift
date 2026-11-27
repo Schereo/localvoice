@@ -108,6 +108,11 @@ final class RecorderHUDView: NSView {
     }
 
     func setMode(_ newMode: OverlayMode) {
+        // The check continues the spinner's stroke, so it needs to know where
+        // the arc was when the text landed.
+        spinnerExit = mode == .processing && newMode == .success
+            ? (head: spinnerHead, length: spinnerLength)
+            : nil
         mode = newMode
         modeChangedAt = Date()
         if newMode == .recording {
@@ -117,6 +122,13 @@ final class RecorderHUDView: NSView {
     }
 
     private var modeChangedAt = Date()
+    private var spinnerExit: (head: CGFloat, length: CGFloat)?
+
+    // The transcribing arc: about one turn a second, clockwise, its length
+    // breathing a little so it never reads as a stuck system spinner.
+    private static let spinnerRadius: CGFloat = 12.5
+    private var spinnerHead: CGFloat { -phase * 1.6 }
+    private var spinnerLength: CGFloat { 1.5 + 0.45 * sin(phase * 0.7) }
 
     func setLevel(_ newLevel: Double) {
         targetLevel = CGFloat(max(0, min(1, newLevel)))
@@ -212,7 +224,7 @@ final class RecorderHUDView: NSView {
         case .empty: return "No speech detected"
         case .failed: return "Transcription failed"
         case .cancelled: return "Recording discarded"
-        case .clipboard: return "Copied to clipboard"
+        case .clipboard: return "Copied"
         case .error: return "LocalVoice is restarting"
         default: return nil
         }
@@ -247,13 +259,9 @@ final class RecorderHUDView: NSView {
                 width: width,
                 height: RecorderHUDView.controlBandHeight + CGFloat(lines) * transcriptLineHeight + 10
             )
-        case .processing:
-            // Just the dots: transcription takes about a second, too short
-            // for a label to earn its width.
-            return NSSize(width: RecorderHUDView.processingCapsuleWidth, height: 44)
         case .permission, .download:
             return NSSize(width: 358, height: 56)
-        case .arming, .success:
+        case .arming, .processing, .success, .cancelled:
             // Circles: the controller sizes them itself, centred on the band.
             return nil
         default:
@@ -331,7 +339,7 @@ final class RecorderHUDView: NSView {
         case .processing:
             drawProcessing()
         case .success:
-            drawSuccessMark()
+            drawOutcomeMark(.check)
         case .empty, .failed:
             drawResult(
                 title: RecorderHUDView.resultTitle(mode)!,
@@ -339,11 +347,7 @@ final class RecorderHUDView: NSView {
                 symbol: "exclamationmark"
             )
         case .cancelled:
-            drawResult(
-                title: RecorderHUDView.resultTitle(mode)!,
-                color: NSColor(calibratedRed: 0.94, green: 0.42, blue: 0.30, alpha: 1),
-                symbol: "xmark"
-            )
+            drawOutcomeMark(.cross)
         case .clipboard:
             drawResult(title: RecorderHUDView.resultTitle(mode)!, color: accent, symbol: "checkmark")
         case .error:
@@ -521,53 +525,107 @@ final class RecorderHUDView: NSView {
     // One animation, nothing else: the pulsing dot row, centred. A spinner
     // plus a label plus the dots said "loading" three times over, for a state
     // that lasts about a second.
+    // Transcribing: the pill has folded into a circle and a neutral arc runs
+    // round it. Waiting is neither good nor bad news, so it has no colour.
     private func drawProcessing() {
-        let centerY = bounds.midY
-        let step: CGFloat = 14
-        let startX = bounds.midX - 2 * step
-        for index in 0..<5 {
-            let wave = (sin(phase * 1.45 - CGFloat(index) * 0.72) + 1) / 2
-            let radius: CGFloat = 2.2 + wave * 1.35
-            let x = startX + CGFloat(index) * step
-            accent.withAlphaComponent(0.32 + wave * 0.60).setFill()
-            NSBezierPath(ovalIn: NSRect(x: x - radius, y: centerY - radius, width: radius * 2, height: radius * 2)).fill()
-        }
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        strokeArc(center: center, radius: RecorderHUDView.spinnerRadius,
+                  head: spinnerHead, length: spinnerLength,
+                  color: ink.withAlphaComponent(0.55), width: 2.2)
     }
 
-    // Quiet by design: a small icon and a regular-weight line. The pill only
-    // confirms what already happened — bold shouting made it the loudest
-    // thing on screen for the least interesting moment.
-    // Inserted text needs no words: the pill folds into a circle and a green
-    // check draws itself in, straight on the glass like the dots and the
-    // waveform. Every other outcome keeps its label.
-    private func drawSuccessMark() {
-        let color = emphasized(NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1))
-        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+    /// An arc whose leading end is `head` (radians, travelling clockwise)
+    /// and which trails `length` radians behind it.
+    private func strokeArc(center: NSPoint, radius: CGFloat, head: CGFloat, length: CGFloat,
+                           color: NSColor, width: CGFloat) {
+        guard length > 0.01 else { return }
+        let arc = NSBezierPath()
+        arc.appendArc(withCenter: center, radius: radius,
+                      startAngle: head * 180 / .pi, endAngle: (head + length) * 180 / .pi,
+                      clockwise: false)
+        arc.lineWidth = width
+        arc.lineCapStyle = .round
+        color.setStroke()
+        arc.stroke()
+    }
 
-        // Stroke the check progressively over its first 0.28 s.
+    enum OutcomeMark { case check, cross }
+
+    // Outcomes the user expected need no words: the pill folds into a circle
+    // and a mark draws itself in, straight on the glass like the dots and the
+    // waveform: inserted is a green check, discarded (Esc) a red cross.
+    // Outcomes that differ from what the user expected keep their label.
+    private func drawOutcomeMark(_ kind: OutcomeMark) {
+        let color = kind == .check
+            ? emphasized(NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1))
+            : emphasized(NSColor(calibratedRed: 0.94, green: 0.42, blue: 0.30, alpha: 1))
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
         let elapsed = Date().timeIntervalSince(modeChangedAt)
-        let t = CGFloat(max(0, min(1, (elapsed - 0.06) / 0.28)))
+
+        // Coming from the spinner, the arc spirals inward, turns green and
+        // lands where the check starts; the check then carries on from that
+        // point, so the two read as one stroke.
+        var markDelay = 0.06
+        if kind == .check, let exit = spinnerExit {
+            let handoff = 0.26
+            markDelay = handoff * 0.8
+            let u = CGFloat(min(1, elapsed / handoff))
+            if u < 1 {
+                let e = u * u * (3 - 2 * u)
+                // Clockwise to the check's start at 180°, at least a third of a turn on.
+                var travel = (exit.head - .pi).truncatingRemainder(dividingBy: 2 * .pi)
+                if travel < 0 { travel += 2 * .pi }
+                if travel < 2.1 { travel += 2 * .pi }
+                let start = ink.withAlphaComponent(0.55)
+                strokeArc(center: center,
+                          radius: RecorderHUDView.spinnerRadius + (6.6 - RecorderHUDView.spinnerRadius) * e,
+                          head: exit.head - travel * e,
+                          length: exit.length * (1 - e),
+                          color: start.blended(withFraction: e, of: color) ?? color,
+                          width: 2.2 + 0.4 * e)
+            }
+        }
+
+        // Stroke the mark progressively over 0.28 s.
+        let t = CGFloat(max(0, min(1, (elapsed - markDelay) / 0.28)))
         let progress = 1 - pow(1 - t, 3)
-        // About 15 x 11 pt, optically centred (the long stroke pulls right).
-        let points = [
-            NSPoint(x: center.x - 6.6, y: center.y + 0.4),
-            NSPoint(x: center.x - 1.9, y: center.y - 4.6),
-            NSPoint(x: center.x + 7.0, y: center.y + 5.6),
-        ]
-        let lengths = [hypot(points[1].x - points[0].x, points[1].y - points[0].y),
-                       hypot(points[2].x - points[1].x, points[2].y - points[1].y)]
-        var remaining = (lengths[0] + lengths[1]) * progress
+        // The check is about 15 x 11 pt, optically centred (the long stroke
+        // pulls right). The cross is two 10 pt strokes, drawn one after the other.
+        let points: [NSPoint]
+        let segments: [(Int, Int)]
+        switch kind {
+        case .check:
+            points = [
+                NSPoint(x: center.x - 6.6, y: center.y),
+                NSPoint(x: center.x - 1.9, y: center.y - 4.6),
+                NSPoint(x: center.x + 7.0, y: center.y + 5.6),
+            ]
+            segments = [(0, 1), (1, 2)]
+        case .cross:
+            points = [
+                NSPoint(x: center.x - 5, y: center.y + 5),
+                NSPoint(x: center.x + 5, y: center.y - 5),
+                NSPoint(x: center.x + 5, y: center.y + 5),
+                NSPoint(x: center.x - 5, y: center.y - 5),
+            ]
+            segments = [(0, 1), (2, 3)]
+        }
+        let lengths = segments.map { hypot(points[$0.1].x - points[$0.0].x, points[$0.1].y - points[$0.0].y) }
+        var remaining = lengths.reduce(0, +) * progress
         guard remaining > 0 else { return }
 
         let mark = NSBezierPath()
-        mark.lineWidth = 2.6
+        mark.lineWidth = kind == .check ? 2.6 : 2.2
         mark.lineCapStyle = .round
         mark.lineJoinStyle = .round
-        mark.move(to: points[0])
-        for index in 0..<2 {
+        for (index, segment) in segments.enumerated() {
+            let from = points[segment.0], to = points[segment.1]
             let step = min(remaining, lengths[index])
             let fraction = step / lengths[index]
-            let from = points[index], to = points[index + 1]
+            // A polyline continues from where it is; a new stroke starts fresh.
+            if index == 0 || segment.0 != segments[index - 1].1 {
+                mark.move(to: from)
+            }
             mark.line(to: NSPoint(x: from.x + (to.x - from.x) * fraction,
                                   y: from.y + (to.y - from.y) * fraction))
             remaining -= step
@@ -1154,10 +1212,11 @@ final class OverlayController: NSObject {
         completion?()
     }
 
-    /// Resize for the mode just set: the success circle grows (or shrinks)
-    /// into place on the spring, everything else morphs as before.
+    /// Resize for the mode just set: the transcribing and outcome circles
+    /// grow (or shrink) into place on the spring, everything else morphs as
+    /// before.
     private func fitToMode() {
-        guard hudView.mode == .success else {
+        guard [.processing, .success, .cancelled].contains(hudView.mode) else {
             syncPanelSize()
             return
         }
@@ -1201,10 +1260,10 @@ final class OverlayController: NSObject {
         capsuleTarget = wanted
 
         let radius = capsuleRadius(forHeight: wanted.height)
-        if abs(previous.height - wanted.height) > 1 {
-            effectView.maskImage = OverlayController.capsuleMask(size: wanted)
-            effectView.layer?.cornerRadius = radius
-        }
+        // Always a fresh stretchable mask: coming out of a circle, the exact
+        // circle mask would otherwise stretch into an ellipse.
+        effectView.maskImage = OverlayController.capsuleMask(size: wanted)
+        effectView.layer?.cornerRadius = radius
 
         let margin = OverlayController.shadowMargin
         var frame = panel.frame
@@ -1350,7 +1409,7 @@ final class OverlayController: NSObject {
             case .empty, .failed:
                 close(after: 1.8)
             case .cancelled:
-                close(after: 1.2)
+                close(after: 0.9)
             case .clipboard:
                 close(after: 1.8)
             default:
