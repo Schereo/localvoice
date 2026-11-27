@@ -88,13 +88,16 @@ The first release with the updater still has to be installed by hand once; from 
 
 Versions before 1.5 could also be installed from source with `./install.sh --legacy-homebrew`, which patched a Homebrew copy of ctrlSPEAK and ran it as a LaunchAgent. That installer is gone. To switch to the app:
 
+Quit the old LocalVoice first if you opened it by hand, then:
+
 ```bash
 launchctl bootout "gui/$(id -u)/com.localvoice.app" 2>/dev/null
+launchctl bootout "gui/$(id -u)/com.localvoice.ctrlspeak" 2>/dev/null
 rm -f ~/Library/LaunchAgents/com.localvoice.app.plist ~/Library/LaunchAgents/com.localvoice.ctrlspeak.plist
-rm -rf ~/Applications/LocalVoice.app
+rm -rf ~/Applications/LocalVoice.app ~/Applications/ctrlSPEAK.app
 rm -f "$(brew --prefix)/bin/ctrlspeak-overlay" "$(brew --prefix)/bin/ctrlspeak-local"
 brew uninstall ctrlspeak   # or: brew reinstall ctrlspeak, to keep an unpatched ctrlSPEAK
 tccutil reset All com.localvoice.app
 ```
 
-Then install the app (see the [README](../README.md)). `~/.config/localvoice/config` is kept and read by the app; the Hugging Face model cache is reused.
+Then install the app (see the [README](../README.md)). `~/.config/localvoice/config` is kept and read by the app; the Hugging Face model cache is reused. The app chooses the dictation language per model, so a forced `language = en` from the old install does not carry over: pick it again under **Settings › Models**.

@@ -5,7 +5,7 @@ the choice to German and English on purpose, mainly to keep `AUTO` detection
 reliable (ranking all 100 languages readily mistakes German for Dutch; a small
 set of acoustically distinct languages does not have that problem).
 
-Adding one, say Spanish (`es`), touches two places. Languages are named by
+Adding one, say Spanish (`es`), touches three places. Languages are named by
 their ISO 639-1 code, the same codes Whisper uses.
 
 ## 1. The model gate — `patches/ctrlspeak-1.8.0/models/whisper_mlx.py`
@@ -24,6 +24,17 @@ validates against:
 
 ```python
 VALID_LANGUAGES = {"de", "en", "es", "auto"}
+```
+
+## 3. The Models popup — `src/localvoice-model-library.swift`
+
+The app's language menu lists its own enum; add the case and its title:
+
+```swift
+enum DictationLanguage: String, CaseIterable {
+    case auto, de, en, es
+    ...
+        case .es: "Español"
 ```
 
 ## Trying it

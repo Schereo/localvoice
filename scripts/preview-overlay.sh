@@ -61,8 +61,9 @@ case "$MODE" in
       printf 'state processing\n'
       sleep 1
       printf 'state success\n'
+      # The pill folds away on its own after success; a quit would hit a
+      # closed pipe. The sleep keeps stdin open through the animation.
       sleep 1.5
-      printf 'quit\n'
     } | "$OVERLAY" recording
     ;;
 
@@ -82,8 +83,9 @@ case "$MODE" in
       printf 'state processing\n'
       sleep 1
       printf 'state success\n'
+      # The pill folds away on its own after success; a quit would hit a
+      # closed pipe. The sleep keeps stdin open through the animation.
       sleep 1.5
-      printf 'quit\n'
     } | "$OVERLAY" standby
     ;;
 

@@ -168,4 +168,4 @@ Older versions kept single-value files under `~/.config/ctrlspeak` (`hotkey`,
 `language`, `mic-standby`). On its first start, version 1.2 folds their values
 into the new config file; until then they are still honoured as a fallback.
 `~/.config/ctrlspeak` itself remains in use for the service's internal state
-(installed version, setup status, the single-instance lock).
+(installed version, the single-instance lock).

@@ -28,7 +28,7 @@ Please include:
 You never need to record to see your changes:
 
 ```bash
-./scripts/preview-overlay.sh [preview|recording|permission|download|language]
+./scripts/preview-overlay.sh [preview|recording|start|live|permission|download]
 ```
 
 compiles `src/ctrlspeak-overlay.swift` into a temporary directory and drives
