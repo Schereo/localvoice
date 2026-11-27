@@ -691,6 +691,17 @@ class RecordingBoundaryTests(unittest.TestCase):
             self.hotkeys._end_recording(self.manager.recording_id, discard=True)
             fcntl.flock(launcher, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+    def test_app_hears_each_recording_start_and_end_once(self):
+        # The app swallows Esc and Enter only between these two events.
+        changes = []
+        self.manager.on_collecting_changed = changes.append
+        self.hotkeys._start_recording()
+        self.hotkeys._end_recording(self.manager.recording_id, discard=True)
+        self.manager.open_input_stream.side_effect = OSError("open failed")
+        with self.assertLogs("ctrlspeak.hotkeys", "ERROR"):
+            self.hotkeys._start_recording()
+        self.assertEqual(changes, [True, False])
+
     def test_vad_load_and_inference_failures_use_bounded_fallback(self):
         self.vad_loader.assert_called_once_with(self.fake_torch)
         for bad_asset in (True, False):
