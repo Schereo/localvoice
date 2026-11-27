@@ -60,6 +60,9 @@ _KEY_BLOCKS = {
     "hotkey": """\
 # Activation hotkey, as <modifier>,<taps>.
 # Modifier: ctrl, cmd, alt or shift. Taps: 2-4. Example: cmd,2 = double-tap Cmd.
+# LocalVoice.app also takes a key combination or modifiers pressed together:
+# set "dictate" (e.g. dictate = alt+space, or ctrl+cmd). Settings writes it
+# for you.
 """,
     "language": """\
 # Legacy installs only: de, en or auto. LocalVoice.app saves language
@@ -173,8 +176,14 @@ def parse_hotkey(raw):
 
 
 def hotkey():
-    """The configured (modifier, taps) activation gesture, validated."""
-    return parse_hotkey(effective("hotkey")) or parse_hotkey(DEFAULTS["hotkey"])
+    """The configured (modifier, taps) activation gesture, validated.
+
+    "dictate" is the app's key since 1.5 and wins when it holds a tap gesture.
+    A key combination there is the app's business (Carbon hotkeys); this
+    listener then keeps the "hotkey" gesture, which Settings leaves alone.
+    """
+    return (parse_hotkey(load().get("dictate")) or parse_hotkey(effective("hotkey"))
+            or parse_hotkey(DEFAULTS["hotkey"]))
 
 
 # A Whisper special-token string in the vocabulary ("<|endoftext|>" and
