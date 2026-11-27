@@ -34,6 +34,14 @@ enum DictationLanguage: String, CaseIterable {
     }
 }
 
+/// The models that read the `vocabulary` list: Whisper as its initial prompt, Qwen3-ASR as
+/// its context. Parakeet and Nemotron take no prompt and ignore it.
+enum DictationVocabulary {
+    static let models: Set<String> = ["whisper-turbo-fp16", "whisper-turbo-q4", "qwen3-asr-1.7b"]
+
+    static func isSupported(by model: String) -> Bool { models.contains(model) }
+}
+
 // What the library says about a model beyond the store's catalog. Only facts the
 // code relies on: which languages can be chosen, how the model runs, its size.
 private struct ModelLibraryDetails {
@@ -50,7 +58,7 @@ private struct ModelLibraryDetails {
         case "parakeet-v3":
             ModelLibraryDetails(summary: "NVIDIA, on the Neural Engine. Fast.", languages: "Detected automatically")
         case "parakeet-ultra":
-            ModelLibraryDetails(summary: "The larger Parakeet, on the Neural Engine.",
+            ModelLibraryDetails(summary: "Larger Parakeet, on the Neural Engine.",
                                 languages: "Detected automatically")
         case "parakeet-redux":
             ModelLibraryDetails(summary: "The smallest Parakeet download.",
@@ -58,7 +66,7 @@ private struct ModelLibraryDetails {
         case "nemotron-streaming":
             ModelLibraryDetails(summary: "Transcribes while you speak.", languages: "German, English")
         case "qwen3-asr-1.7b":
-            ModelLibraryDetails(summary: "Alibaba, 8-bit. The most accurate, on the GPU.",
+            ModelLibraryDetails(summary: "Alibaba. Most accurate, on the GPU.",
                                 languages: "German, English")
         default:
             ModelLibraryDetails(summary: "", languages: "")
@@ -93,6 +101,8 @@ extension ModelLibraryBackend {
 private enum ModelLibraryMetrics {
     static let inset: CGFloat = 20
     static let languageWidth: CGFloat = 156
+    // Embedded in Settings, beside its sidebar: "Detected automatically" wraps instead.
+    static let compactLanguageWidth: CGFloat = 132
     static let sizeWidth: CGFloat = 72
     static let actionWidth: CGFloat = 132
     static let buttonWidth: CGFloat = 104
@@ -189,16 +199,26 @@ final class ModelLibraryViewController: NSViewController {
     private let readyText = NSTextField(wrappingLabelWithString: "")
     // The active model as of the last refresh with a loaded catalog; nil until then.
     private var lastActive: String??
+    // A page of another window (Settings): that window owns its size, and the margins match its pages.
+    private let embedded: Bool
+    private let top: CGFloat
+    private var languageWidth: CGFloat {
+        embedded ? ModelLibraryMetrics.compactLanguageWidth : ModelLibraryMetrics.languageWidth
+    }
+    /// Called after every refresh, for views elsewhere that depend on the models.
+    var onRefresh: (() -> Void)?
 
     init(backend: any ModelLibraryBackend, notice: String? = nil,
          readLanguage: ((String) -> DictationLanguage)? = nil,
          saveLanguage: ((String, DictationLanguage) -> Bool)? = nil,
-         readyDetail: (() -> String?)? = nil) {
+         readyDetail: (() -> String?)? = nil, embedded: Bool = false, top: CGFloat = 24) {
         self.backend = backend
         self.notice = notice
         self.readLanguage = readLanguage
         self.saveLanguage = saveLanguage
         self.readyDetail = readyDetail
+        self.embedded = embedded
+        self.top = top
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -263,13 +283,14 @@ final class ModelLibraryViewController: NSViewController {
         scroll.documentView = container
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(content)
+        let margin: CGFloat = embedded ? 24 : 28
         NSLayoutConstraint.activate([
             container.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
             container.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
-            content.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
-            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -28),
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: top),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: margin),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -margin),
             content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24),
         ])
         view = scroll
@@ -279,10 +300,10 @@ final class ModelLibraryViewController: NSViewController {
 
     // Window content size that shows every row without scrolling. The store lists
     // every catalog model, available or not, so pass the count it returns.
-    static func preferredSize(modelCount: Int) -> NSSize {
+    static func preferredSize(modelCount: Int, top: CGFloat = 24) -> NSSize {
         let M = ModelLibraryMetrics.self
         let card = M.headerHeight + 1 + CGFloat(modelCount) * M.rowHeight + 66
-        return NSSize(width: 760, height: (24 + 22 + 4 + 16 + 16 + card + 24).rounded())
+        return NSSize(width: 760, height: (top + 22 + 4 + 16 + 16 + card + 24).rounded())
     }
 
     // Shown once a model has finished loading: how to dictate, and where Settings are.
@@ -365,7 +386,7 @@ final class ModelLibraryViewController: NSViewController {
             size.widthAnchor.constraint(equalToConstant: M.sizeWidth),
             size.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             languages.trailingAnchor.constraint(equalTo: size.leadingAnchor, constant: -M.gap),
-            languages.widthAnchor.constraint(equalToConstant: M.languageWidth),
+            languages.widthAnchor.constraint(equalToConstant: languageWidth),
             languages.centerYAnchor.constraint(equalTo: header.centerYAnchor),
         ])
         return header
@@ -420,7 +441,7 @@ final class ModelLibraryViewController: NSViewController {
                 row.removeFromSuperview()
             }
             for (index, model) in models.enumerated() {
-                let row = ModelLibraryRow(separator: index > 0) { [weak self] action in
+                let row = ModelLibraryRow(separator: index > 0, languageWidth: languageWidth) { [weak self] action in
                     self?.backend.perform(action, modelID: model.id)
                 }
                 rows.addArrangedSubview(row)
@@ -445,11 +466,12 @@ final class ModelLibraryViewController: NSViewController {
             }
             lastActive = .some(active?.id)
         }
+        onRefresh?()
     }
 
     // Grow or shrink the open window so every row stays visible; keep its width and top edge.
     private func fitWindow(modelCount: Int) {
-        guard let window = view.window, modelCount > 0 else { return }
+        guard !embedded, let window = view.window, modelCount > 0 else { return }
         var size = Self.preferredSize(modelCount: modelCount)
         if !readyBanner.isHidden {
             readyBanner.layoutSubtreeIfNeeded()
@@ -512,7 +534,8 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
     private var primaryAction: ModelLibraryAction?
     private var modelName = ""
 
-    init(separator: Bool, perform: @escaping (ModelLibraryAction) -> Void) {
+    init(separator: Bool, languageWidth: CGFloat = ModelLibraryMetrics.languageWidth,
+         perform: @escaping (ModelLibraryAction) -> Void) {
         self.perform = perform
         super.init(frame: .zero)
         let M = ModelLibraryMetrics.self
@@ -604,7 +627,7 @@ private final class ModelLibraryRow: ModelLibraryLayerView {
             size.widthAnchor.constraint(equalTo: sizeStack.widthAnchor),
             sizeNote.widthAnchor.constraint(equalTo: sizeStack.widthAnchor),
             languages.trailingAnchor.constraint(equalTo: sizeStack.leadingAnchor, constant: -M.gap),
-            languages.widthAnchor.constraint(equalToConstant: M.languageWidth),
+            languages.widthAnchor.constraint(equalToConstant: languageWidth),
             languages.centerYAnchor.constraint(equalTo: centerYAnchor),
             languages.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 6),
 
@@ -1056,9 +1079,9 @@ private final class ModelStoreCommand: @unchecked Sendable {
     }
 }
 
-#if MODEL_LIBRARY_PREVIEW
+#if MODEL_LIBRARY_PREVIEW || SETTINGS_PREVIEW
 @MainActor
-private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
+final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
     private(set) var models = [
         ModelLibraryEntry(id: "whisper-turbo-fp16", name: "Whisper Large V3 Turbo", size: "1.61 GB",
                           source: "Hugging Face · mlx-community/whisper-large-v3-turbo", state: .active,
@@ -1087,8 +1110,15 @@ private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
     private var downloadIndex: Int?
     private var step = 0
 
-    override init() {
+    /// `active` puts another downloaded model in use, as after a switch.
+    init(active: String? = nil) {
         super.init()
+        if let active, let index = models.firstIndex(where: { $0.id == active }) {
+            for other in models.indices {
+                if case .active = models[other].state { models[other].state = .installed }
+            }
+            models[index].state = .active
+        }
         // The demo opens mid-download (Parakeet V3 at 8 %), so keep it moving.
         downloadIndex = 2
         step = 2
@@ -1144,6 +1174,9 @@ private final class DemoModelLibraryBackend: NSObject, ModelLibraryBackend {
     }
 }
 
+#endif
+
+#if MODEL_LIBRARY_PREVIEW
 @MainActor
 private final class ModelLibraryPreview: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
