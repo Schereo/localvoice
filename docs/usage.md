@@ -9,7 +9,7 @@
 | **Esc** (while recording) | Discard the recording |
 | **Cmd+,** (when LocalVoice is active) | Open LocalVoice Settings |
 
-Enter and Esc are only interpreted while a recording runs. macOS delivers them to the frontmost app as well — in fields where Enter submits, prefer the hotkey to stop.
+Enter and Esc belong to LocalVoice only while a recording runs: then they stop the recording and do not reach the app you are typing in, so Enter will not send a message in Slack. The rest of the time they are untouched. With a modifier (Shift-Enter) they end the recording too, but also reach the app. If another app already holds plain Enter or Esc, or LocalVoice cannot watch the keyboard itself (Input Monitoring), the keys end the recording and reach the app as before. Right at the start and end of a recording, a key pressed within a few milliseconds may still fall on the other side of that line.
 
 ## Insertion
 

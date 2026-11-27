@@ -3754,8 +3754,12 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     // When the running child became ready, to re-arm crash recovery.
     private var readySince: TimeInterval?
     // Write end of the child's stdin. The child exits on EOF, so it cannot
-    // outlive the app even if the app crashes or is force-quit.
+    // outlive the app even if the app crashes or is force-quit. Only used when
+    // the shortcuts' event tap is unavailable; the command channel otherwise
+    // plays the same part.
     private var lifeline: FileHandle?
+    // Global shortcuts; they talk to the running child over its stdin.
+    private let shortcuts = ShortcutController()
 
     init(config: [String: String], arguments: [String]) throws {
         self.config = config
@@ -3823,7 +3827,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         menuBar.installApplicationMenu()
         applyMenuVisibility()
         menuTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.applyMenuVisibility() }
+            Task { @MainActor [weak self] in
+                self?.applyMenuVisibility()
+                self?.shortcuts.reloadConfig()
+            }
         }
         if permissionsGranted {
             startUpdater()
@@ -4091,9 +4098,15 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         environment["LOCALVOICE_STATE_DIR"] = selection.deletingLastPathComponent().path
         environment["LOCALVOICE_SESSION_LOCK"] = scratch.appendingPathComponent("session.lock").path
         environment["LOCALVOICE_LIFELINE"] = "stdin"
+        let channel = shortcuts.connectService()
+        let pipe = channel == nil ? Pipe() : nil
+        if let channel {
+            environment["LOCALVOICE_HOTKEYS"] = "app"
+            process.standardInput = channel.childEnd
+        } else {
+            process.standardInput = pipe?.fileHandleForReading
+        }
         process.environment = environment
-        let pipe = Pipe()
-        process.standardInput = pipe.fileHandleForReading
         process.terminationHandler = { [weak self] finished in
             DispatchQueue.main.async { [weak self] in
                 self?.ended(finished, model: model)
@@ -4102,12 +4115,14 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         do {
             try process.run()
         } catch {
+            shortcuts.disconnectService()
             failedStart(model)
             return
         }
-        try? pipe.fileHandleForReading.close()
+        channel?.childStarted()
+        try? pipe?.fileHandleForReading.close()
         try? lifeline?.close()
-        lifeline = pipe.fileHandleForWriting
+        lifeline = pipe?.fileHandleForWriting
         child = process
         childModel = model
         permissionChecklist?.serviceDidChange()
@@ -4191,6 +4206,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         runningModel = nil
         try? lifeline?.close()
         lifeline = nil
+        shortcuts.disconnectService()
         library?.setActiveModel(nil)
         if stopping {
             exitCleanly()

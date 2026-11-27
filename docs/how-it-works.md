@@ -8,6 +8,25 @@ LocalVoice ships a real app bundle as that root: `LocalVoice.app` contains a sma
 
 The same launcher implements the permission wizard (`--setup`): it requests Microphone (AVCaptureDevice), Accessibility (AXIsProcessTrustedWithOptions) and Input Monitoring (IOHIDRequestAccess) itself, which makes macOS pre-list the app in each pane. It must be launched through LaunchServices (`open -W`) — started from a shell, macOS would attribute the requests to the terminal.
 
+## The shortcuts
+
+The app, not the Python service, watches the keyboard. pynput — what the service used before — can only observe: Esc and Enter pressed to end a recording reached the frontmost app as well, so Enter also sent the half-written message in Slack. The launcher detects the shortcuts natively and sends commands to the service:
+
+- **The tap gesture** (Control three times by default) comes from a listen-only `CGEventTap` on a thread of its own. Presses of the configured modifier at most 0.5 s apart count up; any other key starts over. The tap thread forwards only the gesture and the few keys shortcuts use, never ordinary typing, and a busy main thread cannot delay it or get it switched off.
+- **Esc and Enter** are Carbon hotkeys (`RegisterEventHotKey`), registered only while a recording runs. macOS then delivers them to LocalVoice instead of the frontmost app; the rest of the time they are not touched. If another app already holds one of them, the tap still sees that key and it works as before, unswallowed.
+
+The service's stdin is the channel: one end of a Unix socket pair, so it carries a line protocol in both directions and is still the lifeline — when the app quits or crashes, the kernel closes its end and the service reads EOF and stops. With `LOCALVOICE_HOTKEYS=app` set, the service runs no keyboard listener of its own.
+
+| Direction | Line | Meaning |
+|---|---|---|
+| app → service | `toggle` | The gesture: start a recording, or stop one and insert |
+| app → service | `finish` / `discard` | Enter / Esc during a recording |
+| app → service | `quit` | Option+Esc: stop the service |
+| service → app | `ready` | Commands are accepted from now on |
+| service → app | `recording 1` / `recording 0` | A recording started collecting audio / stopped |
+
+Unknown lines are ignored on both sides, so either can learn a new command first. The app drops gestures until `ready`: a tap while the model loads must not start a recording seconds later. The recording state comes from the audio manager's `is_collecting` flag, whatever ended the recording (Esc, the watchdog, a failed start), so the app never keeps Enter after the recording is gone; if the service dies, the hotkeys are released with the channel. When the event tap cannot be created, the app starts the service without the channel and it falls back to its pynput listener, as it does when run on its own.
+
 ## The pill
 
 The pill is a standalone Swift/AppKit process driven over a line protocol on stdin: `standby` pills also take `arm`, `disarm` and `show`; then `state <mode>`, `level <0..1>`, `progress <0..1>` (negative = indeterminate), `detail <text>`, `final <text>`, `partial <text>`, `quit`. Recording sessions stream ctrlSPEAK's existing RMS levels to it — no second microphone stream is opened. The window is non-activating, floats across Spaces, and never takes focus from the field the text will land in.
@@ -40,7 +59,7 @@ macOS lights the mic indicator whenever any process holds an open input stream �
 
 Three rules keep a wedged subsystem from taking dictation down with it.
 
-**The event tap never blocks.** Hotkey callbacks run on pynput's CGEventTap callback, which macOS expects to return promptly. They only enqueue; a worker thread does the work. A wedge in CoreAudio or the pasteboard can no longer freeze the key handling itself.
+**The event tap never blocks.** Commands from the app (and, in the standalone fallback, pynput's CGEventTap callbacks, which macOS expects to return promptly) only enqueue; a worker thread does the work. A wedge in CoreAudio or the pasteboard can no longer freeze the key handling itself.
 
 **A watchdog owns the last resort.** A deadlock leaves the process alive, so nothing restarts it — dictation is dead while the service looks healthy. If a command makes no progress for 90 seconds, a watchdog thread shows a pill and calls `os._exit(1)`, the only exit that works with threads stuck in a kernel mutex. The app restarts a service that crashes after it was ready, once; back-to-back crashes show the start error instead.
 

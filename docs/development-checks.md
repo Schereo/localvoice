@@ -19,7 +19,7 @@ The preview simulates model actions without using your installed models.
 out="$(mktemp -d)"
 xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
   -D SETTINGS_PREVIEW src/ctrlspeak-launcher.swift src/localvoice-model-library.swift \
-  src/localvoice-updater.swift -o "$out/settings-preview"
+  src/localvoice-updater.swift src/localvoice-shortcuts.swift -o "$out/settings-preview"
 LOCALVOICE_CONFIG_DIR="$out" SETTINGS_PREVIEW_ICON=assets/icon.png "$out/settings-preview"
 ```
 

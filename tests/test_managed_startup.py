@@ -67,6 +67,12 @@ class ManagedStartupTests(unittest.TestCase):
         self.whisper = Mock(side_effect=self._whisper)
         self.parakeet_worker = Mock(return_value=temp / "localvoice-parakeet")
         self.worker = Mock(side_effect=self._worker)
+        self.app_control = stub(
+            "app_control", enabled=lambda: os.environ.get("LOCALVOICE_HOTKEYS") == "app",
+            listen=Mock(side_effect=lambda *_, **__: self.events.append("app listen")),
+            start=Mock(side_effect=lambda *_, **__: self.events.append("app channel")),
+            publish_recording=Mock(),
+        )
         contexts.enter_context(patch.dict(sys.modules, {
             # Forbid any dependency on the legacy path or heavyweight libraries.
             **dict.fromkeys(("models.factory", "models.registry", "huggingface_hub", "torch", "mlx", "ui")),
@@ -93,6 +99,7 @@ class ManagedStartupTests(unittest.TestCase):
                 "utils.keyboard_shortcuts", KeyboardShortcutManager=Mock(return_value=self.keyboard),
             ),
             "transcription": stub("transcription", transcription_worker=self.worker),
+            "app_control": self.app_control,
             "hotkeys": stub("hotkeys", on_activate=Mock(), is_recording=Mock(),
                             cancel_recording=Mock(), finish_recording=Mock(), open_config=Mock()),
             "localvoice_models": stub("localvoice_models", resolve_model=self.resolve_model,
@@ -230,6 +237,28 @@ class ManagedStartupTests(unittest.TestCase):
 
     def test_dead_listener_does_not_publish_readiness(self):
         self.keyboard.key_listener.is_alive.return_value = False
+        self.assertEqual(self.app.main(), 1)
+        self.assertFalse(self.ready.exists())
+
+    def test_app_owned_shortcuts_replace_the_listener(self):
+        os.environ["LOCALVOICE_HOTKEYS"] = "app"
+        keyboard_manager = sys.modules["utils.keyboard_shortcuts"].KeyboardShortcutManager
+        self.assertIsNone(self.app.main())
+        # EOF is heard from before the model loads, commands only once ready.
+        self.assertEqual(self.events[0], "app listen")
+        self.assertEqual(self.events[1:], [
+            "verify", "create", "load", "permissions", "app channel", "watcher", "ready",
+        ])
+        keyboard_manager.assert_not_called()
+        self.assertIsNone(self.state.keyboard_manager)
+        commands = self.app_control.start.call_args.args[0]
+        self.assertEqual(set(commands), {"toggle", "finish", "discard", "quit"})
+        self.assertIs(self.audio.on_collecting_changed, self.app_control.publish_recording)
+        self.assertTrue(self.ready.is_file())
+
+    def test_unusable_app_channel_does_not_publish_readiness(self):
+        os.environ["LOCALVOICE_HOTKEYS"] = "app"
+        self.app_control.start.side_effect = OSError("not a socket")
         self.assertEqual(self.app.main(), 1)
         self.assertFalse(self.ready.exists())
 
