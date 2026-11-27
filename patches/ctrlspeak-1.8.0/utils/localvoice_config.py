@@ -44,6 +44,7 @@ DEFAULTS = {
 VALID_LANGUAGES = {"de", "en", "auto"}
 VALID_HOTKEY_MODIFIERS = {"ctrl", "cmd", "alt", "shift"}
 _TRUTHY = {"on", "true", "1", "yes"}
+_FALSY = {"off", "false", "0", "no"}
 
 _HEADER = """\
 # LocalVoice configuration.
@@ -151,8 +152,11 @@ def as_bool(key):
 
 
 def sounds():
-    """Whether recordings start and stop with a sound (default on)."""
-    return as_bool("sounds")
+    """Whether recordings start and stop with a sound (default on).
+
+    Only an explicit off value silences them; a typo keeps the default.
+    """
+    return str(effective("sounds")).strip().lower() not in _FALSY
 
 
 def language():

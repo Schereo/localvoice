@@ -3236,8 +3236,12 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     }
 
     private static func isOn(_ key: String, default fallback: Bool = false) -> Bool {
-        guard let value = readConfigValue(key)?.lowercased() else { return fallback }
-        return ["1", "on", "true", "yes"].contains(value)
+        // An unrecognised value keeps the default, as the service reads it.
+        switch readConfigValue(key)?.lowercased() {
+        case "1", "on", "true", "yes": return true
+        case "0", "off", "false", "no": return false
+        default: return fallback
+        }
     }
 
     private static func words(_ raw: String) -> [String] {
