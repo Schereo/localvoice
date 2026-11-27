@@ -42,28 +42,16 @@
         </div>
 
         <div class="hero-demo">
-          <figure class="stage" id="dictation-demo" data-state="rec" role="img" aria-label="A LocalVoice demo. Words appear in the recording pill as you speak, then the finished sentence lands at the text cursor.">
-            <div class="stage-editor" aria-hidden="true">
-              <p class="stage-note">Meeting notes</p>
-              <p class="stage-text"><span class="landed"></span><span class="caret"></span></p>
-            </div>
-            <div class="slot" aria-hidden="true">
-              <div class="pill pill-voice">
-                <div class="transcript">Let's move the review to Thursday. <span class="guess">I'll bring the</span></div>
-                <div class="chrome"><span class="dot"></span><span class="wave wave-live" data-bars="34" data-static></span><time>00:03</time></div>
-              </div>
-              <div class="pill pill-ok"><span class="check"></span><span class="two"><b>Text inserted</b><span class="lang">Detected EN</span></span></div>
+          <figure class="pill-stage" id="dictation-demo" role="img" aria-label="A LocalVoice demo. Press the hotkey and a circle appears, which grows into the recording pill while you speak. When you stop, it folds back into a circle while the text is transcribed, confirms with a green check, and the text appears at the cursor.">
+            <p class="lv-text" aria-hidden="true"><span class="lv-line"><span class="lv-first">Let’s move the review to Thursday.</span><span class="lv-second"> I’ll bring the numbers.</span><span class="lv-caret"></span></span></p>
+            <div class="lv" aria-hidden="true">
+              <div class="lv-rec"><span class="lv-dot"></span><span class="wave lv-wave" data-bars="18"></span><time>00:00</time></div>
+              <svg class="lv-mark" viewBox="-22 -22 44 44" focusable="false">
+                <circle class="lv-arc" r="12.5"/>
+                <path class="lv-check" d="M-6.6 0 L-1.9 4.6 L7 -5.6"/>
+              </svg>
             </div>
           </figure>
-          <div class="demo-toolbar">
-            <button class="demo-control" type="button" aria-controls="dictation-demo" hidden>
-              <svg class="demo-icon demo-icon-play" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 3 7 5-7 5V3Z" stroke="currentColor" stroke-linejoin="round"/></svg>
-              <svg class="demo-icon demo-icon-pause" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5.5 3.5v9m5-9v9" stroke="currentColor" stroke-linecap="round"/></svg>
-              <svg class="demo-icon demo-icon-skip" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 3 7 5-7 5V3Zm10 1v8" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <svg class="demo-icon demo-icon-replay" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 6a5 5 0 1 1 0 4m0-4V2m0 4h4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <span class="demo-control-label">Play demo</span>
-            </button>
-          </div>
         </div>
       </div>
     </section>

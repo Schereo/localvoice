@@ -12,7 +12,7 @@
   ![License](https://img.shields.io/badge/license-MIT-green)
   ![Local](https://img.shields.io/badge/cloud-none-blue)
 
-  <img src="assets/pill-recording.png" width="330" alt="LocalVoice recording pill">
+  <img src="assets/pill-recording.png" width="264" alt="LocalVoice recording pill">
 </div>
 
 ## Why

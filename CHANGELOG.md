@@ -27,6 +27,10 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   folds into a red cross the same way; the clipboard pill just says
   "Copied". Errors and "No speech detected" keep their text.
 - The website's Homebrew command sits in its own box with a copy button.
+- The website's demo is the pill itself, large and on its own: it grows from
+  the circle, records, transcribes in the circle and lands two sentences at a
+  free-standing cursor. The mock editor window and the demo controls are gone;
+  with reduced motion the pill stands still.
 
 ### Removed
 
