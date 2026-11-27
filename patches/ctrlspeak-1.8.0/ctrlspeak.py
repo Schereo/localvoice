@@ -346,7 +346,13 @@ def _watch_lifeline():
     """
     import app_control
 
-    if os.environ.get("LOCALVOICE_LIFELINE") != "stdin" or app_control.enabled():
+    if app_control.enabled():
+        try:
+            app_control.listen(on_eof=_app_gone)
+        except OSError:
+            pass  # reported when the commands are served
+        return
+    if os.environ.get("LOCALVOICE_LIFELINE") != "stdin":
         return
     try:
         stream = os.fdopen(os.dup(0), "rb", buffering=0)
@@ -590,7 +596,12 @@ def run_app(args):
                         "toggle": on_activate,
                         "finish": finish_recording,
                         "discard": cancel_recording,
-                        "quit": exit_app,
+                        # Off the reader thread: stopping a recording can
+                        # wait on the capture lock, and the reader must stay
+                        # free to hear the app go.
+                        "quit": lambda: threading.Thread(
+                            target=exit_app, name="app-quit", daemon=True
+                        ).start(),
                     }, on_eof=_app_gone)
                 except OSError as exc:
                     logger.error("Could not open the command channel from the app: %s", exc)

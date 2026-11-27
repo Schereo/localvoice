@@ -30,6 +30,8 @@ logger = logging.getLogger("ctrlspeak.app_control")
 
 _outbox = queue.Queue()
 _started = False
+_channel = None
+_commands = None
 
 
 def enabled():
@@ -58,14 +60,20 @@ def handle(line, commands):
     return name
 
 
-def start(commands, on_eof, fd=0):
-    """Serve commands from the app on `fd` (a socket) on background threads.
+def listen(on_eof, fd=0):
+    """Start reading `fd` (a socket) so EOF is heard from the first moment.
 
-    `commands` maps command names to callables that return promptly (they
-    enqueue, like the pynput callbacks did). `on_eof` runs once the app
-    closes its end. Raises OSError if `fd` is not a socket.
+    Called early in startup: the app can quit while the model is still
+    loading, and the service must stop then too. Lines arriving before
+    `start` installs the commands are dropped (the app sends none before
+    "ready" anyway). With fd 0, stdin is pointed at /dev/null afterwards, so
+    helper processes (the capture child, osascript) do not inherit the socket
+    and keep it open past the service's exit. Raises OSError if `fd` is not a
+    socket.
     """
-    global _started
+    global _channel
+    if _channel is not None:
+        return
     duplicate = os.dup(fd)
     try:
         channel = socket.socket(fileno=duplicate)
@@ -73,15 +81,39 @@ def start(commands, on_eof, fd=0):
         os.close(duplicate)
         raise
     channel.setblocking(True)
+    if fd == 0:
+        try:
+            null = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(null, 0)
+            os.close(null)
+        except OSError:
+            logger.warning("Could not detach stdin from the command channel.")
+    _channel = channel
 
     def receive():
         try:
             with channel.makefile("rb") as stream:
                 for line in stream:
-                    handle(line, commands)
+                    if _commands is not None:
+                        handle(line, _commands)
         except OSError:
             pass
         on_eof()
+
+    threading.Thread(target=receive, name="AppControlReader", daemon=True).start()
+
+
+def start(commands, on_eof, fd=0):
+    """Serve commands from the app on `fd` and tell it the service is ready.
+
+    `commands` maps command names to callables that return promptly (they
+    enqueue, like the pynput callbacks did). `on_eof` runs once the app
+    closes its end; it is ignored if `listen` already runs. Raises OSError
+    if `fd` is not a socket.
+    """
+    global _started, _commands
+    listen(on_eof, fd)
+    channel = _channel
 
     def send():
         while True:
@@ -91,7 +123,7 @@ def start(commands, on_eof, fd=0):
             except OSError:
                 return
 
+    _commands = commands
     _started = True
     _outbox.put(b"ready\n")
-    threading.Thread(target=receive, name="AppControlReader", daemon=True).start()
     threading.Thread(target=send, name="AppControlWriter", daemon=True).start()

@@ -145,6 +145,9 @@ final class KeyboardTap: @unchecked Sendable {
         if port != nil { return true }
         let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
             | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
+        // The tap lives as long as the app; this reference is never released
+        // once it is installed.
+        let context = Unmanaged.passRetained(self)
         guard let port = CGEvent.tapCreate(
             tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
             eventsOfInterest: mask,
@@ -154,14 +157,15 @@ final class KeyboardTap: @unchecked Sendable {
                 }
                 return Unmanaged.passUnretained(event)
             },
-            // The tap lives as long as the app; it is never released.
-            userInfo: Unmanaged.passRetained(self).toOpaque()
+            userInfo: context.toOpaque()
         ) else {
             shortcutLog.error("Could not create the keyboard event tap (Input Monitoring missing?)")
+            context.release()
             return false
         }
         guard let source = CFMachPortCreateRunLoopSource(nil, port, 0) else {
             CFMachPortInvalidate(port)
+            context.release()
             return false
         }
         self.port = port
@@ -246,13 +250,14 @@ final class CarbonHotkeys {
     }
 
     /// False if the key is taken (eventHotKeyExistsErr) or cannot be registered.
+    /// Exclusive, so an app that registers the key after us does not get it too.
     func register(_ id: UInt32, keyCode: Int64, modifiers: Int, action: @escaping @MainActor () -> Void) -> Bool {
         unregister(id)
         guard installHandler() else { return false }
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers),
                                          EventHotKeyID(signature: Self.signature, id: id),
-                                         GetApplicationEventTarget(), 0, &ref)
+                                         GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &ref)
         guard status == noErr, let ref else {
             shortcutLog.error("Could not register hotkey \(id) (key \(keyCode)): \(status)")
             return false
@@ -458,10 +463,13 @@ final class ShortcutController {
                 return
             }
             guard recording else { return }
+            // The plain keys are Carbon hotkeys and arrive there, swallowed.
+            // With a modifier (Shift+Return) they still end the recording, as
+            // with the service's own listener, but reach the app as well.
             let plain = flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty
-            if keyCode == ShortcutKey.escape && plain && unswallowed.contains(.discard) {
+            if keyCode == ShortcutKey.escape && (!plain || unswallowed.contains(.discard)) {
                 send("discard")
-            } else if keyCode == ShortcutKey.returnKey && plain && unswallowed.contains(.finish) {
+            } else if keyCode == ShortcutKey.returnKey && (!plain || unswallowed.contains(.finish)) {
                 send("finish")
             }
         }

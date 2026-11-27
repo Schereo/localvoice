@@ -76,6 +76,26 @@ class AppControlTests(unittest.TestCase):
         self.app.close()
         self.assertTrue(gone.wait(2))
 
+    def test_eof_is_heard_before_the_commands_are_served(self):
+        # The app can quit while the model still loads.
+        gone = threading.Event()
+        self.control.listen(on_eof=gone.set, fd=self.service_fd)
+        self.app.sendall(b"toggle\n")  # nothing to run it yet: dropped
+        self.replies.close()
+        self.app.close()
+        self.assertTrue(gone.wait(2))
+
+    def test_start_after_listen_serves_on_the_same_socket(self):
+        done, gone = threading.Event(), threading.Event()
+        self.control.listen(on_eof=gone.set, fd=self.service_fd)
+        self.control.start({"finish": done.set}, on_eof=lambda: None, fd=self.service_fd)
+        self.assertEqual(self.replies.readline(), b"ready\n")
+        self.app.sendall(b"finish\n")
+        self.assertTrue(done.wait(2))
+        self.replies.close()
+        self.app.close()
+        self.assertTrue(gone.wait(2))  # the first on_eof stays in charge
+
     def test_a_pipe_is_refused(self):
         read, write = os.pipe()
         self.addCleanup(os.close, read)

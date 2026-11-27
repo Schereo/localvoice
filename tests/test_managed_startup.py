@@ -69,6 +69,7 @@ class ManagedStartupTests(unittest.TestCase):
         self.worker = Mock(side_effect=self._worker)
         self.app_control = stub(
             "app_control", enabled=lambda: os.environ.get("LOCALVOICE_HOTKEYS") == "app",
+            listen=Mock(side_effect=lambda *_, **__: self.events.append("app listen")),
             start=Mock(side_effect=lambda *_, **__: self.events.append("app channel")),
             publish_recording=Mock(),
         )
@@ -243,7 +244,9 @@ class ManagedStartupTests(unittest.TestCase):
         os.environ["LOCALVOICE_HOTKEYS"] = "app"
         keyboard_manager = sys.modules["utils.keyboard_shortcuts"].KeyboardShortcutManager
         self.assertIsNone(self.app.main())
-        self.assertEqual(self.events, [
+        # EOF is heard from before the model loads, commands only once ready.
+        self.assertEqual(self.events[0], "app listen")
+        self.assertEqual(self.events[1:], [
             "verify", "create", "load", "permissions", "app channel", "watcher", "ready",
         ])
         keyboard_manager.assert_not_called()
