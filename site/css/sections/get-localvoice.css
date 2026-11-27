@@ -19,10 +19,10 @@
 .get-icon {
   width: clamp(92px, 12vw, 132px);
   margin: -10px;
-  filter: drop-shadow(0 10px 12px var(--shade));
+  filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--shade) 45%, transparent));
 }
 
-.get-download { justify-self: start; }
+.get-download { justify-self: start; text-align: center; }
 .get-download p { margin-top: 8px; font-size: .9rem; }
 
 @media (min-width: 700px) {
@@ -46,7 +46,10 @@
 .brew-box {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  /* As wide as the command plus padding, never wider than the column. */
+  width: fit-content;
+  max-width: 100%;
   margin-top: 8px;
   padding: 6px 6px 6px 14px;
   background: color-mix(in srgb, var(--ink) 5%, transparent);
@@ -55,36 +58,34 @@
 }
 
 .brew-box code {
-  flex: 1;
   min-width: 0;
   overflow-x: auto;
   font: .86rem/1.5 var(--font-mono);
   color: var(--ink);
   white-space: nowrap;
   font-variant-ligatures: none;
-  /* A narrow screen scrolls the line; the fade says there is more. */
-  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
   scrollbar-width: none;
 }
 .brew-box code::-webkit-scrollbar { display: none; }
+/* Only when a narrow screen cuts the line: the fade says there is more. */
+.brew-box code.is-clipped { mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent); }
 .brew-prompt { margin-right: .7ch; color: var(--ink-muted); user-select: none; }
 
 .brew-copy {
-  display: inline-flex;
+  display: grid;
   flex: none;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
   border: 1px solid var(--edge);
   border-radius: 7px;
   background: var(--editor);
-  color: var(--ink);
-  font: 600 .84rem/1 var(--font-body);
+  color: var(--ink-muted);
   cursor: pointer;
   transition: background-color .2s ease-out, scale .15s ease-out;
 }
-.brew-copy:hover { background: color-mix(in srgb, var(--ink) 8%, var(--editor)); }
+.brew-copy:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 8%, var(--editor)); }
 .brew-copy:active { scale: .96; }
 .brew-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .brew-copy svg { stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
