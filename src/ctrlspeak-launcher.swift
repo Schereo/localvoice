@@ -4263,9 +4263,8 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     }
 
     /// Starts in-app updates once setup is done (permissions granted, a model chosen); the
-    /// menu and Settings show them from then on. Sparkle asks its one question (check
-    /// automatically?) on the second launch it is started in, so it never lands on the
-    /// setup windows: the run that finishes setup is the first.
+    /// daily check runs and the menu and Settings show updates from then on. During setup
+    /// nothing about updates competes with the setup windows.
     private func startUpdater() {
         guard let updater, !updater.isStarted, permissionsGranted, savedModel != nil else { return }
         menuBar.checkForUpdates = { [weak self] in self?.updater?.checkForUpdates() }

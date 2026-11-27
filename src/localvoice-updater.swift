@@ -10,10 +10,11 @@ import Sparkle
 // from CI. Everything else (local builds, the previews, `scripts/check.sh` without
 // Sparkle) compiles the stub at the bottom, and `AppUpdater.make()` returns nil.
 //
-// Sparkle asks on the second launch whether to check automatically; until the user
-// says yes, LocalVoice contacts no update server on its own. A found update goes into
-// the menu bar menu and Settings instead of a window over whatever the user is doing
-// (Sparkle's "gentle reminders" for background apps).
+// Once setup is done, it looks for an update once a day (SUEnableAutomaticChecks is on
+// in Info.plist, so Sparkle asks no question first); the switch under Settings ›
+// General › Updates turns that off. A found update goes into the menu bar menu and
+// Settings instead of a window over whatever the user is doing (Sparkle's "gentle
+// reminders" for background apps).
 
 #if canImport(Sparkle)
 @MainActor
@@ -42,8 +43,8 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
                                                   userDriverDelegate: self)
     }
 
-    /// Starts the scheduler (and, on the second launch, Sparkle's one-time question).
-    /// Held back until setup is done, so neither lands on top of the permission window.
+    /// Starts the daily check. Held back until setup is done, so nothing about updates
+    /// competes with the permission window.
     func start() {
         guard !started, let controller else { return }
         started = true

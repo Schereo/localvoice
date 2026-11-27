@@ -52,8 +52,8 @@ class UpdateKeyTests(unittest.TestCase):
         keys = build.update_keys("https://github.com/Schereo/localvoice/releases/latest/download/appcast.xml")
         self.assertEqual(keys["SUPublicEDKey"], build.SPARKLE_PUBLIC_KEY)
         self.assertFalse(keys["SUEnableSystemProfiling"])
-        # Sparkle asks before checking on its own only while this key is absent.
-        self.assertNotIn("SUEnableAutomaticChecks", keys)
+        # On by default: Sparkle checks daily without asking first.
+        self.assertIs(keys["SUEnableAutomaticChecks"], True)
 
     def test_public_key_is_an_ed25519_key(self):
         self.assertEqual(len(base64.b64decode(build.SPARKLE_PUBLIC_KEY, validate=True)), 32)

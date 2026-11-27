@@ -97,8 +97,9 @@ def update_keys(feed_url):
     return {
         "SUFeedURL": feed_url,
         "SUPublicEDKey": SPARKLE_PUBLIC_KEY,
-        # Sparkle asks once (second launch) before it checks on its own, and never
-        # sends a system profile.
+        # Look for an update once a day without asking first (Settings › General ›
+        # Updates turns it off), and never send a system profile.
+        "SUEnableAutomaticChecks": True,
         "SUEnableSystemProfiling": False,
     }
 
