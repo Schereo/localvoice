@@ -31,8 +31,9 @@ Push the commit and the tag afterwards:
 
   git push && git push origin v1.2.0
 
-The tag starts the Build workflow, which builds, signs and notarizes the app and
-publishes the GitHub release with the changelog section as its notes.
+The tag starts the Build workflow, which builds, signs and notarizes the app,
+publishes the GitHub release with the changelog section as its notes, and then
+redeploys the website so its download points at the new release.
 
 Options:
   --notes <version>   Print the changelog section for a version and exit.
