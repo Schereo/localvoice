@@ -28,8 +28,6 @@ The private app opens the Model Library independently of the dictation service. 
 
 Model activation is separate from download. Switching is allowed only between recording sessions; the launcher stops the previous service before loading the candidate and saves the selection only after the hotkey listener is ready. If the candidate fails to start, the launcher attempts to restore the previous model. The service receives a verified local path and does not download weights.
 
-The explicit legacy Homebrew install still starts the Hub download from the service on a cold cache and reports it in the recording pill.
-
 ## Updates
 
 Release and dev builds embed [Sparkle](https://sparkle-project.org). The launcher starts it only after setup; from then on it checks GitHub once a day unless that is switched off in Settings, and dictation never waits on it. A found update is a reminder in the menu bar menu and in Settings, not a window. Updates are signed twice: with the EdDSA key the app trusts (`SUPublicEDKey`) and with the same Developer ID as the installed app. Most updates arrive as a delta patch of a few MB that rebuilds the new bundle from the installed one, file by file, after checking that the installed one is unchanged. Details: [setup](setup.md#in-app-updates).
@@ -44,7 +42,7 @@ Three rules keep a wedged subsystem from taking dictation down with it.
 
 **The event tap never blocks.** Hotkey callbacks run on pynput's CGEventTap callback, which macOS expects to return promptly. They only enqueue; a worker thread does the work. A wedge in CoreAudio or the pasteboard can no longer freeze the key handling itself.
 
-**A watchdog owns the last resort.** A deadlock leaves the process alive, so launchd's `KeepAlive` never fires — dictation is dead while the service looks healthy. If a command makes no progress for 90 seconds, a watchdog thread shows a pill and calls `os._exit(1)`, the only exit that works with threads stuck in a kernel mutex. The LaunchAgent restarts the service seconds later.
+**A watchdog owns the last resort.** A deadlock leaves the process alive, so nothing restarts it — dictation is dead while the service looks healthy. If a command makes no progress for 90 seconds, a watchdog thread shows a pill and calls `os._exit(1)`, the only exit that works with threads stuck in a kernel mutex. The app restarts a service that crashes after it was ready, once; back-to-back crashes show the start error instead.
 
 **The microphone lives in its own process.** CoreAudio's HAL deadlocks in the stream teardown path, and a mutex wedged inside our own process cannot be broken from Python — that is what repeatedly killed dictation for good. `mic_capture.py` owns the stream and writes raw frames to the parent over a pipe; silence detection, buffering and the onset roll stay in the parent, unchanged. Releasing the microphone is then a `kill`, which the kernel always honours: immediate, deadlock-proof, and the macOS indicator goes out with the process. Opening is bounded too — the child reports `ready` or `open-failed`, and a timeout raises instead of hanging. Starting that child (Python plus PortAudio, ~0.2 s) used to open every recording; now a standby child is started ahead of time, waits with PortAudio loaded but no stream open (the indicator stays off), and only receives `open <device>` when the hotkey fires. It refreshes PortAudio's device list on open (a few ms), so a microphone connected meanwhile is still found; if the standby child is gone, a new one is started as before.
 

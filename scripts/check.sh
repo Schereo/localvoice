@@ -9,9 +9,6 @@ PYTHON="${LOCALVOICE_CHECK_PYTHON:-$(command -v python3)}"
 "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else "Python 3.9+ is required for tests")'
 
 echo "Checking shell syntax"
-bash -n install.sh
-bash -n uninstall.sh
-./install.sh --plan >/dev/null
 for script in scripts/*.sh; do
   bash -n "$script"
 done

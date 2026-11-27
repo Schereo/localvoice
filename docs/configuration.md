@@ -162,16 +162,10 @@ the price of an always-lit indicator. Idle audio is held only as a rolling
 0.45 s in memory and never stored or sent anywhere. Details:
 [usage.md](usage.md#microphone-standby).
 
-## Install-time overrides
-
-The installer accepts environment variables and writes them into the config
-file: `CTRLSPEAK_LANGUAGE=de|en|auto`, `CTRLSPEAK_HOTKEY=cmd,2`,
-`CTRLSPEAK_MIC_STANDBY=on|off` — e.g. `CTRLSPEAK_HOTKEY=cmd,2 ./install.sh --legacy-homebrew`.
-
 ## Migration from pre-1.2 versions
 
 Older versions kept single-value files under `~/.config/ctrlspeak` (`hotkey`,
 `language`, `mic-standby`). On its first start, version 1.2 folds their values
 into the new config file; until then they are still honoured as a fallback.
 `~/.config/ctrlspeak` itself remains in use for the service's internal state
-(installed version, setup status, the single-instance lock).
+(installed version, the single-instance lock).

@@ -2,16 +2,24 @@
 
 set -euo pipefail
 
-command -v ctrlspeak-overlay >/dev/null 2>&1 || {
-  echo "ctrlspeak-overlay is not installed. Run ./install.sh first." >&2
-  exit 1
-}
+# Drives the pill from the current source: it is compiled into a temporary
+# directory first (a few seconds). LOCALVOICE_OVERLAY=<binary> uses an existing
+# build instead, e.g. LocalVoice.app/Contents/Helpers/ctrlspeak-overlay.
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OVERLAY="${LOCALVOICE_OVERLAY:-}"
+if [[ -z "$OVERLAY" ]]; then
+  BUILD="$(mktemp -d "${TMPDIR:-/tmp}/localvoice-overlay.XXXXXXXX")"
+  trap 'rm -r "$BUILD"' EXIT
+  xcrun swiftc -module-cache-path "$BUILD/module-cache" \
+    "$PROJECT_DIR/src/ctrlspeak-overlay.swift" -o "$BUILD/ctrlspeak-overlay"
+  OVERLAY="$BUILD/ctrlspeak-overlay"
+fi
 
 MODE="${1:-preview}"
 
 case "$MODE" in
   preview)
-    ctrlspeak-overlay "$MODE"
+    "$OVERLAY" "$MODE"
     ;;
 
   recording)
@@ -23,7 +31,7 @@ case "$MODE" in
         sleep 0.04
       done
       printf 'quit\n'
-    } | ctrlspeak-overlay recording
+    } | "$OVERLAY" recording
     ;;
 
   live)
@@ -53,9 +61,10 @@ case "$MODE" in
       printf 'state processing\n'
       sleep 1
       printf 'state success\n'
+      # The pill folds away on its own after success; a quit would hit a
+      # closed pipe. The sleep keeps stdin open through the animation.
       sleep 1.5
-      printf 'quit\n'
-    } | ctrlspeak-overlay recording
+    } | "$OVERLAY" recording
     ;;
 
   start)
@@ -74,9 +83,10 @@ case "$MODE" in
       printf 'state processing\n'
       sleep 1
       printf 'state success\n'
+      # The pill folds away on its own after success; a quit would hit a
+      # closed pipe. The sleep keeps stdin open through the animation.
       sleep 1.5
-      printf 'quit\n'
-    } | ctrlspeak-overlay standby
+    } | "$OVERLAY" standby
     ;;
 
   permission)
@@ -84,7 +94,7 @@ case "$MODE" in
       printf 'detail Microphone · Accessibility\n'
       sleep 6
       printf 'quit\n'
-    } | ctrlspeak-overlay permission
+    } | "$OVERLAY" permission
     ;;
 
   download)
@@ -104,7 +114,7 @@ case "$MODE" in
 
       sleep 0.5
       printf 'quit\n'
-    } | ctrlspeak-overlay download
+    } | "$OVERLAY" download
     ;;
 
   *)
