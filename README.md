@@ -42,7 +42,6 @@ The previous source installer is available as an explicit compatibility option. 
 | Hotkey tap (default: triple-tap **Ctrl**) | Start recording / stop and insert |
 | **Enter** / **Esc** while recording | Insert / discard |
 | **Cmd+,** while recording | Open the settings in your text editor |
-| Badge click (`DE` / `EN` / `AUTO`) | Cycle the language mode |
 
 Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, microphone, mic standby. Edits apply within seconds, no restart needed; the menu bar icon offers the same settings as menus: **[docs/configuration.md](docs/configuration.md)**. Recording uses the built-in mic by default, so connected AirPods keep their audio quality. The mic opens only while you record (the indicator stays honest); if nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
 
