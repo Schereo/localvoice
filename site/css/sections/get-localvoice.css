@@ -35,3 +35,60 @@
   .get-icon { grid-column: auto; }
   .get-download { align-self: end; }
 }
+
+/* Grid items default to their min-content width; the one-line command must not widen the column. */
+.get-panel > * { min-width: 0; }
+
+/* The Homebrew route: a terminal line of its own, copied with one click. */
+.brew { margin-top: 22px; max-width: 47ch; }
+.get-panel .brew-label { margin-top: 0; font-size: .9rem; }
+
+.brew-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 6px 6px 14px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+}
+
+.brew-box code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  font: .86rem/1.5 var(--font-mono);
+  color: var(--ink);
+  white-space: nowrap;
+  font-variant-ligatures: none;
+  /* A narrow screen scrolls the line; the fade says there is more. */
+  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  scrollbar-width: none;
+}
+.brew-box code::-webkit-scrollbar { display: none; }
+.brew-prompt { margin-right: .7ch; color: var(--ink-muted); user-select: none; }
+
+.brew-copy {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+  background: var(--editor);
+  color: var(--ink);
+  font: 600 .84rem/1 var(--font-body);
+  cursor: pointer;
+  transition: background-color .2s ease-out, scale .15s ease-out;
+}
+.brew-copy:hover { background: color-mix(in srgb, var(--ink) 8%, var(--editor)); }
+.brew-copy:active { scale: .96; }
+.brew-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.brew-copy svg { stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.brew-icon-done { display: none; }
+.brew-copy.is-copied { color: var(--accent); }
+.brew-copy.is-copied .brew-icon-copy { display: none; }
+.brew-copy.is-copied .brew-icon-done { display: block; }
