@@ -163,11 +163,22 @@ enum PermissionKind: Int, CaseIterable {
 @MainActor
 func hotkeyDescription() -> String { DictationShortcut.current().spokenName }
 
-/// "Tap" for a tap gesture, "Press" for a key combination.
+/// "Tap" for a tap gesture, "Hold" in hold-to-talk mode, "Press" otherwise.
 @MainActor
 func hotkeyVerb() -> String {
     if case .taps = DictationShortcut.current() { return "Tap" }
-    return "Press"
+    return DictationShortcut.mode() == .hold ? "Hold" : "Press"
+}
+
+/// One sentence on how to dictate with the configured shortcut and mode.
+@MainActor
+func dictationHowTo() -> String {
+    let hotkey = hotkeyDescription()
+    switch DictationShortcut.mode() {
+    case .toggle: return "\(hotkeyVerb()) \(hotkey) in any app to start, and again to insert the text."
+    case .hold: return "Hold \(hotkey) in any app while you speak; let go to insert the text."
+    case .hybrid: return "Press \(hotkey) in any app to start and again to insert, or hold it while you speak."
+    }
 }
 
 func bundleDisplayName() -> String {
@@ -1195,7 +1206,7 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
                 footer("Starting dictation", "Loading \(model)…", "Done")
             case .ready:
                 let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
-                footer("Ready to dictate", "\(hotkeyVerb()) \(hotkeyDescription()) in any app to start."
+                footer("Ready to dictate", dictationHowTo()
                        + (menuBar ? " Settings are under the LocalVoice icon in the menu bar." : ""), "Done")
             case .stopped:
                 footer("Dictation didn’t start", "Open Models to try again or choose another model.", "Done")
@@ -2285,8 +2296,12 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
 
         let hotkey = hotkeyDescription()
         let steps = NSStackView(views: [
-            Self.step("keyboard", "\(hotkeyVerb()) **\(hotkey)** in any app to start."),
-            Self.step("return", "\(hotkeyVerb()) again or press **Return** to insert the text. "
+            Self.step("keyboard", DictationShortcut.mode() == .hold
+                      ? "Hold **\(hotkey)** in any app while you speak."
+                      : "\(hotkeyVerb()) **\(hotkey)** in any app to start."),
+            Self.step("return", (DictationShortcut.mode() == .hold
+                                 ? "Let go or press **Return** to insert the text. "
+                                 : "\(hotkeyVerb()) again or press **Return** to insert the text. ")
                       + "**Esc** discards."),
             Self.step(menuBar ? localVoiceTemplateIcon() : Self.stepSymbol("gearshape"),
                       menuBar ? "Models and **Settings** are under this icon in the menu bar."
@@ -2926,6 +2941,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private(set) var page: SettingsPage = .dictation
 
     private let shortcutField = ShortcutRecorderField()
+    private let dictationMode = NSPopUpButton()
+    private var hotkeyRow: SettingsRow?
     private let microphone = NSPopUpButton()
     private let vocabulary = NSTokenField()
     private var vocabularyHeight: NSLayoutConstraint?
@@ -2976,6 +2993,11 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         }
 
         shortcutField.onChange = { [weak self] shortcut in self?.saveShortcut(shortcut) }
+        configure(dictationMode, label: "Hotkey Mode", action: #selector(changeDictationMode))
+        setItems(DictationMode.allCases.map { ($0.title, $0.rawValue) }, on: dictationMode)
+        dictationMode.widthAnchor.constraint(equalToConstant: dictationMode.fittingSize.width).isActive = true
+        let hotkey = NSStackView(views: [shortcutField, dictationMode])
+        hotkey.spacing = 8
 
         vocabulary.delegate = self
         vocabulary.tokenStyle = .rounded
@@ -3025,9 +3047,10 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             reserve: 40)
         loginRow = loginItem
 
+        hotkeyRow = SettingsRow(symbol: "keyboard.fill", fallback: "keyboard", tint: .systemGray, title: "Hotkey",
+                                detail: Self.modeHelp(.hybrid), accessory: hotkey, separator: false)
         let dictation = card("Dictation", [
-            SettingsRow(symbol: "keyboard.fill", fallback: "keyboard", tint: .systemGray, title: "Hotkey",
-                        detail: "Starts and stops dictation in any app.", accessory: shortcutField, separator: false),
+            hotkeyRow!,
             microphoneRow,
             vocabularyRow,
         ])
@@ -3222,6 +3245,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     func refresh() {
         guard isViewLoaded else { return }
         shortcutField.shortcut = DictationShortcut.current()
+        showDictationMode()
 
         let current = readConfigValue("microphone") ?? "built-in"
         var devices = [("Built-in Microphone", "built-in"), ("System Default", "system")]
@@ -3506,7 +3530,38 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         onContentChange?()
     }
 
+    /// The mode menu follows the shortcut: a tap gesture has nothing to hold.
+    private func showDictationMode() {
+        let shortcut = shortcutField.shortcut
+        let mode = DictationShortcut.mode(for: shortcut)
+        select(mode.rawValue, fallback: DictationMode.toggle.rawValue, on: dictationMode)
+        if case .taps = shortcut {
+            dictationMode.isEnabled = false
+            dictationMode.toolTip = "Tap gestures always toggle. Pick a key combination or modifiers to hold."
+        } else {
+            dictationMode.isEnabled = true
+            dictationMode.toolTip = nil
+        }
+        hotkeyRow?.setDetail(Self.modeHelp(mode))
+    }
+
+    private static func modeHelp(_ mode: DictationMode) -> String {
+        switch mode {
+        case .toggle: "Starts and stops dictation in any app."
+        case .hold: "Hold while you speak; let go to insert."
+        case .hybrid: "Press to toggle, or hold while you speak."
+        }
+    }
+
+    @objc private func changeDictationMode() {
+        guard let value = dictationMode.selectedItem?.representedObject as? String else { return }
+        save(DictationShortcut.modeKey, value)
+        NotificationCenter.default.post(name: .localVoiceShortcutsChanged, object: nil)
+        showDictationMode()
+    }
+
     private func saveShortcut(_ shortcut: Shortcut) {
+        showDictationMode()
         let written = DictationShortcut.save(shortcut)
         if !written { refresh() }
         message.stringValue = written ? "" : "Could not save the shortcut."
@@ -3880,8 +3935,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                         // The ready screen says all this when it is up.
                         if self?.presentingReady == true { return nil }
                         let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
-                        return "\(hotkeyVerb()) \(hotkeyDescription()) in any app to start, and again to insert the text. "
-                            + "Esc discards."
+                        return dictationHowTo() + " Esc discards."
                             + (menuBar ? " Settings stay under the LocalVoice icon in the menu bar." : "")
                     },
                     embedded: true, top: SettingsMetrics.top

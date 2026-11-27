@@ -6,8 +6,8 @@ LOCALVOICE_HOTKEYS=app. The service then runs no keyboard listener of its
 own. Its stdin is one end of a Unix socket pair, carrying a line protocol in
 both directions (see docs/how-it-works.md):
 
-    app -> service   toggle | finish | discard | quit
-    service -> app   ready | recording 1 | recording 0
+    app -> service   toggle | start | stop | cancel | finish | discard | quit
+    service -> app   ready | recording 1 | recording 0 | idle
 
 "ready" is sent once the service accepts commands; the app drops gestures
 made before it, so a tap while the model loads does not start a recording
@@ -37,6 +37,12 @@ _commands = None
 def enabled():
     """Whether the app owns the shortcuts and drives the service over stdin."""
     return os.environ.get("LOCALVOICE_HOTKEYS") == "app"
+
+
+def publish_idle():
+    """Tell the app a start command left no recording running."""
+    if _started:
+        _outbox.put(b"idle\n")
 
 
 def publish_recording(active):

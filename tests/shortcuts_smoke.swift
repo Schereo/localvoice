@@ -70,26 +70,103 @@ struct ShortcutsSmoke {
         check(DictationShortcut.problem(with: Shortcut(config: "ctrl+cmd")!) == nil, "ctrl+cmd is fine")
         check(DictationShortcut.problem(with: Shortcut(config: "alt+escape")!) != nil, "Option+Esc quits, refused")
 
-        // ⌃⌘ fires on release, and never when a key or click came in between (⌃⌘Q).
+        // ⌃⌘: pressed when exactly both are held, released as soon as that ends,
+        // ended once all are up; not clean if a key, click or another modifier came.
         var chord = ModifierChordDetector(chord: [.control, .command])
-        check(!chord.modifiersChanged(to: .control) && !chord.modifiersChanged(to: [.control, .command])
-              && !chord.modifiersChanged(to: .command), "nothing fires while held")
-        check(chord.modifiersChanged(to: []), "release completes the chord")
+        check(chord.modifiersChanged(to: .control) == [], "one of two is nothing")
+        check(chord.modifiersChanged(to: [.control, .command]) == [.pressed], "both held is the press")
+        check(chord.modifiersChanged(to: .command) == [.released(clean: true)], "letting one go releases")
+        check(chord.modifiersChanged(to: []) == [.ended(clean: true)], "all up ends it")
         _ = chord.modifiersChanged(to: [.control, .command])
         chord.otherInput()
-        check(!chord.modifiersChanged(to: []), "a key in between voids it")
-        _ = chord.modifiersChanged(to: [.control, .command, .shift])
-        check(!chord.modifiersChanged(to: []), "an extra modifier is another chord")
+        check(chord.modifiersChanged(to: []) == [.released(clean: false), .ended(clean: false)],
+              "a key in between is not clean")
+        _ = chord.modifiersChanged(to: [.control, .command])
+        check(chord.modifiersChanged(to: [.control, .command, .shift]) == [.released(clean: false)],
+              "an extra modifier is another shortcut")
+        check(chord.modifiersChanged(to: [.control, .command]) == [], "no new press until all are up")
+        check(chord.modifiersChanged(to: []) == [.ended(clean: false)], "and the sequence stays unclean")
+        _ = chord.modifiersChanged(to: [.control, .shift])
+        check(chord.modifiersChanged(to: [.control, .command, .shift]) == []
+              && chord.modifiersChanged(to: [.control, .command]) == [], "arriving via a superset never presses")
+        _ = chord.modifiersChanged(to: [])
+        // Ctrl, a click, then Cmd: never all clean from the start.
         _ = chord.modifiersChanged(to: .control)
-        check(!chord.modifiersChanged(to: []), "Control alone is not the chord")
+        chord.otherInput()
+        check(chord.modifiersChanged(to: [.control, .command]) == [], "a click before the press voids it")
+        _ = chord.modifiersChanged(to: [])
+        // ⌃⌘, let go of ⌃, ⌘Space (Spotlight): the release was clean, the sequence not.
+        _ = chord.modifiersChanged(to: [.control, .command])
+        _ = chord.modifiersChanged(to: .command)
+        chord.otherInput()
+        check(chord.modifiersChanged(to: []) == [.ended(clean: false)], "⌘Space after ⌃⌘ is not a toggle")
+        chord.otherInput()  // typing with nothing held changes nothing
+        check(chord.modifiersChanged(to: [.command, .control]) == [.pressed], "fires again afterwards")
+        _ = chord.modifiersChanged(to: [])
         var triple = ModifierChordDetector(chord: [.control, .command, .shift])
         _ = triple.modifiersChanged(to: [.control, .command])
         _ = triple.modifiersChanged(to: .command)
-        _ = triple.modifiersChanged(to: [.command, .shift])
-        check(!triple.modifiersChanged(to: []), "held in turns, never all at once, is not the chord")
-        chord.otherInput()  // typing with nothing held changes nothing
-        _ = chord.modifiersChanged(to: [.control, .command])
-        check(chord.modifiersChanged(to: []), "fires again afterwards")
+        check(triple.modifiersChanged(to: [.command, .shift]) == [] && triple.modifiersChanged(to: []) == [],
+              "held in turns, never all at once, is not the chord")
+
+        // Modes: a tap gesture always toggles; otherwise dictate-mode decides.
+        config["dictate"] = "ctrl+cmd"
+        config["dictate-mode"] = "hybrid"
+        check(DictationShortcut.mode() == .hybrid, "mode is read")
+        config["dictate"] = "ctrl,3"
+        check(DictationShortcut.mode() == .toggle, "a gesture toggles")
+        config["dictate-mode"] = "sideways"
+        config["dictate"] = "alt+space"
+        check(DictationShortcut.mode() == .toggle, "unknown mode toggles")
+
+        var hold = DictationPress(mode: .hold)
+        check(hold.pressed(at: 0) == "start", "hold: press starts")
+        check(hold.released(at: 0.1, clean: true) == "stop", "hold: even a short release stops")
+        _ = hold.pressed(at: 1)
+        check(hold.released(at: 2, clean: false) == "cancel", "hold: an unclean release cancels, queued")
+        check(hold.released(at: 3, clean: true) == nil, "a stray release does nothing")
+        _ = hold.pressed(at: 4)
+        check(hold.settle() == "stop" && hold.released(at: 5, clean: true) == nil,
+              "hold: cut off from its release, it stops then")
+
+        var hybrid = DictationPress(mode: .hybrid)
+        check(hybrid.pressed(at: 0) == "start", "hybrid: press starts")
+        check(hybrid.released(at: 0.2, clean: true) == nil, "hybrid: a short press latches")
+        hybrid.recordingStarted()
+        check(hybrid.pressed(at: 5) == "stop", "hybrid: the next press inserts")
+        check(hybrid.released(at: 5.1, clean: true) == nil, "its release is ignored")
+        check(hybrid.pressed(at: 5.2) == "start", "a press before recording 0 starts the next one")
+        hybrid.recordingEnded()  // the earlier recording's end: not this press's
+        check(hybrid.released(at: 5.3, clean: true) == nil, "short again: latched")
+        hybrid.recordingStarted()
+        check(hybrid.pressed(at: 6) == "stop", "the latch survived the earlier recording 0")
+        _ = hybrid.released(at: 6.1, clean: true)
+        check(hybrid.pressed(at: 9) == "start", "hybrid: press starts again")
+        check(hybrid.released(at: 10, clean: true) == "stop", "hybrid: a long press was hold-to-talk")
+        _ = hybrid.pressed(at: 11)
+        _ = hybrid.released(at: 11.1, clean: true)
+        hybrid.recordingStarted()
+        hybrid.recordingEnded()  // Esc while latched
+        check(hybrid.pressed(at: 12) == "start", "hybrid: after Esc a press starts anew")
+        _ = hybrid.released(at: 12.1, clean: true)
+        hybrid.startFailed()  // the microphone did not open
+        check(hybrid.pressed(at: 13) == "start", "hybrid: after a failed start a press starts anew")
+        _ = hybrid.released(at: 13.1, clean: true)
+        hybrid.recordingStarted()
+        check(hybrid.pressed(at: 14, deferStop: true) == nil, "hybrid chord: latched, the press waits")
+        check(hybrid.released(at: 14.1, clean: false) == nil, "⌃⌘Q keeps the recording")
+        check(hybrid.pressed(at: 15, deferStop: true) == nil && hybrid.released(at: 15.1, clean: true) == "stop",
+              "a clean release inserts")
+
+        _ = hybrid.pressed(at: 20)
+        hybrid.recordingStarted()
+        hybrid.recordingEnded()  // Esc while held
+        check(hybrid.released(at: 20.1, clean: true) == nil && hybrid.pressed(at: 21) == "start",
+              "hybrid: Esc while held leaves no latch")
+
+        var toggle = DictationPress(mode: .toggle)
+        check(toggle.pressed(at: 0) == "toggle" && toggle.released(at: 1, clean: true) == nil,
+              "toggle: press toggles, release is nothing")
 
         var counter = ModifierTapCounter(hotkey: .standard)
         check(!counter.press(isTapKey: true, at: 0) && !counter.press(isTapKey: true, at: 0.3),

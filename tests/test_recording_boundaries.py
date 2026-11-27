@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -701,6 +702,47 @@ class RecordingBoundaryTests(unittest.TestCase):
         with self.assertLogs("ctrlspeak.hotkeys", "ERROR"):
             self.hotkeys._start_recording()
         self.assertEqual(changes, [True, False])
+
+    def test_release_ends_the_recording_its_press_started_even_before_capture(self):
+        # Hold-to-talk: a release that arrives while the start is still queued
+        # must still end that recording, not be dropped like a too-early finish.
+        model = Mock(transcribe_pcm=None)
+        model.supports_streaming = False
+        model.transcribe_batch.return_value = ["hello"]
+        self.start_worker(model)
+        changes = []
+        self.manager.on_collecting_changed = changes.append
+        gate = threading.Event()
+        self.manager.open_input_stream.side_effect = lambda **_: gate.wait(2)
+        self.hotkeys.press_to_talk()
+        self.hotkeys.release_to_insert()
+        gate.set()
+        deadline = time.monotonic() + 3
+        while changes != [True, False] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(changes, [True, False])
+
+    def test_cancelled_release_discards_the_recording_even_before_capture(self):
+        # ⌃⌘ let go after a click: the discard queues behind the start too.
+        self.start_worker(Mock(transcribe_pcm=None, supports_streaming=False))
+        changes = []
+        self.manager.on_collecting_changed = changes.append
+        gate = threading.Event()
+        self.manager.open_input_stream.side_effect = lambda **_: gate.wait(2)
+        self.hotkeys.press_to_talk()
+        self.hotkeys.release_to_discard()
+        gate.set()
+        deadline = time.monotonic() + 3
+        while changes != [True, False] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(changes, [True, False])
+
+    def test_a_start_that_records_nothing_tells_the_app(self):
+        nothing = threading.Event()
+        self.manager.open_input_stream.side_effect = OSError("open failed")
+        with self.assertLogs("ctrlspeak.hotkeys", "ERROR"):
+            self.hotkeys.press_to_talk(on_nothing=nothing.set)
+            self.assertTrue(nothing.wait(3))
 
     def test_vad_load_and_inference_failures_use_bounded_fallback(self):
         self.vad_loader.assert_called_once_with(self.fake_torch)

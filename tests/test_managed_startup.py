@@ -100,7 +100,8 @@ class ManagedStartupTests(unittest.TestCase):
             ),
             "transcription": stub("transcription", transcription_worker=self.worker),
             "app_control": self.app_control,
-            "hotkeys": stub("hotkeys", on_activate=Mock(), is_recording=Mock(),
+            "hotkeys": stub("hotkeys", on_activate=Mock(), press_to_talk=Mock(), release_to_insert=Mock(), release_to_discard=Mock(),
+                            is_recording=Mock(),
                             cancel_recording=Mock(), finish_recording=Mock(), open_config=Mock()),
             "localvoice_models": stub("localvoice_models", resolve_model=self.resolve_model,
                                       parakeet_worker_path=self.parakeet_worker),
@@ -252,7 +253,7 @@ class ManagedStartupTests(unittest.TestCase):
         keyboard_manager.assert_not_called()
         self.assertIsNone(self.state.keyboard_manager)
         commands = self.app_control.start.call_args.args[0]
-        self.assertEqual(set(commands), {"toggle", "finish", "discard", "quit"})
+        self.assertEqual(set(commands), {"toggle", "start", "stop", "cancel", "finish", "discard", "quit"})
         self.assertIs(self.audio.on_collecting_changed, self.app_control.publish_recording)
         self.assertTrue(self.ready.is_file())
 
