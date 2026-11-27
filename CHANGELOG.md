@@ -11,6 +11,12 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Changed
+
+- LocalVoice looks for updates once a day by default instead of asking first;
+  the switch under **Settings › General › Updates** turns it off. Copies of
+  1.4.0 still ask once before their first check.
+
 ## [1.4.0] — 2026-11-27
 
 ### Added
