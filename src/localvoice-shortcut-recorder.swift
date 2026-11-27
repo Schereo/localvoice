@@ -133,12 +133,12 @@ extension DictationShortcut {
     /// without the app.
     @MainActor
     static func save(_ shortcut: Shortcut) -> Bool {
-        var written = writeConfigValue(configKey, shortcut.configValue)
-        if written, case let .taps(taps) = shortcut {
-            written = writeConfigValue("hotkey", taps.configValue)
-        }
+        var values = [(configKey, shortcut.configValue)]
+        if case let .taps(taps) = shortcut { values.append(("hotkey", taps.configValue)) }
+        // One replacement of the file: never a new dictate beside a stale hotkey.
+        guard writeConfigValues(values) else { return false }
         NotificationCenter.default.post(name: .localVoiceShortcutsChanged, object: nil)
-        return written
+        return true
     }
 }
 
@@ -164,6 +164,11 @@ final class ShortcutRecorderViewController: NSViewController {
     // A key was pressed while these modifiers were held: the combination, not the
     // modifiers, is what was meant.
     private var keyPressed = false
+    // `peak` was held all at once at some point, not only in turns.
+    private var peakTogether = false
+    // When the current press began: taps are timed by their presses, as the
+    // live gesture counts them.
+    private var pressTime: TimeInterval = 0
     private var tapModifier: ModifierTapHotkey.Modifier?
     private var tapCount = 0
     private var lastTap: TimeInterval = 0
@@ -302,6 +307,7 @@ final class ShortcutRecorderViewController: NSViewController {
                 peak = []
                 peakRight = []
                 keyPressed = false
+                pressTime = ProcessInfo.processInfo.systemUptime
             }
             if right { heldRight.insert(flag) } else { heldRight.remove(flag) }
             peakRight.formUnion(heldRight.intersection(flag))
@@ -309,7 +315,13 @@ final class ShortcutRecorderViewController: NSViewController {
             heldRight.remove(flag)
         }
         held = now
+        let before = peak
         peak.formUnion(now)
+        if now == peak {
+            peakTogether = true
+        } else if peak != before {
+            peakTogether = false
+        }
 
         if !held.isEmpty {
             if !keyPressed { show(caps(peak, right: peakRight)) }
@@ -319,14 +331,19 @@ final class ShortcutRecorderViewController: NSViewController {
         guard !keyPressed else { return }
         if peak.count >= 2 {
             resetTaps()
-            propose(.chord(peak))
+            if peakTogether {
+                propose(.chord(peak))
+            } else {
+                candidate = nil
+                show(caps(peak, right: peakRight), problem: "Hold them all at once.")
+            }
         } else if let single = ModifierTapHotkey.Modifier.allCases.first(where: { $0.modifiers == peak }) {
             tapped(single)
         }
     }
 
     private func tapped(_ modifier: ModifierTapHotkey.Modifier) {
-        let time = ProcessInfo.processInfo.systemUptime
+        let time = pressTime
         if tapModifier == modifier && time - lastTap <= Self.tapWindow {
             tapCount += 1
         } else {

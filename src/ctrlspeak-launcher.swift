@@ -1680,7 +1680,12 @@ func readConfigValue(_ key: String) -> String? {
 
 @discardableResult
 func writeConfigValue(_ key: String, _ value: String) -> Bool {
-    guard value.rangeOfCharacter(from: .newlines) == nil else { return false }
+    writeConfigValues([(key, value)])
+}
+
+/// Sets several keys in one atomic replacement of the file.
+func writeConfigValues(_ values: [(String, String)]) -> Bool {
+    guard values.allSatisfy({ $0.1.rangeOfCharacter(from: .newlines) == nil }) else { return false }
     // Follow a symlinked config (dotfiles) so the atomic write updates the
     // target instead of replacing the link with a regular file.
     let path = (localVoiceConfigPath() as NSString).resolvingSymlinksInPath
@@ -1696,19 +1701,21 @@ func writeConfigValue(_ key: String, _ value: String) -> Bool {
     let newline = raw.contains("\r\n") ? "\r\n" : "\n"
     var lines = raw.isEmpty ? [] : raw.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
 
-    var replaced = false
-    for index in lines.indices {
-        let entry = lines[index].trimmingCharacters(in: .whitespaces)
-        guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
-        if entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key {
-            lines[index] = "\(key) = \(value)"
-            replaced = true
+    for (key, value) in values {
+        var replaced = false
+        for index in lines.indices {
+            let entry = lines[index].trimmingCharacters(in: .whitespaces)
+            guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
+            if entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key {
+                lines[index] = "\(key) = \(value)"
+                replaced = true
+            }
         }
-    }
-    if !replaced {
-        if let last = lines.last, last.isEmpty { lines.removeLast() }
-        lines.append("\(key) = \(value)")
-        lines.append("")
+        if !replaced {
+            if let last = lines.last, last.isEmpty { lines.removeLast() }
+            lines.append("\(key) = \(value)")
+            lines.append("")
+        }
     }
 
     do {

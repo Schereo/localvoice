@@ -346,7 +346,9 @@ enum DictationShortcut {
     /// The configured shortcut, or the default. Falls back to the pre-1.5
     /// `hotkey` key, which is a tap gesture.
     static func current(_ read: (String) -> String? = readConfigValue) -> Shortcut {
-        if let shortcut = Shortcut(config: read(configKey)) { return shortcut }
+        // Settings refuses what `problem` names; a hand-edited file must not
+        // get around it (dictate = return would take Return from every app).
+        if let shortcut = Shortcut(config: read(configKey)), problem(with: shortcut) == nil { return shortcut }
         if let taps = ModifierTapHotkey(config: read("hotkey")) { return .taps(taps) }
         return standard
     }
@@ -361,6 +363,9 @@ enum DictationShortcut {
         if let combo = shortcut.combo, combo.modifiers.isEmpty,
            [KeyCombo.returnKey.keyCode, KeyCombo.escape.keyCode].contains(combo.keyCode) {
             return "Return and Esc end a recording; pick another key."
+        }
+        if shortcut.combo == KeyCombo(keyCode: KeyCombo.escape.keyCode, modifiers: .option) {
+            return "⌥Esc quits LocalVoice; pick another key."
         }
         return nil
     }
@@ -431,6 +436,8 @@ struct ModifierTapCounter {
 struct ModifierChordDetector {
     var chord: KeyModifiers
     private var peak: KeyModifiers = []
+    // All of the chord were held at once at some point (not just in turns).
+    private var reached = false
     private var voided = false
 
     init(chord: KeyModifiers) { self.chord = chord }
@@ -439,13 +446,11 @@ struct ModifierChordDetector {
     mutating func modifiersChanged(to held: KeyModifiers) -> Bool {
         guard held.isEmpty else {
             peak.formUnion(held)
+            if held == chord { reached = true }
             return false
         }
-        defer {
-            peak = []
-            voided = false
-        }
-        return !voided && peak == chord
+        defer { reset() }
+        return !voided && reached && peak == chord
     }
 
     /// A key, a click, caps lock or fn while modifiers are held.
@@ -455,6 +460,7 @@ struct ModifierChordDetector {
 
     mutating func reset() {
         peak = []
+        reached = false
         voided = false
     }
 }
@@ -794,6 +800,7 @@ final class ShortcutController {
                 self.channel = nil
                 self.serviceReady = false
                 self.setRecording(false)
+                self.registerDictate()
             }
         )
         channel = opened
@@ -816,6 +823,9 @@ final class ShortcutController {
     /// The tap's view: the gesture or modifier chord dictation uses, and the keys it
     /// may have to stand in for when their Carbon hotkey could not be registered.
     private var watch: KeyboardTap.Watch {
+        // While a recorder is open nothing is tracked, so taps made in it do not
+        // count toward a gesture after it closes.
+        if paused { return .init(gesture: nil, chord: nil, keys: []) }
         var keys: Set<Int64> = [ShortcutKey.escape, insert.keyCode, discard.keyCode]  // Esc also for Option+Esc
         switch dictate {
         case let .taps(taps): return .init(gesture: taps, chord: nil, keys: keys)
@@ -828,7 +838,9 @@ final class ShortcutController {
 
     private func serviceSaid(_ line: String) {
         switch line {
-        case "ready": serviceReady = true
+        case "ready":
+            serviceReady = true
+            registerDictate()
         case "recording 1": setRecording(true)
         case "recording 0": setRecording(false)
         default: break  // newer service, older app: ignore
@@ -847,6 +859,7 @@ final class ShortcutController {
         paused = value
         // Unregister so the recorder can capture the combination itself.
         registerDictate()
+        tap.setWatch(watch)
         if recording {
             unregisterRecordingKeys()
             if !paused { registerRecordingKeys() }
@@ -866,8 +879,10 @@ final class ShortcutController {
         unswallowed = unswallowed.filter { $0.value != id }
     }
 
+    /// A combination is taken from other apps only while a service is ready to
+    /// act on it: not while the model loads, and not after the service is gone.
     private func registerDictate() {
-        if let combo = dictate.combo, !paused {
+        if let combo = dictate.combo, !paused, serviceReady {
             register(.dictate, combo)
         } else {
             unregister(.dictate)

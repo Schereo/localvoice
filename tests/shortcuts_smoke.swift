@@ -58,6 +58,9 @@ struct ShortcutsSmoke {
         check(DictationShortcut.current() == Shortcut(config: "alt+space"), "dictate wins over hotkey")
         config["dictate"] = "nonsense"
         check(DictationShortcut.current() == .taps(ModifierTapHotkey(modifier: .alt, taps: 2)), "bad dictate falls back")
+        config["dictate"] = "return"
+        check(DictationShortcut.current() == .taps(ModifierTapHotkey(modifier: .alt, taps: 2)),
+              "a refused dictate from the file falls back too")
 
         check(DictationShortcut.problem(with: Shortcut(config: "d")!) != nil, "plain key refused")
         check(DictationShortcut.problem(with: Shortcut(config: "shift+d")!) != nil, "Shift alone refused")
@@ -65,6 +68,7 @@ struct ShortcutsSmoke {
         check(DictationShortcut.problem(with: Shortcut(config: "f5")!) == nil, "F5 alone is fine")
         check(DictationShortcut.problem(with: Shortcut(config: "alt+space")!) == nil, "alt+space is fine")
         check(DictationShortcut.problem(with: Shortcut(config: "ctrl+cmd")!) == nil, "ctrl+cmd is fine")
+        check(DictationShortcut.problem(with: Shortcut(config: "alt+escape")!) != nil, "Option+Esc quits, refused")
 
         // ⌃⌘ fires on release, and never when a key or click came in between (⌃⌘Q).
         var chord = ModifierChordDetector(chord: [.control, .command])
@@ -78,6 +82,11 @@ struct ShortcutsSmoke {
         check(!chord.modifiersChanged(to: []), "an extra modifier is another chord")
         _ = chord.modifiersChanged(to: .control)
         check(!chord.modifiersChanged(to: []), "Control alone is not the chord")
+        var triple = ModifierChordDetector(chord: [.control, .command, .shift])
+        _ = triple.modifiersChanged(to: [.control, .command])
+        _ = triple.modifiersChanged(to: .command)
+        _ = triple.modifiersChanged(to: [.command, .shift])
+        check(!triple.modifiersChanged(to: []), "held in turns, never all at once, is not the chord")
         chord.otherInput()  // typing with nothing held changes nothing
         _ = chord.modifiersChanged(to: [.control, .command])
         check(chord.modifiersChanged(to: []), "fires again afterwards")
