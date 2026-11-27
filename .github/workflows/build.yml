@@ -6,7 +6,8 @@
 #                                       "LocalVoice Test" (com.localvoice.dev)
 #   push of tag v<VERSION>          ->  the release itself, "LocalVoice" (com.localvoice.app),
 #                                       with its notes from CHANGELOG.md; then the website
-#                                       is redeployed with the new download
+#                                       is redeployed with the new download and the
+#                                       Homebrew cask in Schereo/homebrew-tap moved to it
 #
 # Two jobs: `build` runs the checks and all third-party build code without any
 # secrets; `sign` gets the unsigned app as an artifact on a fresh runner and only
@@ -133,6 +134,8 @@ jobs:
     permissions:
       contents: write # create the release
       actions: write # start the website deploy after a release
+    outputs:
+      sha256: ${{ steps.checksum.outputs.sha256 }}
     env:
       KEEP_DEV_RELEASES: 10
       CHANNEL: ${{ needs.build.outputs.channel }}
@@ -233,9 +236,12 @@ jobs:
           rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
 
       - name: Checksum
+        id: checksum
         env:
           DMG: ${{ steps.package.outputs.dmg }}
-        run: (cd build && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
+        run: |
+          (cd build && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
+          echo "sha256=$(cut -d ' ' -f 1 < "$DMG.sha256")" >> "$GITHUB_OUTPUT"
 
       - name: Install notes
         env:
@@ -309,3 +315,44 @@ jobs:
           while read -r tag; do
             gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
           done
+
+  # Moves the Homebrew cask (brew install --cask schereo/tap/localvoice) to the new
+  # release, so `brew upgrade` sees it right away. The tap repository accepts pushes
+  # from a deploy key that only it trusts; the key is a secret of the `release`
+  # environment. The release is already published when this runs: if it fails,
+  # re-run this job or edit Casks/localvoice.rb in the tap by hand.
+  homebrew:
+    needs: [build, sign]
+    if: needs.build.outputs.channel == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    env:
+      VERSION_BASE: ${{ needs.build.outputs.base }}
+      SHA256: ${{ needs.sign.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: Schereo/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Update cask
+        run: |
+          if [[ ! "$VERSION_BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unexpected version '$VERSION_BASE' or checksum '$SHA256'."
+            exit 1
+          fi
+          cask=Casks/localvoice.rb
+          sed -i -E \
+            -e "s/^  version \"[^\"]*\"$/  version \"$VERSION_BASE\"/" \
+            -e "s/^  sha256 \"[^\"]*\"$/  sha256 \"$SHA256\"/" "$cask"
+          grep -qx "  version \"$VERSION_BASE\"" "$cask"
+          grep -qx "  sha256 \"$SHA256\"" "$cask"
+          if git diff --quiet; then
+            echo "The cask is already at $VERSION_BASE."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "localvoice $VERSION_BASE"
+          git push origin HEAD:main
