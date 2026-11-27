@@ -14,7 +14,7 @@ The app exposes these actions in its menu:
 
 | Action | What it does |
 |---|---|
-| **Settings…** | One window with a sidebar: **General** (menu bar icon, launch at login), **Dictation** (shortcuts, microphone, vocabulary), **Recording** (live preview, microphone standby, media pause) and **Models**. Vocabulary is greyed out while the model in use ignores it. |
+| **Settings…** | One window with a sidebar: **General** (menu bar icon, launch at login), **Dictation** (shortcuts, microphone, vocabulary), **Recording** (live preview, microphone standby, media pause, sounds) and **Models**. Vocabulary is greyed out while the model in use ignores it. |
 | **Models…** | Opens Settings at **Models**: model source and size, and the language choice for each model that accepts one. Downloads are explicit. Existing verified Hugging Face snapshots are reused in place; only LocalVoice-owned copies can be removed. **Use** starts the new model and leaves the previous selection intact if loading fails. |
 | **Permissions…** | Shows Microphone, Accessibility and Input Monitoring as numbered steps that update live. Reads **Finish Setup…** while something is missing. |
 | **Launch at Login** | Registers the app with macOS only if enabled. |

@@ -22,6 +22,8 @@ built against is pinned separately, in `UPSTREAM_VERSION` in
 - Hold to talk: next to the hotkey, **Toggle**, **Hold to Talk** (hold while
   you speak, let go to insert) or **Hybrid** (a short press toggles, a long
   one is hold-to-talk). Config key `dictate-mode`.
+- **Settings › Recording › Sounds** turns off the short sounds that mark the
+  start and end of a recording (config key `sounds`, on by default).
 
 ### Removed
 

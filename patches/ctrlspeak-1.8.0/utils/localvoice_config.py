@@ -38,11 +38,13 @@ DEFAULTS = {
     "pause-media": "off",
     "vocabulary": "",
     "live-preview": "off",
+    "sounds": "on",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
 VALID_HOTKEY_MODIFIERS = {"ctrl", "cmd", "alt", "shift"}
 _TRUTHY = {"on", "true", "1", "yes"}
+_FALSY = {"off", "false", "0", "no"}
 
 _HEADER = """\
 # LocalVoice configuration.
@@ -98,6 +100,9 @@ _KEY_BLOCKS = {
 # text after each pause, plus a dimmed live guess of the current phrase.
 # The live guess re-runs the model about once a second while you talk.
 """,
+    "sounds": """\
+# Play the short start and stop sounds of a recording (on | off).
+""",
 }
 
 
@@ -144,6 +149,14 @@ def effective(key):
 
 def as_bool(key):
     return str(effective(key)).strip().lower() in _TRUTHY
+
+
+def sounds():
+    """Whether recordings start and stop with a sound (default on).
+
+    Only an explicit off value silences them; a typo keeps the default.
+    """
+    return str(effective("sounds")).strip().lower() not in _FALSY
 
 
 def language():

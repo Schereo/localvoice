@@ -1,7 +1,7 @@
 # Configuration reference
 
 Use **Settings…** in the LocalVoice menu for the shortcuts, microphone,
-vocabulary, live preview, standby, media pause, the menu bar icon, and launch
+vocabulary, live preview, standby, media pause, sounds, the menu bar icon, and launch
 at login. Set the dictation language per model in its **Models** section. Apart from
 launch at login, which macOS keeps, these choices are stored in one
 plain-text file:
@@ -44,6 +44,7 @@ mic-standby = off
 | `pause-media` | `on` · `off` | `off` | Pause Spotify/Music while recording |
 | `vocabulary` | comma-separated words | empty | Words the transcriber should spell correctly |
 | `live-preview` | `on` · `off` | `off` | Show the transcript in the pill while you speak |
+| `sounds` | `on` · `off` | `on` | Play the start and stop sounds of a recording |
 
 ### `hotkey`
 
