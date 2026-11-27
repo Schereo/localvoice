@@ -59,12 +59,15 @@ The signing job runs in the `release` environment (Settings → Environments), w
 | `APPLE_API_KEY_P8` | App Store Connect API key (Team key, role Developer), the `.p8` file's content |
 | `APPLE_API_KEY_ID` | That key's ID |
 | `APPLE_API_ISSUER_ID` | The issuer ID shown above the key list in App Store Connect |
+| `HOMEBREW_TAP_DEPLOY_KEY` | Private half of an SSH deploy key with write access to [Schereo/homebrew-tap](https://github.com/Schereo/homebrew-tap) (its Settings → Deploy keys) |
 
 The `build` job runs the checks and the build without any secrets and hands the unsigned app on as an artifact. Only the `sign` job, on a fresh runner that runs no build code, uses the environment: it imports the certificate into a throwaway keychain, signs every Mach-O file of the bundle with the hardened runtime, wraps the app in a disk image with an **Applications** link and signs that too, notarizes the image once (the ticket covers the app inside) and staples it, and removes the certificate before publishing. A tag build stops unless the tagged commit is on `main`. Entitlements are in [`scripts/entitlements/`](../scripts/entitlements/). Both scripts also run locally with a Developer ID in the login keychain.
 
 Dev releases use the bundle identifier `com.localvoice.dev` and the name **LocalVoice Test**, the same as local test builds, so they install next to a release.
 
 A release is cut with `./scripts/release.sh <version>` (it moves the Unreleased changelog section under the version and tags `v<version>`). Pushing the tag runs the same workflow, which builds **LocalVoice** with the bundle identifier `com.localvoice.app`, signs and notarizes it, and publishes the GitHub release `v<version>` with `LocalVoice-v<version>-arm64.dmg` and the changelog section as notes. The tag must match `VERSION`. Once the release is published, the workflow starts the website deploy ([`.github/workflows/cloudflare-workers.yml`](../.github/workflows/cloudflare-workers.yml)), which points the download button and its version label at the latest published release ([`scripts/stamp-site-release.py`](../scripts/stamp-site-release.py)); pre-releases are skipped. The link in `site/index.html` therefore never needs a manual bump; the committed page keeps the version it was written with.
+
+After the release is published, the `homebrew` job moves the cask in [Schereo/homebrew-tap](https://github.com/Schereo/homebrew-tap) (`Casks/localvoice.rb`) to the new version and checksum and pushes it with the deploy key, so `brew install --cask schereo/tap/localvoice` and `brew upgrade` get the release within minutes. Dev releases don't touch the cask. If the job fails, the release itself is fine: re-run the job, or edit `version` and `sha256` in the cask by hand (the checksum is in the release's `.sha256` file).
 
 ## Legacy Homebrew Installer
 

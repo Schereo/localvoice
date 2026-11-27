@@ -13,6 +13,7 @@
 .get-panel p { max-width: 47ch; margin-top: 14px; color: var(--ink-muted); text-wrap: pretty; }
 .get-panel p a { text-decoration-color: var(--edge); text-underline-offset: 4px; }
 .get-panel p a:hover { text-decoration-color: currentColor; }
+.get-panel code { font: .88em/1.5 var(--font-mono); color: var(--ink); overflow-wrap: anywhere; user-select: all; }
 
 /* The app icon as it sits in the Dock. The PNG carries its own margin, so it is pulled out to the text edge. */
 .get-icon {

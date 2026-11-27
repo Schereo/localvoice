@@ -21,7 +21,15 @@ LocalVoice runs **Whisper Large V3 Turbo**, **Parakeet**, **Nemotron Streaming**
 
 ## Install
 
-The private ARM64 app is staged with [`scripts/build-app.sh`](scripts/build-app.sh). It keeps its runtime inside the app and does not use or change Homebrew on the target Mac. Build the [Core ML worker](docs/development-checks.md#nvidia-providers) to include the NVIDIA models. In the app, use **Models…** to download or select a model, **Set Up Permissions…** to enable dictation, and optionally **Launch at Login**. See [Setup](docs/setup.md) for build inputs and release checks.
+Download the signed and notarized app from [Releases](https://github.com/Schereo/localvoice/releases/latest), or install it with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask schereo/tap/localvoice
+```
+
+Requires an Apple Silicon Mac with macOS 15 or later. The cask lives in [Schereo/homebrew-tap](https://github.com/Schereo/homebrew-tap) and follows each release; `brew upgrade --cask localvoice` updates, `brew uninstall --zap --cask localvoice` also removes settings and models.
+
+To build it yourself: the private ARM64 app is staged with [`scripts/build-app.sh`](scripts/build-app.sh). It keeps its runtime inside the app and does not use or change Homebrew on the target Mac. Build the [Core ML worker](docs/development-checks.md#nvidia-providers) to include the NVIDIA models. In the app, use **Models…** to download or select a model, **Set Up Permissions…** to enable dictation, and optionally **Launch at Login**. See [Setup](docs/setup.md) for build inputs and release checks.
 
 The previous source installer is available as an explicit compatibility option. Run `./install.sh --plan` before deciding whether to use `./install.sh --legacy-homebrew`.
 

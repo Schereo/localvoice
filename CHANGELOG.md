@@ -11,6 +11,13 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ## [Unreleased]
 
+### Added
+
+- LocalVoice can be installed with Homebrew:
+  `brew install --cask schereo/tap/localvoice`. The cask lives in
+  [Schereo/homebrew-tap](https://github.com/Schereo/homebrew-tap), and the
+  release workflow moves it to each new release.
+
 ### Changed
 
 - The recording pill appears about 0.1–0.15 s after the hotkey instead of
