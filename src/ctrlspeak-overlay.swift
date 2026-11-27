@@ -928,6 +928,10 @@ final class OverlayController: NSObject {
     private let effectView: NSVisualEffectView
     private let containerView: ShadowContainerView
     private var inputBuffer = Data()
+    // The size the capsule is at or animating to. Mid-morph the frame reports
+    // an in-between size, so it cannot tell whether a new request differs from
+    // where the capsule is already heading, nor whether the mask still fits.
+    private var capsuleTarget: NSSize
     private var isClosing = false
     private var isStandby = false
     private var previewTimer: Timer?
@@ -952,6 +956,7 @@ final class OverlayController: NSObject {
         } else {
             capsuleSize = NSSize(width: 358, height: 56)
         }
+        capsuleTarget = capsuleSize
         let margin = OverlayController.shadowMargin
         let panelSize = NSSize(
             width: capsuleSize.width + margin * 2,
@@ -1110,16 +1115,22 @@ final class OverlayController: NSObject {
     /// set to its final size synchronously while only the window animated —
     /// on every stop that read as a snap, a sideways slide, then another
     /// jump into the result size.
+    ///
+    /// A request can land mid-morph — typically live text growing the
+    /// capsule just as the stop turns it into the processing dots. Every
+    /// comparison is therefore made against the target, and the shadow
+    /// starts from where it is on screen, not where it was headed.
     private func syncPanelSize() {
         guard let wanted = hudView.desiredSize() else { return }
 
-        let current = effectView.frame.size
-        guard abs(current.width - wanted.width) > 1 || abs(current.height - wanted.height) > 1 else {
+        let previous = capsuleTarget
+        guard abs(previous.width - wanted.width) > 1 || abs(previous.height - wanted.height) > 1 else {
             return
         }
+        capsuleTarget = wanted
 
         let radius = capsuleRadius(forHeight: wanted.height)
-        if abs(current.height - wanted.height) > 1 {
+        if abs(previous.height - wanted.height) > 1 {
             effectView.maskImage = OverlayController.capsuleMask(size: wanted)
             effectView.layer?.cornerRadius = radius
         }
@@ -1134,7 +1145,10 @@ final class OverlayController: NSObject {
         containerView.interactiveFrame = effectFrame
 
         // shadowPath does not follow the animator; give it its own matching
-        // animation, then commit the final value.
+        // animation, then commit the final value. It starts from the shadow
+        // on screen: the model value is the previous morph's target, so an
+        // interrupted grow left a shadow far larger than the capsule, cut off
+        // square by the window edge — a grey box around the shrinking pill.
         let shadowPath = CGPath(
             roundedRect: effectFrame,
             cornerWidth: radius,
@@ -1143,7 +1157,7 @@ final class OverlayController: NSObject {
         )
         if let layer = containerView.layer {
             let shadowAnimation = CABasicAnimation(keyPath: "shadowPath")
-            shadowAnimation.fromValue = layer.shadowPath
+            shadowAnimation.fromValue = layer.presentation()?.shadowPath ?? layer.shadowPath
             shadowAnimation.toValue = shadowPath
             shadowAnimation.duration = OverlayController.morphDuration
             shadowAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)

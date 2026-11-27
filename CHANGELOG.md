@@ -48,6 +48,14 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   bindings are loaded at startup), and the pause before Cmd+V is 50 ms
   instead of 100 ms.
 
+### Fixed
+
+- The processing pill no longer sits in an oversized grey box when live text
+  arrives just before the stop. The shadow restarted from the size the
+  interrupted grow was heading for, far larger than the capsule, and the
+  window cut it off square; it now starts from where it is on screen. The
+  blur mask is also rebuilt when both updates arrive together.
+
 ## [1.3.0] — 2026-11-25
 
 ### Added
