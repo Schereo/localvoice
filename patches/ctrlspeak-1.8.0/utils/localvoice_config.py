@@ -38,6 +38,7 @@ DEFAULTS = {
     "pause-media": "off",
     "vocabulary": "",
     "live-preview": "off",
+    "sounds": "on",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
@@ -98,6 +99,9 @@ _KEY_BLOCKS = {
 # text after each pause, plus a dimmed live guess of the current phrase.
 # The live guess re-runs the model about once a second while you talk.
 """,
+    "sounds": """\
+# Play the short start and stop sounds of a recording (on | off).
+""",
 }
 
 
@@ -144,6 +148,11 @@ def effective(key):
 
 def as_bool(key):
     return str(effective(key)).strip().lower() in _TRUTHY
+
+
+def sounds():
+    """Whether recordings start and stop with a sound (default on)."""
+    return as_bool("sounds")
 
 
 def language():

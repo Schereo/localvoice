@@ -2950,6 +2950,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private let preview = NSSwitch()
     private let standby = NSSwitch()
     private let pauseMedia = NSSwitch()
+    private let sounds = NSSwitch()
     private let menuBar = NSSwitch()
     private let login = NSSwitch()
     private let autoUpdate = NSSwitch()
@@ -2981,7 +2982,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
 
         let toggles: [(NSSwitch, String, String)] = [
             (preview, "live-preview", "Live Preview"), (standby, "mic-standby", "Microphone Standby"),
-            (pauseMedia, "pause-media", "Pause Media"), (menuBar, "menubar", "Show in Menu Bar"),
+            (pauseMedia, "pause-media", "Pause Media"), (sounds, "sounds", "Sounds"),
+            (menuBar, "menubar", "Show in Menu Bar"),
             (login, "", "Launch at Login"),
         ]
         for (control, key, label) in toggles {
@@ -3062,6 +3064,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
                         detail: "Recording starts instantly. The microphone indicator stays on.",
                         accessory: standby),
             pause,
+            SettingsRow(symbol: "speaker.wave.2.fill", tint: .systemPurple, title: "Sounds",
+                        detail: "Plays a short sound when a recording starts and stops.", accessory: sounds),
         ])
         var generalRows = [
             SettingsRow(symbol: "menubar.rectangle", tint: .systemTeal, title: "Show in Menu Bar",
@@ -3266,6 +3270,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         for button in [preview, standby, pauseMedia] { button.state = Self.isOn(button.identifier!.rawValue) ? .on : .off }
         // The menu bar icon is on unless the config says otherwise.
         menuBar.state = Self.isOn("menubar", default: true) ? .on : .off
+        sounds.state = Self.isOn("sounds", default: true) ? .on : .off
         refreshLive()
         updatePauseNote()
     }

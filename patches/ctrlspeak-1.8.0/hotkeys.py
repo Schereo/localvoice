@@ -703,7 +703,8 @@ def _start_recording():
             else:
                 manager.start_recording()
 
-        play_start_beep()
+        if localvoice_config.sounds():
+            play_start_beep()
         # The recording pill itself only once capture is live, so it never
         # claims a recording the microphone is not yet taking. The armed
         # circle grows into it; without one, the standby pill grows from a
@@ -819,7 +820,8 @@ def _end_recording(recording_id, *, discard=False):
 
         _set_overlay_state("processing")
         try:
-            play_stop_beep()
+            if localvoice_config.sounds():
+                play_stop_beep()
         except Exception:
             logger.warning("Could not play the stop sound.")
         _resume_playback()
