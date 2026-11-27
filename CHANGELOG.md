@@ -11,6 +11,15 @@ built against is pinned separately, in `UPSTREAM_VERSION` in
 
 ## [Unreleased]
 
+### Added
+
+- The hotkey is recorded, not picked: click the field in **Settings ›
+  Dictation**, press the keys and hit Return. It can now be a key combination
+  such as ⌥Space or modifiers pressed together such as ⌃⌘, as well as a
+  modifier tap gesture. The popover shows the keys as you press them and
+  refuses a combination without a modifier. New config key `dictate`;
+  `hotkey = ctrl,3` keeps working.
+
 ### Removed
 
 - The legacy Homebrew installer (`install.sh --legacy-homebrew`,

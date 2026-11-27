@@ -4,7 +4,7 @@
 
 | Key | Action |
 |---|---|
-| Hotkey tap (default: triple-tap **Ctrl**) | Start recording / stop and insert |
+| Your hotkey (default: triple-tap **Ctrl**) | Start recording / stop and insert |
 | **Enter** (while recording) | Stop and insert |
 | **Esc** (while recording) | Discard the recording |
 | **Cmd+,** (when LocalVoice is active) | Open LocalVoice Settings |
@@ -15,9 +15,9 @@ Enter and Esc belong to LocalVoice only while a recording runs: then they stop t
 
 The transcript is pasted wherever the cursor is. Before pasting, the focused UI element is checked through the Accessibility API; if it clearly cannot take text, nothing is typed — the transcript stays on the clipboard and the pill says `Copied`. Apps with incomplete accessibility trees (many Electron apps) keep the normal paste behaviour.
 
-## Hotkey
+## Shortcuts
 
-Choose a modifier and tap count in **Settings…**. The running service picks the change up within seconds; no restart needed. Full reference: [configuration.md](configuration.md).
+**Settings › Dictation › Hotkey**: click the field, press the new hotkey and hit Return; Esc closes without changing anything. It can be a key combination such as ⌥Space, modifiers pressed together such as ⌃⌘ (it fires when you let go, unless another key or a click came in between), or a modifier tapped two to four times such as ⌃⌃⌃. The popover shows the keys as you press them and says when a combination cannot be used (no modifier, or Return/Esc). The hotkey is paused while the popover is open, the arrow beside the field restores the default, and changes apply at once. Full reference: [configuration.md](configuration.md#dictate).
 
 Any other key pressed between taps voids the sequence, so `Cmd+C` quickly followed by `Cmd+V` never triggers a double-tap. If your gesture collides with a system shortcut (macOS binds *press Cmd twice* to Siri, for example), change either side — Siri's binding lives in System Settings → Apple Intelligence & Siri.
 

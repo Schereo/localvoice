@@ -19,11 +19,11 @@ The preview simulates model actions without using your installed models.
 out="$(mktemp -d)"
 xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
   -D SETTINGS_PREVIEW src/ctrlspeak-launcher.swift src/localvoice-model-library.swift \
-  src/localvoice-updater.swift src/localvoice-shortcuts.swift -o "$out/settings-preview"
+  src/localvoice-updater.swift src/localvoice-shortcuts.swift src/localvoice-shortcut-recorder.swift -o "$out/settings-preview"
 LOCALVOICE_CONFIG_DIR="$out" SETTINGS_PREVIEW_ICON=assets/icon.png "$out/settings-preview"
 ```
 
-The preview shows the Settings window on its own. It reads and writes `config` in `LOCALVOICE_CONFIG_DIR`, or in an empty temporary directory if that is unset, never `~/.config/localvoice/config`, and it does not open the microphone. Set `SETTINGS_PREVIEW_SNAPSHOT=/path/name` to render `name.png` offscreen and quit, with `SETTINGS_PREVIEW_APPEARANCE=light|dark`, `SETTINGS_PREVIEW_SCENARIO=off|pending|denied|allowed` for the Pause Media line, `SETTINGS_PREVIEW_STATUS=ready|loading|permissions|off` for the sidebar's state line, `SETTINGS_PREVIEW_PAGE=general|dictation|recording|models` for the section, `SETTINGS_PREVIEW_MODEL=<model id>` for the model in use (`parakeet-v3` shows Vocabulary greyed out), and `SETTINGS_PREVIEW_UPDATES=auto|off|available|none` for the Updates row. The Models section uses the demo library, so its actions are simulated.
+The preview shows the Settings window on its own. It reads and writes `config` in `LOCALVOICE_CONFIG_DIR`, or in an empty temporary directory if that is unset, never `~/.config/localvoice/config`, and it does not open the microphone. Set `SETTINGS_PREVIEW_SNAPSHOT=/path/name` to render `name.png` offscreen and quit, with `SETTINGS_PREVIEW_APPEARANCE=light|dark`, `SETTINGS_PREVIEW_SCENARIO=off|pending|denied|allowed` for the Pause Media line, `SETTINGS_PREVIEW_STATUS=ready|loading|permissions|off` for the sidebar's state line, `SETTINGS_PREVIEW_PAGE=general|dictation|recording|models` for the section, `SETTINGS_PREVIEW_MODEL=<model id>` for the model in use (`parakeet-v3` shows Vocabulary greyed out), and `SETTINGS_PREVIEW_UPDATES=auto|off|available|none` for the Updates row. `SETTINGS_PREVIEW_RECORDER=1` renders the hotkey recorder popover instead of the window, and `SETTINGS_PREVIEW_PRESS=<shortcut>` (e.g. `shift+d`) shows what it says after that press. The Models section uses the demo library, so its actions are simulated.
 
 ## Offline Model Smoke Test
 

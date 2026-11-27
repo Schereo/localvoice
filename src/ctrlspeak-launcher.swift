@@ -113,7 +113,9 @@ enum PermissionKind: Int, CaseIterable {
         switch self {
         case .microphone: "Records your voice while you dictate."
         case .accessibility: "Types your words into the app you’re using."
-        case .inputMonitoring: "Notices when you tap \(hotkeyDescription())."
+        case .inputMonitoring: MainActor.assumeIsolated {
+            "Notices when you \(hotkeyVerb().lowercased()) \(hotkeyDescription())."
+        }
         }
     }
 
@@ -157,16 +159,15 @@ enum PermissionKind: Int, CaseIterable {
     var step: Int { rawValue + 1 }
 }
 
-/// "Command twice" for `hotkey = cmd,2`; the service's default is Control three times.
-func hotkeyDescription() -> String {
-    let parts = (readConfigValue("hotkey") ?? "ctrl,3").lowercased().split(separator: ",")
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-    let modifiers = ["ctrl": "Control", "cmd": "Command", "alt": "Option", "shift": "Shift"]
-    let taps = ["2": "twice", "3": "three times", "4": "four times"]
-    guard parts.count == 2, let modifier = modifiers[parts[0]], let count = taps[parts[1]] else {
-        return "Control three times"
-    }
-    return "\(modifier) \(count)"
+/// The dictation shortcut for sentences: "Control three times", "Option-Space".
+@MainActor
+func hotkeyDescription() -> String { DictationShortcut.current().spokenName }
+
+/// "Tap" for a tap gesture, "Press" for a key combination.
+@MainActor
+func hotkeyVerb() -> String {
+    if case .taps = DictationShortcut.current() { return "Tap" }
+    return "Press"
 }
 
 func bundleDisplayName() -> String {
@@ -1194,7 +1195,7 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
                 footer("Starting dictation", "Loading \(model)…", "Done")
             case .ready:
                 let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
-                footer("Ready to dictate", "Tap \(hotkeyDescription()) in any app to start."
+                footer("Ready to dictate", "\(hotkeyVerb()) \(hotkeyDescription()) in any app to start."
                        + (menuBar ? " Settings are under the LocalVoice icon in the menu bar." : ""), "Done")
             case .stopped:
                 footer("Dictation didn’t start", "Open Models to try again or choose another model.", "Done")
@@ -1679,7 +1680,12 @@ func readConfigValue(_ key: String) -> String? {
 
 @discardableResult
 func writeConfigValue(_ key: String, _ value: String) -> Bool {
-    guard value.rangeOfCharacter(from: .newlines) == nil else { return false }
+    writeConfigValues([(key, value)])
+}
+
+/// Sets several keys in one atomic replacement of the file.
+func writeConfigValues(_ values: [(String, String)]) -> Bool {
+    guard values.allSatisfy({ $0.1.rangeOfCharacter(from: .newlines) == nil }) else { return false }
     // Follow a symlinked config (dotfiles) so the atomic write updates the
     // target instead of replacing the link with a regular file.
     let path = (localVoiceConfigPath() as NSString).resolvingSymlinksInPath
@@ -1695,19 +1701,21 @@ func writeConfigValue(_ key: String, _ value: String) -> Bool {
     let newline = raw.contains("\r\n") ? "\r\n" : "\n"
     var lines = raw.isEmpty ? [] : raw.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
 
-    var replaced = false
-    for index in lines.indices {
-        let entry = lines[index].trimmingCharacters(in: .whitespaces)
-        guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
-        if entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key {
-            lines[index] = "\(key) = \(value)"
-            replaced = true
+    for (key, value) in values {
+        var replaced = false
+        for index in lines.indices {
+            let entry = lines[index].trimmingCharacters(in: .whitespaces)
+            guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
+            if entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key {
+                lines[index] = "\(key) = \(value)"
+                replaced = true
+            }
         }
-    }
-    if !replaced {
-        if let last = lines.last, last.isEmpty { lines.removeLast() }
-        lines.append("\(key) = \(value)")
-        lines.append("")
+        if !replaced {
+            if let last = lines.last, last.isEmpty { lines.removeLast() }
+            lines.append("\(key) = \(value)")
+            lines.append("")
+        }
     }
 
     do {
@@ -1791,15 +1799,24 @@ func audioInputDeviceNames() -> [String] {
 
 // MARK: - Ready screen
 
-/// The configured hotkey as a keycap: symbol, key name and tap count (default Control ×3).
+/// The dictation shortcut as one keycap: symbol, key name and tap count (default Control ×3).
+/// A key combination is one press of a keycap showing all of it.
+@MainActor
 func hotkeyKeycap() -> (symbol: String, name: String, taps: Int) {
-    let parts = (readConfigValue("hotkey") ?? "ctrl,3").lowercased().split(separator: ",")
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-    let keys = ["ctrl": ("⌃", "control"), "cmd": ("⌘", "command"), "alt": ("⌥", "option"), "shift": ("⇧", "shift")]
-    guard parts.count == 2, let key = keys[parts[0]], let taps = Int(parts[1]), (2...4).contains(taps) else {
-        return ("⌃", "control", 3)
+    switch DictationShortcut.current() {
+    case let .taps(taps):
+        let keys: [ModifierTapHotkey.Modifier: (String, String)] = [
+            .ctrl: ("⌃", "control"), .cmd: ("⌘", "command"), .alt: ("⌥", "option"), .shift: ("⇧", "shift"),
+        ]
+        let key = keys[taps.modifier] ?? ("⌃", "control")
+        return (key.0, key.1, taps.taps)
+    case let .combo(combo):
+        let short: [Int64: String] = [49: "␣", 36: "↩", 76: "⌤", 53: "⎋", 48: "⇥", 51: "⌫"]
+        let label = KeyboardLayout.label(for: combo.keyCode).label
+        return (combo.modifiers.glyphs + (short[combo.keyCode] ?? label), label.lowercased(), 1)
+    case let .chord(modifiers):
+        return (modifiers.glyphs, "", 1)
     }
-    return (key.0, key.1, taps)
 }
 
 /// A keycap drawn with layers: face, accent glow for presses, label, optional key name, ripple.
@@ -1880,6 +1897,8 @@ private final class KeycapLayers {
 private final class ReadyIllustrationView: NSView {
     private let keycap = hotkeyKeycap()
     private let hotkey = hotkeyDescription()
+    private let verb = hotkeyVerb()
+    private let discardKey = "Esc"
     private let still: Bool
     private let modifier: KeycapLayers
     private let escape = KeycapLayers(symbol: "esc", name: nil, symbolSize: 13)
@@ -1908,8 +1927,8 @@ private final class ReadyIllustrationView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
-        setAccessibilityLabel("Animation: tap \(hotkey) to start, speak, tap \(hotkey) again to insert the text. "
-                              + "Esc discards the recording.")
+        setAccessibilityLabel("Animation: \(verb.lowercased()) \(hotkey) to start, speak, \(verb.lowercased()) \(hotkey) "
+                              + "again to insert the text. \(discardKey) discards the recording.")
         guard let root = layer else { return }
 
         badge.cornerRadius = 11
@@ -1918,7 +1937,7 @@ private final class ReadyIllustrationView: NSView {
         badgeText.fontSize = 12
         badgeText.alignmentMode = .center
         badge.addSublayer(badgeText)
-        badge.isHidden = !still
+        badge.isHidden = !still || keycap.taps < 2
 
         arrow.fillColor = nil
         arrow.lineWidth = 2
@@ -1954,9 +1973,9 @@ private final class ReadyIllustrationView: NSView {
         field.addSublayer(caret)
 
         let captionTexts = still
-            ? ["Tap \(hotkey) to start, again to insert. Esc discards."]
-            : ["Tap \(hotkey) to start", "Speak…", "Tap \(hotkey) again to insert",
-               "The text appears where you type", "Esc discards the recording"]
+            ? ["\(verb) \(hotkey) to start, again to insert. \(discardKey) discards."]
+            : ["\(verb) \(hotkey) to start", "Speak…", "\(verb) \(hotkey) again to insert",
+               "The text appears where you type", "\(discardKey) discards the recording"]
         for text in captionTexts {
             let caption = CATextLayer()
             caption.string = text
@@ -2266,8 +2285,9 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
 
         let hotkey = hotkeyDescription()
         let steps = NSStackView(views: [
-            Self.step("keyboard", "Tap **\(hotkey)** in any app to start."),
-            Self.step("return", "Tap again or press **Return** to insert the text. **Esc** discards."),
+            Self.step("keyboard", "\(hotkeyVerb()) **\(hotkey)** in any app to start."),
+            Self.step("return", "\(hotkeyVerb()) again or press **Return** to insert the text. "
+                      + "**Esc** discards."),
             Self.step(menuBar ? localVoiceTemplateIcon() : Self.stepSymbol("gearshape"),
                       menuBar ? "Models and **Settings** are under this icon in the menu bar."
                               : "Open LocalVoice again to change models or **Settings**."),
@@ -2515,69 +2535,6 @@ private final class SettingsTile: NSView {
         let radius = bounds.width / 4
         let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
         NSGradient(starting: top, ending: base)?.draw(in: path, angle: -90)
-    }
-}
-
-/// The chosen gesture as keys: ⌘ ⌘ for Command twice. Right-aligned in a fixed width, so the
-/// pickers beside it stay put when the tap count changes.
-private final class SettingsKeycaps: NSView {
-    private static let cap: CGFloat = 24
-    private static let spacing: CGFloat = 4
-    private static let most = 4
-    private static let glyphs = ["ctrl": "⌃", "cmd": "⌘", "alt": "⌥", "shift": "⇧"]
-    private static let names = ["ctrl": "Control", "cmd": "Command", "alt": "Option", "shift": "Shift"]
-    private static let counts = [2: "twice", 3: "three times", 4: "four times"]
-    private var glyph = "⌃"
-    private var count = 3
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        translatesAutoresizingMaskIntoConstraints = false
-        setContentHuggingPriority(.required, for: .horizontal)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.image)
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    func show(modifier: String, count: Int) {
-        glyph = Self.glyphs[modifier] ?? "⌃"
-        self.count = min(max(count, 2), Self.most)
-        setAccessibilityLabel("Gesture: \(Self.names[modifier] ?? "Control") \(Self.counts[self.count] ?? "")")
-        needsDisplay = true
-    }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: CGFloat(Self.most) * Self.cap + CGFloat(Self.most - 1) * Self.spacing, height: Self.cap + 2)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let lip = dark ? NSColor(white: 0, alpha: 0.55) : NSColor(white: 0, alpha: 0.20)
-        let edge = dark ? NSColor(white: 1, alpha: 0.14) : NSColor(white: 0, alpha: 0.13)
-        let face = dark
-            ? NSGradient(starting: NSColor(white: 0.30, alpha: 1), ending: NSColor(white: 0.23, alpha: 1))
-            : NSGradient(starting: NSColor(white: 1, alpha: 1), ending: NSColor(white: 0.955, alpha: 1))
-        let text = NSAttributedString(string: glyph, attributes: [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.85),
-        ])
-        let textSize = text.size()
-        for index in 0..<count {
-            let fromRight = CGFloat(count - index)
-            let x = bounds.maxX - fromRight * Self.cap - (fromRight - 1) * Self.spacing
-            let key = NSRect(x: x, y: bounds.minY + 2, width: Self.cap, height: Self.cap)
-            // The darker lip under the key is what makes it read as a key and not a badge.
-            lip.setFill()
-            NSBezierPath(roundedRect: key.offsetBy(dx: 0, dy: -1.5), xRadius: 6, yRadius: 6).fill()
-            let path = NSBezierPath(roundedRect: key, xRadius: 6, yRadius: 6)
-            face?.draw(in: path, angle: -90)
-            edge.setStroke()
-            let outline = NSBezierPath(roundedRect: key.insetBy(dx: 0.5, dy: 0.5), xRadius: 5.5, yRadius: 5.5)
-            outline.lineWidth = 1
-            outline.stroke()
-            text.draw(at: NSPoint(x: key.midX - textSize.width / 2, y: key.midY - textSize.height / 2))
-        }
     }
 }
 
@@ -2968,9 +2925,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     var updates: SettingsUpdates?
     private(set) var page: SettingsPage = .dictation
 
-    private let modifier = NSPopUpButton()
-    private let taps = NSPopUpButton()
-    private let keycaps = SettingsKeycaps()
+    private let shortcutField = ShortcutRecorderField()
     private let microphone = NSPopUpButton()
     private let vocabulary = NSTokenField()
     private var vocabularyHeight: NSLayoutConstraint?
@@ -3003,15 +2958,9 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private static let vocabularyHelp = "Names and jargon to spell correctly, separated by commas."
 
     override func loadView() {
-        configure(modifier, label: "Hotkey Modifier", action: #selector(changeHotkey))
-        configure(taps, label: "Hotkey Tap Count", action: #selector(changeHotkey))
         configure(microphone, label: "Microphone", action: #selector(changeMicrophone))
-        setItems([("Control", "ctrl"), ("Command", "cmd"), ("Option", "alt"), ("Shift", "shift")], on: modifier)
-        setItems((2...4).map { ("\($0) taps", "\($0)") }, on: taps)
         setItems([("Built-in Microphone", "built-in"), ("System Default", "system")], on: microphone)
         microphone.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        // Sized for the longest title, so the row does not shift when the choice changes.
-        modifier.widthAnchor.constraint(equalToConstant: modifier.fittingSize.width).isActive = true
 
         let toggles: [(NSSwitch, String, String)] = [
             (preview, "live-preview", "Live Preview"), (standby, "mic-standby", "Microphone Standby"),
@@ -3026,9 +2975,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             control.setAccessibilityLabel(label)
         }
 
-        let hotkey = NSStackView(views: [keycaps, modifier, taps])
-        hotkey.spacing = 6
-        hotkey.setCustomSpacing(12, after: keycaps)
+        shortcutField.onChange = { [weak self] shortcut in self?.saveShortcut(shortcut) }
 
         vocabulary.delegate = self
         vocabulary.tokenStyle = .rounded
@@ -3080,7 +3027,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
 
         let dictation = card("Dictation", [
             SettingsRow(symbol: "keyboard.fill", fallback: "keyboard", tint: .systemGray, title: "Hotkey",
-                        detail: "Starts and stops dictation in any app.", accessory: hotkey, separator: false),
+                        detail: "Starts and stops dictation in any app.", accessory: shortcutField, separator: false),
             microphoneRow,
             vocabularyRow,
         ])
@@ -3274,11 +3221,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
 
     func refresh() {
         guard isViewLoaded else { return }
-        let key = (readConfigValue("hotkey") ?? "").lowercased().split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        select(key.count == 2 ? key[0] : "ctrl", fallback: "ctrl", on: modifier)
-        select(key.count == 2 ? key[1] : "3", fallback: "3", on: taps)
-        showGesture()
+        shortcutField.shortcut = DictationShortcut.current()
 
         let current = readConfigValue("microphone") ?? "built-in"
         var devices = [("Built-in Microphone", "built-in"), ("System Default", "system")]
@@ -3317,11 +3260,6 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             loginRow?.setDetail("Starts LocalVoice when you log in to your Mac.")
         }
         login.setAccessibilityHelp(loginRow?.detail.stringValue)
-    }
-
-    private func showGesture() {
-        keycaps.show(modifier: modifier.selectedItem?.representedObject as? String ?? "ctrl",
-                     count: Int(taps.selectedItem?.representedObject as? String ?? "") ?? 3)
     }
 
     // MARK: Vocabulary
@@ -3568,11 +3506,12 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         onContentChange?()
     }
 
-    @objc private func changeHotkey() {
-        guard let key = modifier.selectedItem?.representedObject as? String,
-              let count = taps.selectedItem?.representedObject as? String else { return }
-        showGesture()
-        save("hotkey", "\(key),\(count)")
+    private func saveShortcut(_ shortcut: Shortcut) {
+        let written = DictationShortcut.save(shortcut)
+        if !written { refresh() }
+        message.stringValue = written ? "" : "Could not save the shortcut."
+        message.isHidden = written
+        onContentChange?()
     }
 
     @objc private func changeMicrophone() {
@@ -3941,7 +3880,8 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                         // The ready screen says all this when it is up.
                         if self?.presentingReady == true { return nil }
                         let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
-                        return "Tap \(hotkeyDescription()) in any app to start, and again to insert the text. Esc discards."
+                        return "\(hotkeyVerb()) \(hotkeyDescription()) in any app to start, and again to insert the text. "
+                            + "Esc discards."
                             + (menuBar ? " Settings stay under the LocalVoice icon in the menu bar." : "")
                     },
                     embedded: true, top: SettingsMetrics.top
@@ -4432,6 +4372,8 @@ private enum PermissionPreview {
 //   SETTINGS_PREVIEW_MODEL = <model id in use>   (e.g. parakeet-v3; the demo library's models)
 //   SETTINGS_PREVIEW_UPDATES = auto | off | available | none   (the Updates row; none hides it)
 //   SETTINGS_PREVIEW_ICON = <image for the header>    (the preview has no app bundle)
+//   SETTINGS_PREVIEW_RECORDER = 1   (renders the shortcut recorder popover instead of the window)
+//   SETTINGS_PREVIEW_PRESS = <shortcut, e.g. shift+d>  (what the recorder shows after that press)
 //   LOCALVOICE_CONFIG_DIR = <directory holding `config`>
 // Without LOCALVOICE_CONFIG_DIR the preview makes an empty temporary one, so it never
 // reads or writes ~/.config/localvoice/config.
@@ -4493,6 +4435,15 @@ private enum SettingsPreview {
                 started: { true }, available: { updates == "available" ? "1.4.1" : nil },
                 automatic: { updates != "off" }, setAutomatic: { _ in }, check: {})
         }
+        if environment["SETTINGS_PREVIEW_RECORDER"] != nil {
+            let recorder = ShortcutRecorderViewController(current: DictationShortcut.current())
+            if let press = Shortcut(config: environment["SETTINGS_PREVIEW_PRESS"]) { recorder.previewPress(press) }
+            let window = SettingsPreviewWindow(contentViewController: recorder)
+            window.claimsKey = true
+            snapshot(window, to: environment["SETTINGS_PREVIEW_SNAPSHOT"] ?? "recorder")
+            withExtendedLifetime((recorder, window)) { app.run() }
+            return
+        }
         let split = SettingsSplitViewController(settings: controller)
         let window = SettingsPreviewWindow(contentViewController: split)
         window.claimsKey = environment["SETTINGS_PREVIEW_SNAPSHOT"] != nil
@@ -4505,21 +4456,25 @@ private enum SettingsPreview {
         split.fitWindow()
         window.center()
         if let path = environment["SETTINGS_PREVIEW_SNAPSHOT"] {
-            // Offscreen: the window is never ordered in.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                guard let frameView = window.contentView?.superview else { exit(1) }
-                frameView.layoutSubtreeIfNeeded()
-                let bounds = frameView.bounds
-                guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { exit(1) }
-                frameView.cacheDisplay(in: bounds, to: rep)
-                let data = rep.representation(using: .png, properties: [:])
-                exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
-            }
+            snapshot(window, to: path)
         } else {
             window.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)
         }
         withExtendedLifetime((backend, split, window)) { app.run() }
+    }
+
+    /// Offscreen: the window is never ordered in.
+    private static func snapshot(_ window: NSWindow, to path: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard let frameView = window.contentView?.superview else { exit(1) }
+            frameView.layoutSubtreeIfNeeded()
+            let bounds = frameView.bounds
+            guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { exit(1) }
+            frameView.cacheDisplay(in: bounds, to: rep)
+            let data = rep.representation(using: .png, properties: [:])
+            exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
+        }
     }
 }
 #endif
