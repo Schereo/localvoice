@@ -16,6 +16,16 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 - LocalVoice looks for updates once a day by default instead of asking first;
   the switch under **Settings › General › Updates** turns it off. Copies of
   1.4.0 still ask once before their first check.
+- The recording pill answers the hotkey at once: a small circle appears while
+  the microphone opens and grows into the pill as soon as it records, instead
+  of the pill fading in only after the microphone was ready.
+- The website's Homebrew command sits in its own box with a copy button.
+
+### Removed
+
+- The language badge on the recording pill and the `compact` setting that hid
+  it. LocalVoice.app never showed the badge; it was left over from the legacy
+  install. The language is chosen per model in Settings.
 
 ## [1.4.0] — 2026-11-27
 

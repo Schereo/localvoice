@@ -201,17 +201,6 @@ class _OverlaySession:
         process.stdin.write(command + "\n")
         process.stdin.flush()
 
-    @staticmethod
-    def _read_events(process):
-        """Apply interaction events emitted by the native recorder HUD."""
-        try:
-            for line in process.stdout:
-                parts = line.strip().split()
-                if len(parts) == 2 and parts[0] == "language":
-                    _apply_language(parts[1])
-        except OSError as exc:
-            logger.warning(f"Could not read recorder overlay events: {exc}")
-
     def _run(self):
         process = None
         mode = self.initial_mode
@@ -230,17 +219,11 @@ class _OverlaySession:
                 process = subprocess.Popen(
                     [_OVERLAY_PATH, self.initial_mode, self.language],
                     stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     text=True,
                     bufsize=1,
                 )
-            threading.Thread(
-                target=self._read_events,
-                args=(process,),
-                name="ctrlspeak-overlay-events",
-                daemon=True,
-            ).start()
             logger.info("Animated recorder overlay started")
 
             while process.poll() is None:
@@ -301,7 +284,7 @@ def prepare_overlay():
             _standby_overlay = subprocess.Popen(
                 [_OVERLAY_PATH, "standby", state.source_lang],
                 stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
@@ -309,6 +292,32 @@ def prepare_overlay():
         except OSError as exc:
             _standby_overlay = None
             logger.warning(f"Could not prepare the recorder overlay: {exc}")
+
+
+def _signal_standby_overlay(command):
+    """Send one command to the waiting pill without taking it. Never raises;
+    returns whether it was delivered."""
+    with _standby_overlay_lock:
+        process = _standby_overlay
+        if process is None or process.poll() is not None:
+            return False
+        try:
+            process.stdin.write(command + "\n")
+            process.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError):
+            return False
+
+
+def _arm_overlay():
+    """Answer the hotkey at once: the waiting pill appears as a small circle
+    while the microphone opens, and grows into the pill on "show"."""
+    return _signal_standby_overlay("arm")
+
+
+def _disarm_overlay():
+    """The start failed after arming: fold the circle away again."""
+    _signal_standby_overlay("disarm")
 
 
 def _take_standby_overlay():
@@ -370,7 +379,7 @@ def set_overlay_transcript(final=None, partial=None):
 
 
 def _apply_language(language, persist=True):
-    """Apply a language selected in the recorder HUD or edited in the config.
+    """Apply a language edited in the config.
 
     persist=False is for changes that already come *from* the config file;
     writing them back would touch its mtime and ping the watcher again.
@@ -619,6 +628,10 @@ def _start_recording():
 
     opened_on_demand = False
     started = False
+    # Before the microphone: a Bluetooth input can take seconds to open, and
+    # the hotkey should still get an answer within a frame. The circle is not
+    # the recording pill, so it claims nothing the microphone isn't taking.
+    armed = _arm_overlay()
     try:
         if model_id := os.environ.get("LOCALVOICE_MODEL_ID"):
             # Apply a preference at the recording boundary, including for
@@ -653,9 +666,10 @@ def _start_recording():
                 manager.start_recording()
 
         play_start_beep()
-        # Shown once capture is live, so the pill never claims a recording
-        # the microphone is not yet taking (Bluetooth inputs can take
-        # seconds to open). The standby pill makes this ~20 ms, not ~0.2 s.
+        # The recording pill itself only once capture is live, so it never
+        # claims a recording the microphone is not yet taking. The armed
+        # circle grows into it; without one, the standby pill grows from a
+        # dot (~20 ms, not a ~0.2 s process launch).
         _start_recording_overlay()
         if _streaming_model is None:
             _start_live_preview()
@@ -665,6 +679,8 @@ def _start_recording():
         _show_start_error("Could not start recording")
     finally:
         if not started:
+            if armed:
+                _disarm_overlay()
             if manager.is_collecting:
                 _end_recording(manager.recording_id, discard=True)
             else:

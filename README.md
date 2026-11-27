@@ -44,14 +44,14 @@ The previous source installer is available as an explicit compatibility option. 
 | **Cmd+,** while recording | Open the settings in your text editor |
 | Badge click (`DE` / `EN` / `AUTO`) | Cycle the language mode |
 
-Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, microphone, a compact pill without the language badge, mic standby. Edits apply within seconds, no restart needed; the menu bar icon offers the same settings as menus: **[docs/configuration.md](docs/configuration.md)**. Recording uses the built-in mic by default, so connected AirPods keep their audio quality. The mic opens only while you record (the indicator stays honest); if nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
+Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, microphone, mic standby. Edits apply within seconds, no restart needed; the menu bar icon offers the same settings as menus: **[docs/configuration.md](docs/configuration.md)**. Recording uses the built-in mic by default, so connected AirPods keep their audio quality. The mic opens only while you record (the indicator stays honest); if nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
 
 For the private app, disable **Launch at Login**, quit LocalVoice, and move the app to Trash. Models and preferences are kept separately.
 
 ## More
 
 - **[docs/setup.md](docs/setup.md)** — installer steps, permissions wizard, code signing, health checks, uninstall
-- **[docs/configuration.md](docs/configuration.md)** — the config file: hotkey, language, compact pill, mic standby
+- **[docs/configuration.md](docs/configuration.md)** — the config file: hotkey, language, microphone, mic standby
 - **[docs/usage.md](docs/usage.md)** — keys, language modes, insertion behaviour
 - **[docs/how-it-works.md](docs/how-it-works.md)** — architecture: app identity, pill protocol, download pipeline, onset buffer
 - **[docs/development-checks.md](docs/development-checks.md)** — automated checks, UI preview, offline model smoke test

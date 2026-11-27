@@ -17,26 +17,16 @@ SUPPORTED_LANGUAGES = {"de", "en", "es"}
 This single set gates transcription *and* defines the candidate pool for
 `AUTO`: `detect_language()` compares exactly these languages' probabilities.
 
-## 2. The badge — `src/ctrlspeak-overlay.swift`
+## 2. The runtime validation — `patches/ctrlspeak-1.8.0/utils/localvoice_config.py`
 
-```swift
-static let languageCycle = ["DE", "EN", "ES", "AUTO"]
-```
-
-Clicking the badge cycles this list. In `drawLanguageSelection`, add a display
-name for the preview mode (`case "ES": languageName = "Spanish"`). The badge
-chip fits labels up to four letters as-is.
-
-## 3. The runtime validation — `patches/ctrlspeak-1.8.0/utils/localvoice_config.py`
-
-Extend the one set every consumer (badge clicks, the config file, the
-installer's Python step) validates against:
+Extend the one set every consumer (the config file, the Settings window,
+the installer's Python step) validates against:
 
 ```python
 VALID_LANGUAGES = {"de", "en", "es", "auto"}
 ```
 
-## 4. The installer — `install.sh`
+## 3. The installer — `install.sh`
 
 Two guards mention the codes: the `CTRLSPEAK_LANGUAGE` check near the top and
 the `SAVED_LANGUAGE` validation inside the generated wrapper script. Add the

@@ -508,7 +508,7 @@ if [[ "$(cat "$SETUP_STATUS_FILE" 2>/dev/null)" == "granted" ]]; then
   echo "Usage: triple-tap Control to start, then triple-tap Control to stop."
   echo "Click the badge in the recording pill to cycle German / English / Auto."
   echo
-  echo "Settings (hotkey, language, compact pill) live in ~/.config/localvoice/config."
+  echo "Settings (hotkey, language, microphone) live in ~/.config/localvoice/config."
   echo "While the pill is on screen, Cmd+, opens it; edits apply within seconds."
 else
   echo "The permission setup did not finish. Grant these to LocalVoice under"

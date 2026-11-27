@@ -10,12 +10,12 @@ command -v ctrlspeak-overlay >/dev/null 2>&1 || {
 MODE="${1:-preview}"
 
 case "$MODE" in
-  preview | language)
+  preview)
     ctrlspeak-overlay "$MODE"
     ;;
 
   recording)
-    # Simulated levels, so the waveform and the language badge can be checked
+    # Simulated levels, so the waveform and the timer can be checked
     # without holding a real recording open.
     {
       for step in $(seq 0 120); do
@@ -58,6 +58,27 @@ case "$MODE" in
     } | ctrlspeak-overlay recording
     ;;
 
+  start)
+    # The start as the service drives it: the waiting pill appears as a circle
+    # at the hotkey, then grows into the pill once the microphone is open.
+    # MIC_DELAY imitates the microphone (Bluetooth inputs take much longer).
+    {
+      sleep 0.6
+      printf 'arm\n'
+      sleep "${MIC_DELAY:-0.15}"
+      printf 'show de\n'
+      for step in $(seq 0 60); do
+        awk -v step="$step" 'BEGIN { printf "level %.4f\n", 0.2 + 0.7 * (sin(step / 3.0) ^ 2) }'
+        sleep 0.04
+      done
+      printf 'state processing\n'
+      sleep 1
+      printf 'state success\n'
+      sleep 1.5
+      printf 'quit\n'
+    } | ctrlspeak-overlay standby
+    ;;
+
   permission)
     {
       printf 'detail Microphone · Accessibility\n'
@@ -87,7 +108,7 @@ case "$MODE" in
     ;;
 
   *)
-    echo "Usage: $(basename "$0") [preview|recording|live|permission|download|language]" >&2
+    echo "Usage: $(basename "$0") [preview|recording|start|live|permission|download]" >&2
     exit 1
     ;;
 esac
