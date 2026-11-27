@@ -3859,9 +3859,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             languageItem.submenu = languageMenu()
             menu.addItem(languageItem)
             menu.addItem(toggleItem(
-                title: "Compact Pill", key: "compact", selector: #selector(toggleCompact)
-            ))
-            menu.addItem(toggleItem(
                 title: "Microphone Standby", key: "mic-standby", selector: #selector(toggleStandby)
             ))
             menu.addItem(toggleItem(
@@ -3963,10 +3960,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if let value = sender.representedObject as? String {
             writeConfigValue("language", value)
         }
-    }
-
-    @objc private func toggleCompact(_ sender: NSMenuItem) {
-        writeConfigValue("compact", sender.state == .on ? "off" : "on")
     }
 
     @objc private func toggleStandby(_ sender: NSMenuItem) {

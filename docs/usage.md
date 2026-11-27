@@ -13,7 +13,7 @@ Enter and Esc are only interpreted while a recording runs. macOS delivers them t
 
 ## Insertion
 
-The transcript is pasted wherever the cursor is. Before pasting, the focused UI element is checked through the Accessibility API; if it clearly cannot take text, nothing is typed — the transcript stays on the clipboard and the pill says `Copied to clipboard`. Apps with incomplete accessibility trees (many Electron apps) keep the normal paste behaviour.
+The transcript is pasted wherever the cursor is. Before pasting, the focused UI element is checked through the Accessibility API; if it clearly cannot take text, nothing is typed — the transcript stays on the clipboard and the pill says `Copied`. Apps with incomplete accessibility trees (many Electron apps) keep the normal paste behaviour.
 
 ## Hotkey
 

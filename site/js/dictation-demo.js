@@ -1,218 +1,160 @@
-import { waveformHeights as seq } from './waveform.js';
+/* The recording pill, as the app draws it: a circle at the hotkey that grows
+   into the pill, folds back into a circle while the text is transcribed, and
+   turns its spinning arc into a green check, at which point the text lands at
+   the cursor above. Two dictations make one cycle: the second sentence is
+   added to the first, then the text clears and it starts over. One clock
+   drives every frame, so scrolling away simply stops the clock. Timings and
+   curves follow the overlay in src/ctrlspeak-overlay.swift. */
+
+const SEED = 12, CIRCLE = 44, PILL = 240, ARC_R = 12.5, CHECK_R = 6.6;
+// Phase boundaries in seconds.
+const T = {
+  appear: 0, grow: 0.34, recEnd: 3.4, folded: 3.82, handoff: 5.0,
+  leave: 6.3, gone: 6.56, loop: 7.4,
+};
+const LANDS = T.handoff + 0.08;      // the text is pasted as the check begins
+const CYCLE = 2 * T.loop;            // two dictations, then the text clears
+const CLEAR = [CYCLE - 0.9, CYCLE - 0.4];
+
+const clamp = (x) => Math.max(0, Math.min(1, x));
+const smooth = (x) => { x = clamp(x); return x * x * (3 - 2 * x); };
+// Underdamped spring, about 4 % overshoot, settled at 1.
+const spring = (x) => (x >= 1 ? 1 : 1 - Math.exp(-6 * x) * Math.cos(6 * x));
+const mix = (a, b, e) => a + (b - a) * e;
+const mixRGB = (a, b, e) => a.map((v, i) => Math.round(mix(v, b[i], e)));
+
+const INK = [243, 244, 247], GREEN = [79, 211, 155];
 
 export function setupDictationDemo(still) {
-  var stage = document.querySelector('.stage');
-  var control = document.querySelector('.demo-control');
-  if (!stage || !control) return;
-  var controlLabel = control.querySelector('.demo-control-label');
-  var landed = stage.querySelector('.landed');
-  var note = stage.querySelector('.stage-note');
-  var pill = stage.querySelector('.pill-voice');
-  var transcript = pill.querySelector('.transcript');
-  var timer = pill.querySelector('time');
-  var bars = Array.prototype.slice.call(pill.querySelectorAll('.wave i'));
-  var lang = stage.querySelector('.lang');
-  /* Each phrase is spoken in chunks; the pause between chunks confirms the first one.
-     The third entry names where the text lands, so every round is a different place. */
-  var phrases = [
-    [["Let's move the review to Thursday.", "I'll bring the numbers."], 'EN', 'Meeting notes'],
-    [['Kannst du mir die Unterlagen', 'bis Freitag schicken?'], 'DE', 'Message to Jonas'],
-    [['Fix the race in the onset buffer', 'and add a regression test.'], 'EN', 'Commit message']
-  ];
-  var index = 0, current = null;
-  /* With motion on, the demo loops while it is on screen until someone pauses it. */
-  var looping = !still, inView = false, nextTimer = null;
-  var HOLD_MS = 3200;
-  var speakingUntil = 0, level = 0, meter = null, clock = null;
+  const stage = document.querySelector('.pill-stage');
+  if (!stage) return;
+  const pill = stage.querySelector('.lv');
+  const text = stage.querySelector('.lv-text');
+  const first = text.querySelector('.lv-first');
+  const second = text.querySelector('.lv-second');
+  const rec = pill.querySelector('.lv-rec');
+  const timer = rec.querySelector('time');
+  const mark = pill.querySelector('.lv-mark');
+  const arc = mark.querySelector('.lv-arc');
+  const check = mark.querySelector('.lv-check');
+  const checkLength = check.getTotalLength();
+  check.style.strokeDasharray = checkLength;
 
-  function setControl(action, label) {
-    control.dataset.action = action;
-    controlLabel.textContent = label;
+  // Reduced motion: the recording pill, standing still. ?pill=<seconds>
+  // freezes any moment of the loop, for screenshots.
+  const frozen = parseFloat(new URLSearchParams(location.search).get('pill'));
+  if (still || frozen >= 0) {
+    render(still ? T.loop + 1.6 : frozen);
+    return;
   }
 
-  function wait(ms, signal) {
-    return new Promise(function (resolve) {
-      if (signal.aborted) { resolve(false); return; }
-      var timeout = setTimeout(function () {
-        signal.removeEventListener('abort', abort);
-        resolve(true);
-      }, ms);
-      function abort() { clearTimeout(timeout); resolve(false); }
-      signal.addEventListener('abort', abort, { once: true });
-    });
-  }
+  let elapsed = 0, last = null, running = false, inView = false, frame = 0;
 
-  /* The waveform follows the voice: lively during words, near flat in pauses. */
-  function startMeter() {
-    var started = Date.now(), n = 0;
-    timer.textContent = '00:00';
-    clock = setInterval(function () {
-      var s = Math.floor((Date.now() - started) / 1000);
-      timer.textContent = '00:' + (s < 10 ? '0' : '') + s;
-    }, 250);
-    if (still) return;
-    meter = setInterval(function () {
-      n++;
-      var target = Date.now() < speakingUntil ? .55 + .45 * Math.abs(Math.sin(n * 1.7)) : .04;
-      level += (target - level) * (target > level ? .7 : .35);
-      stage.style.setProperty('--level', level.toFixed(2));
-      bars.forEach(function (bar, i) {
-        var wobble = .55 + .45 * Math.abs(Math.sin(n * 1.3 + i * 2.1));
-        bar.style.transform = 'scaleY(' + Math.max(.14, level * seq[i % seq.length] * wobble * 1.15).toFixed(2) + ')';
-      });
-    }, 90);
-  }
-  function stopMeter() {
-    clearInterval(meter); clearInterval(clock);
-    level = 0; stage.style.setProperty('--level', '0');
-    if (!still) bars.forEach(function (bar) { bar.style.transform = 'scaleY(.14)'; });
-  }
+  function render(cycleTime) {
+    const round = cycleTime < T.loop ? 0 : 1;
+    const t = cycleTime - round * T.loop;
+    // The text at the cursor: the first sentence lands in round one, the
+    // second joins it in round two, then both clear before the next cycle.
+    const landed = (r) => round > r || (round === r && t >= LANDS);
+    first.style.display = landed(0) ? '' : 'none';
+    second.style.display = landed(1) ? '' : 'none';
+    text.style.opacity = (1 - clamp((cycleTime - CLEAR[0]) / (CLEAR[1] - CLEAR[0]))).toFixed(3);
 
-  /* Transcript: confirmed words in full ink, the running guess dimmed, at most two lines. */
-  var conf = [], guess = [];
-  function render(fresh) {
-    var maxH = parseFloat(getComputedStyle(transcript).lineHeight) * 2 + 20;
-    var drop = 0;
-    do {
-      transcript.textContent = '';
-      var c = conf.slice(drop), g = guess.slice(Math.max(0, drop - conf.length));
-      if (drop) transcript.appendChild(document.createTextNode('… '));
-      if (c.length) transcript.appendChild(document.createTextNode(c.join(' ') + ' '));
-      if (g.length) {
-        var span = document.createElement('span');
-        span.className = 'guess';
-        span.appendChild(document.createTextNode(g.slice(0, -1).join(' ') + (g.length > 1 ? ' ' : '')));
-        var last = document.createElement('span');
-        if (fresh) last.className = 'w';
-        last.textContent = g[g.length - 1];
-        span.appendChild(last);
-        transcript.appendChild(span);
+    let width = CIRCLE, scale = 1, opacity = 1, recAlpha = 0, markAlpha = 0;
+    let head = 0, length = 0, radius = ARC_R, arcColor = INK, arcAlpha = 0.55, arcWidth = 2.2;
+    let checkDraw = 0;
+
+    if (t < T.grow) {                                   // hotkey: a circle appears
+      const x = (t - T.appear) / (T.grow - T.appear);
+      scale = mix(SEED / CIRCLE, 1, spring(x));
+      opacity = smooth(x / 0.3);
+    } else if (t < T.recEnd) {                          // grows into the recording pill
+      const x = (t - T.grow) / 0.46;
+      width = mix(CIRCLE, PILL, spring(clamp(x)));
+      recAlpha = smooth((x - 0.28) / 0.45);
+    } else if (t < T.leave) {                           // folded: transcribing, then the check
+      const x = (t - T.recEnd) / (T.folded - T.recEnd);
+      width = mix(PILL, CIRCLE, spring(clamp(x)));
+      recAlpha = 1 - smooth(x / 0.35);
+      markAlpha = smooth((x - 0.45) / 0.4);
+      const spin = (s) => ({ head: 6.2 * s, length: 1.5 + 0.45 * Math.sin(s * 2.7) });
+      if (t < T.handoff) {
+        ({ head, length } = spin(t));
+      } else {
+        // The arc spirals inward, turns green and lands where the check starts.
+        const from = spin(T.handoff);
+        const u = clamp((t - T.handoff) / 0.26), e = smooth(u);
+        let travel = (Math.PI - from.head) % (2 * Math.PI);
+        if (travel < 0) travel += 2 * Math.PI;
+        if (travel < 2.1) travel += 2 * Math.PI;
+        head = from.head + travel * e;
+        length = from.length * (1 - e);
+        radius = mix(ARC_R, CHECK_R, e);
+        arcColor = mixRGB(INK, GREEN, e);
+        arcAlpha = mix(0.55, 1, e);
+        arcWidth = mix(2.2, 2.6, e);
+        const k = clamp((t - T.handoff - 0.21) / 0.28);
+        checkDraw = 1 - Math.pow(1 - k, 3);
       }
-      drop++;
-    } while (transcript.offsetHeight > maxH && drop < conf.length + guess.length);
-  }
-
-  async function speak(chunks, signal) {
-    if (!await wait(450, signal)) return false;
-    for (var ci = 0; ci < chunks.length; ci++) {
-      for (var word of chunks[ci].split(' ')) {
-        var ms = 170 + word.length * 48;
-        speakingUntil = Date.now() + ms - 60;
-        guess.push(word);
-        render(true);
-        if (!await wait(ms, signal)) return false;
-      }
-      /* A pause: the phrase is confirmed and turns to full ink. */
-      var more = ci < chunks.length - 1;
-      if (!await wait(more ? 520 : 420, signal)) return false;
-      conf = conf.concat(guess);
-      guess = [];
-      render(false);
-      if (!await wait(more ? 260 : 380, signal)) return false;
-    }
-    return true;
-  }
-
-  /* The finished sentence travels from the pill to the caret. */
-  function land(text) {
-    var from = transcript.getBoundingClientRect();
-    var fromSize = parseFloat(getComputedStyle(transcript).fontSize);
-    landed.textContent = text;
-    landed.classList.add('fly');
-    stage.classList.add('flying');
-    var to = landed.getBoundingClientRect();
-    var scale = fromSize / parseFloat(getComputedStyle(landed).fontSize);
-    var done = function () { landed.classList.remove('fly'); stage.classList.remove('flying'); };
-    if (!landed.animate) { done(); return; }
-    landed.animate([
-      { transform: 'translate(' + (from.left - to.left + 6) + 'px,' + (from.top - to.top + 15) + 'px) scale(' + scale + ')', opacity: .75 },
-      { transform: 'none', opacity: 1 }
-    ], { duration: 820, easing: 'cubic-bezier(.16, 1, .3, 1)' }).onfinish = done;
-  }
-
-  function finish(run, animate) {
-    if (current !== run) return;
-    current = null;
-    run.controller.abort();
-    stopMeter();
-    lang.textContent = 'Detected ' + run.phrase[1];
-    var text = run.phrase[0].join(' ');
-    if (animate) land(text);
-    else landed.textContent = text;
-    stage.dataset.state = 'done';
-    delete stage.dataset.playing;
-    if (still) setControl('replay', 'Replay demo');
-    else if (looping) { setControl('pause', 'Pause demo'); scheduleNext(); }
-    else setControl('play', 'Play demo');
-  }
-
-  function scheduleNext() {
-    clearTimeout(nextTimer);
-    nextTimer = setTimeout(function () {
-      nextTimer = null;
-      if (looping && inView) play();
-    }, HOLD_MS);
-  }
-
-  async function play() {
-    if (current) return;
-    clearTimeout(nextTimer);
-    nextTimer = null;
-    var run = { phrase: phrases[index++ % phrases.length], controller: new AbortController() };
-    var signal = run.controller.signal;
-    current = run;
-    if (landed.getAnimations) landed.getAnimations().forEach(function (animation) { animation.cancel(); });
-    landed.classList.remove('fly');
-    stage.classList.remove('flying');
-    conf = []; guess = [];
-    speakingUntil = 0;
-    stage.dataset.playing = '';
-    stage.dataset.state = 'idle';
-    setControl(still ? 'skip' : 'pause', still ? 'Skip demo' : 'Pause demo');
-    /* The previous sentence fades out before the next one is spoken. */
-    if (!still && landed.textContent && landed.animate) {
-      landed.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 320, easing: 'ease-out', fill: 'forwards' });
-      if (!await wait(320, signal)) return;
-    }
-    if (landed.getAnimations) landed.getAnimations().forEach(function (animation) { animation.cancel(); });
-    landed.textContent = '';
-    if (note.textContent !== run.phrase[2]) {
-      note.textContent = run.phrase[2];
-      if (!still && note.animate) note.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 360, easing: 'ease-out' });
-    }
-    if (!await wait(still ? 0 : 500, signal)) return;
-    transcript.textContent = '';
-    stage.dataset.state = 'rec';
-    startMeter();
-    if (await speak(run.phrase[0], signal)) finish(run, !still);
-  }
-
-  control.addEventListener('click', function () {
-    if (still) {
-      if (current) finish(current, false);
-      else play();
-    } else if (looping) {
-      looping = false;
-      clearTimeout(nextTimer);
-      nextTimer = null;
-      if (current) finish(current, false);
-      setControl('play', 'Play demo');
+    } else if (t < T.gone) {                            // folds into a point and is gone
+      const x = (t - T.leave) / (T.gone - T.leave);
+      scale = mix(1, SEED / CIRCLE, x * x * x);
+      markAlpha = 1 - x / 0.35;
+      opacity = clamp((1 - x) / 0.3);
+      checkDraw = 1;
     } else {
-      looping = true;
-      setControl('pause', 'Pause demo');
-      play();
+      opacity = 0;
     }
-  });
-  setControl('play', 'Play demo');
-  control.hidden = false;
-  if (still) return;
+
+    pill.style.width = `calc(var(--u) * ${width.toFixed(2)})`;
+    pill.style.transform = `scale(${scale.toFixed(4)})`;
+    pill.style.opacity = opacity.toFixed(3);
+    rec.style.opacity = clamp(recAlpha).toFixed(3);
+    mark.style.opacity = clamp(markAlpha).toFixed(3);
+
+    // The arc trails `length` radians behind its head, clockwise on screen.
+    const visible = length > 0.01;
+    arc.style.display = visible ? '' : 'none';
+    if (visible) {
+      arc.setAttribute('r', radius.toFixed(2));
+      arc.style.strokeDasharray = `${(length * radius).toFixed(2)} 999`;
+      arc.style.transform = `rotate(${(head - length).toFixed(4)}rad)`;
+      arc.style.stroke = `rgba(${arcColor.join(',')},${arcAlpha.toFixed(3)})`;
+      arc.style.strokeWidth = arcWidth.toFixed(2);
+    }
+    // Hidden until it starts: a round cap would show a zero-length stroke as a dot.
+    check.style.display = checkDraw > 0.001 ? '' : 'none';
+    check.style.strokeDashoffset = (checkLength * (1 - checkDraw)).toFixed(2);
+
+    if (t >= T.grow && t < T.recEnd) {
+      const seconds = Math.floor(t - T.grow);
+      timer.textContent = `00:0${Math.min(9, seconds)}`;
+    }
+  }
+
+  function tick(now) {
+    if (last !== null) elapsed = (elapsed + (now - last) / 1000) % CYCLE;
+    last = now;
+    render(elapsed);
+    frame = requestAnimationFrame(tick);
+  }
+
+  function sync() {
+    const run = inView;
+    if (run === running) return;
+    running = run;
+    stage.classList.toggle('is-paused', !run);
+    if (run) { last = null; frame = requestAnimationFrame(tick); }
+    else cancelAnimationFrame(frame);
+  }
+
+  render(0);
+
   if ('IntersectionObserver' in window) {
-    new IntersectionObserver(function ([entry]) {
-      inView = entry.isIntersecting;
-      if (inView && looping && !current && !nextTimer) play();
-    }, { threshold: 0.2 }).observe(stage);
+    new IntersectionObserver(([entry]) => { inView = entry.isIntersecting; sync(); }, { threshold: 0.2 })
+      .observe(stage);
   } else {
     inView = true;
-    play();
+    sync();
   }
 }

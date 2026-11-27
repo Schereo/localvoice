@@ -1,36 +1,5 @@
 import AppKit
 
-private let managedApp = ProcessInfo.processInfo.environment["LOCALVOICE_MODEL_ID"] != nil
-
-/// Whether the config asks for the compact recording pill (no language badge).
-///
-/// Read from the same key = value file the Python service uses; only this one
-/// key matters here, so a full config type would be ceremony. Each pill is a
-/// fresh process, so an edited setting shows up on the next recording without
-/// any restart.
-func loadCompactSetting() -> Bool {
-    let configPath = ProcessInfo.processInfo.environment["LOCALVOICE_CONFIG_DIR"].map {
-        $0 + "/config"
-    } ?? FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/localvoice/config").path
-
-    guard let raw = try? String(contentsOfFile: configPath, encoding: .utf8) else {
-        return false
-    }
-
-    var compact = false
-    for line in raw.split(separator: "\n") {
-        let entry = line.trimmingCharacters(in: .whitespaces)
-        guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
-        let key = entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased()
-        guard key == "compact" else { continue }
-        let value = entry[entry.index(after: separator)...]
-            .trimmingCharacters(in: .whitespaces).lowercased()
-        compact = ["on", "true", "1", "yes"].contains(value)
-    }
-    return compact
-}
-
 /// Corner radius for a capsule of the given height. Half the height up to
 /// the 56 pt status pill — the classic capsule — but capped beyond that: the
 /// recording pill grown around a live transcript reads as a rounded card,
@@ -40,11 +9,13 @@ func capsuleRadius(forHeight height: CGFloat) -> CGFloat {
 }
 
 enum OverlayMode: String {
+    // On screen the moment the hotkey fires, while the microphone opens: a
+    // small circle that grows into the recording pill once capture is live.
+    case arming
     case recording
     case processing
     case success
     case empty
-    case language
     case permission
     case download
     case cancelled
@@ -54,12 +25,11 @@ enum OverlayMode: String {
 }
 
 final class RecorderHUDView: NSView {
-    var onLanguageToggle: ((String) -> Void)?
-
-    // Compact mode: the recording pill drops the language badge and shrinks
-    // to dot, waveform and timer. For people who leave the language fixed
-    // (usually on auto), the badge is chrome they asked to be rid of.
-    var hideLanguageBadge = false
+    // Faded in while the capsule grows from the arming circle into the pill,
+    // so dot, waveform and timer never show squeezed into a narrow capsule.
+    var contentAlpha: CGFloat = 1 {
+        didSet { needsDisplay = true }
+    }
 
     // The native dictation HUD is light frost with dark ink in light mode and
     // the inverse in dark mode. All chrome colors derive from these two.
@@ -83,7 +53,6 @@ final class RecorderHUDView: NSView {
     private var phase: CGFloat = 0
     private var recordingStartedAt = Date()
     private var animationTimer: Timer?
-    private var languageCode = "DE"
 
     // Progress is nil while the total download size is still unknown, which
     // makes the bar fall back to an indeterminate sweep. The displayed value
@@ -103,18 +72,12 @@ final class RecorderHUDView: NSView {
     private var transcriptCacheKey = ""
     private var transcriptCache: (text: NSAttributedString, lines: Int)?
 
-    // Recording chrome (dot, waveform, timer, badge) lives in the bottom
+    // Recording chrome (dot, waveform, timer) lives in the bottom
     // 44 pt band. With no transcript the capsule *is* that band; with text
     // the capsule grows upward while the band — and so the chrome — stays
     // put on screen.
     private static let controlBandHeight: CGFloat = 44
     private var controlBandMidY: CGFloat { RecorderHUDView.controlBandHeight / 2 }
-
-    // Right-aligned with the same 18 pt margin the recording dot gets on the
-    // left, independent of the panel width the launch mode chose.
-    private var languageBadgeRect: NSRect {
-        NSRect(x: bounds.width - 68, y: controlBandMidY - 11, width: 50, height: 22)
-    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -145,23 +108,30 @@ final class RecorderHUDView: NSView {
     }
 
     func setMode(_ newMode: OverlayMode) {
+        // The check continues the spinner's stroke, so it needs to know where
+        // the arc was when the text landed.
+        spinnerExit = mode == .processing && newMode == .success
+            ? (head: spinnerHead, length: spinnerLength)
+            : nil
         mode = newMode
+        modeChangedAt = Date()
         if newMode == .recording {
             recordingStartedAt = Date()
         }
         needsDisplay = true
     }
 
+    private var modeChangedAt = Date()
+    private var spinnerExit: (head: CGFloat, length: CGFloat)?
+
+    // The transcribing arc: about one turn a second, clockwise, its length
+    // breathing a little so it never reads as a stuck system spinner.
+    private static let spinnerRadius: CGFloat = 12.5
+    private var spinnerHead: CGFloat { -phase * 1.6 }
+    private var spinnerLength: CGFloat { 1.5 + 0.45 * sin(phase * 0.7) }
+
     func setLevel(_ newLevel: Double) {
         targetLevel = CGFloat(max(0, min(1, newLevel)))
-    }
-
-    static let languageCycle = ["DE", "EN", "AUTO"]
-
-    func setLanguage(_ language: String) {
-        let requested = language.uppercased()
-        languageCode = RecorderHUDView.languageCycle.contains(requested) ? requested : "DE"
-        needsDisplay = true
     }
 
     /// Update one half of the live transcript; nil leaves that half alone.
@@ -254,7 +224,7 @@ final class RecorderHUDView: NSView {
         case .empty: return "No speech detected"
         case .failed: return "Transcription failed"
         case .cancelled: return "Recording discarded"
-        case .clipboard: return "Copied to clipboard"
+        case .clipboard: return "Copied"
         case .error: return "LocalVoice is restarting"
         default: return nil
         }
@@ -279,23 +249,20 @@ final class RecorderHUDView: NSView {
         switch mode {
         case .recording:
             guard hasTranscript else {
-                return NSSize(width: hideLanguageBadge ? 240 : 300, height: 44)
+                return NSSize(width: 240, height: 44)
             }
             // With live text the capsule widens for a readable line and grows
             // upward: 44 pt control band + text lines + 10 pt top inset.
-            let width: CGFloat = hideLanguageBadge ? 340 : 380
+            let width: CGFloat = 340
             let lines = fittedTranscript(width: width - 48, maxLines: 2)?.lines ?? 1
             return NSSize(
                 width: width,
                 height: RecorderHUDView.controlBandHeight + CGFloat(lines) * transcriptLineHeight + 10
             )
-        case .processing:
-            // Just the dots: transcription takes about a second, too short
-            // for a label to earn its width.
-            return NSSize(width: RecorderHUDView.processingCapsuleWidth, height: 44)
         case .permission, .download:
             return NSSize(width: 358, height: 56)
-        case .language:
+        case .arming, .processing, .success, .cancelled:
+            // Circles: the controller sizes them itself, centred on the band.
             return nil
         default:
             guard let title = RecorderHUDView.resultTitle(mode) else { return nil }
@@ -335,28 +302,6 @@ final class RecorderHUDView: NSView {
         needsDisplay = true
     }
 
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        if mode == .recording && !hideLanguageBadge {
-            addCursorRect(languageBadgeRect, cursor: .pointingHand)
-        }
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        guard mode == .recording, !hideLanguageBadge else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        guard languageBadgeRect.contains(point) else { return }
-
-        let cycle = RecorderHUDView.languageCycle
-        let next = cycle[((cycle.firstIndex(of: languageCode) ?? 0) + 1) % cycle.count]
-        setLanguage(next)
-        onLanguageToggle?(next.lowercased())
-    }
-
     @objc private func tick() {
         phase += 0.13
         displayedLevel += (targetLevel - displayedLevel) * 0.24
@@ -372,17 +317,29 @@ final class RecorderHUDView: NSView {
 
         drawGlassRim()
 
+        let context = NSGraphicsContext.current?.cgContext
+        let faded = contentAlpha < 1
+        if faded {
+            context?.saveGState()
+            context?.setAlpha(max(0, contentAlpha))
+            context?.beginTransparencyLayer(auxiliaryInfo: nil)
+        }
+        defer {
+            if faded {
+                context?.endTransparencyLayer()
+                context?.restoreGState()
+            }
+        }
+
         switch mode {
+        case .arming:
+            drawArming()
         case .recording:
             drawRecording()
         case .processing:
             drawProcessing()
         case .success:
-            drawResult(
-                title: RecorderHUDView.resultTitle(mode)!,
-                color: NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1),
-                symbol: "checkmark"
-            )
+            drawOutcomeMark(.check)
         case .empty, .failed:
             drawResult(
                 title: RecorderHUDView.resultTitle(mode)!,
@@ -390,11 +347,7 @@ final class RecorderHUDView: NSView {
                 symbol: "exclamationmark"
             )
         case .cancelled:
-            drawResult(
-                title: RecorderHUDView.resultTitle(mode)!,
-                color: NSColor(calibratedRed: 0.94, green: 0.42, blue: 0.30, alpha: 1),
-                symbol: "xmark"
-            )
+            drawOutcomeMark(.cross)
         case .clipboard:
             drawResult(title: RecorderHUDView.resultTitle(mode)!, color: accent, symbol: "checkmark")
         case .error:
@@ -403,13 +356,26 @@ final class RecorderHUDView: NSView {
                 color: NSColor(calibratedRed: 0.95, green: 0.62, blue: 0.15, alpha: 1),
                 symbol: "exclamationmark"
             )
-        case .language:
-            drawLanguageSelection()
         case .permission:
             drawPermission()
         case .download:
             drawDownload()
         }
+    }
+
+    // The microphone is not open yet, so this is deliberately not the red
+    // recording dot: a quiet breathing point says "heard you, getting ready".
+    private func drawArming() {
+        let pulse = 0.5 + 0.5 * sin(phase * 0.9)
+        let radius: CGFloat = 3.2 + 0.9 * pulse
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        ink.withAlphaComponent(0.32 + 0.30 * pulse).setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )).fill()
     }
 
     // The pulsing red dot alone marks the live recording; a "RECORDING"
@@ -445,16 +411,13 @@ final class RecorderHUDView: NSView {
         // would sit visually farther from the waveform than the dot does.
         let gap: CGFloat = 16
         let dotRightEdge: CGFloat = 30
-        let badge = languageBadgeRect
 
         let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
         let timerFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
         let timerWidth = ceil((elapsed as NSString).size(withAttributes: [.font: timerFont]).width)
-        // Without the badge, the timer takes over its 18 pt right margin.
-        let timerX = hideLanguageBadge
-            ? bounds.width - 18 - timerWidth
-            : badge.minX - gap - timerWidth
+        // The same 18 pt margin on the right as the recording dot's on the left.
+        let timerX = bounds.width - 18 - timerWidth
 
         drawWaveform(in: NSRect(
             x: dotRightEdge + gap,
@@ -470,10 +433,6 @@ final class RecorderHUDView: NSView {
             color: ink.withAlphaComponent(0.58),
             alignment: .right
         )
-
-        if !hideLanguageBadge {
-            drawLanguageBadge(in: badge)
-        }
     }
 
     // Apple's glass edge is not a uniform outline. The rim reads as the edge
@@ -566,22 +525,116 @@ final class RecorderHUDView: NSView {
     // One animation, nothing else: the pulsing dot row, centred. A spinner
     // plus a label plus the dots said "loading" three times over, for a state
     // that lasts about a second.
+    // Transcribing: the pill has folded into a circle and a neutral arc runs
+    // round it. Waiting is neither good nor bad news, so it has no colour.
     private func drawProcessing() {
-        let centerY = bounds.midY
-        let step: CGFloat = 14
-        let startX = bounds.midX - 2 * step
-        for index in 0..<5 {
-            let wave = (sin(phase * 1.45 - CGFloat(index) * 0.72) + 1) / 2
-            let radius: CGFloat = 2.2 + wave * 1.35
-            let x = startX + CGFloat(index) * step
-            accent.withAlphaComponent(0.32 + wave * 0.60).setFill()
-            NSBezierPath(ovalIn: NSRect(x: x - radius, y: centerY - radius, width: radius * 2, height: radius * 2)).fill()
-        }
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        strokeArc(center: center, radius: RecorderHUDView.spinnerRadius,
+                  head: spinnerHead, length: spinnerLength,
+                  color: ink.withAlphaComponent(0.55), width: 2.2)
     }
 
-    // Quiet by design: a small icon and a regular-weight line. The pill only
-    // confirms what already happened — bold shouting made it the loudest
-    // thing on screen for the least interesting moment.
+    /// An arc whose leading end is `head` (radians, travelling clockwise)
+    /// and which trails `length` radians behind it.
+    private func strokeArc(center: NSPoint, radius: CGFloat, head: CGFloat, length: CGFloat,
+                           color: NSColor, width: CGFloat) {
+        guard length > 0.01 else { return }
+        let arc = NSBezierPath()
+        arc.appendArc(withCenter: center, radius: radius,
+                      startAngle: head * 180 / .pi, endAngle: (head + length) * 180 / .pi,
+                      clockwise: false)
+        arc.lineWidth = width
+        arc.lineCapStyle = .round
+        color.setStroke()
+        arc.stroke()
+    }
+
+    enum OutcomeMark { case check, cross }
+
+    // Outcomes the user expected need no words: the pill folds into a circle
+    // and a mark draws itself in, straight on the glass like the dots and the
+    // waveform: inserted is a green check, discarded (Esc) a red cross.
+    // Outcomes that differ from what the user expected keep their label.
+    private func drawOutcomeMark(_ kind: OutcomeMark) {
+        let color = kind == .check
+            ? emphasized(NSColor(calibratedRed: 0.24, green: 0.78, blue: 0.50, alpha: 1))
+            : emphasized(NSColor(calibratedRed: 0.94, green: 0.42, blue: 0.30, alpha: 1))
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        let elapsed = Date().timeIntervalSince(modeChangedAt)
+
+        // Coming from the spinner, the arc spirals inward, turns green and
+        // lands where the check starts; the check then carries on from that
+        // point, so the two read as one stroke.
+        var markDelay = 0.06
+        if kind == .check, let exit = spinnerExit {
+            let handoff = 0.26
+            markDelay = handoff * 0.8
+            let u = CGFloat(min(1, elapsed / handoff))
+            if u < 1 {
+                let e = u * u * (3 - 2 * u)
+                // Clockwise to the check's start at 180°, at least a third of a turn on.
+                var travel = (exit.head - .pi).truncatingRemainder(dividingBy: 2 * .pi)
+                if travel < 0 { travel += 2 * .pi }
+                if travel < 2.1 { travel += 2 * .pi }
+                let start = ink.withAlphaComponent(0.55)
+                strokeArc(center: center,
+                          radius: RecorderHUDView.spinnerRadius + (6.6 - RecorderHUDView.spinnerRadius) * e,
+                          head: exit.head - travel * e,
+                          length: exit.length * (1 - e),
+                          color: start.blended(withFraction: e, of: color) ?? color,
+                          width: 2.2 + 0.4 * e)
+            }
+        }
+
+        // Stroke the mark progressively over 0.28 s.
+        let t = CGFloat(max(0, min(1, (elapsed - markDelay) / 0.28)))
+        let progress = 1 - pow(1 - t, 3)
+        // The check is about 15 x 11 pt, optically centred (the long stroke
+        // pulls right). The cross is two 10 pt strokes, drawn one after the other.
+        let points: [NSPoint]
+        let segments: [(Int, Int)]
+        switch kind {
+        case .check:
+            points = [
+                NSPoint(x: center.x - 6.6, y: center.y),
+                NSPoint(x: center.x - 1.9, y: center.y - 4.6),
+                NSPoint(x: center.x + 7.0, y: center.y + 5.6),
+            ]
+            segments = [(0, 1), (1, 2)]
+        case .cross:
+            points = [
+                NSPoint(x: center.x - 5, y: center.y + 5),
+                NSPoint(x: center.x + 5, y: center.y - 5),
+                NSPoint(x: center.x + 5, y: center.y + 5),
+                NSPoint(x: center.x - 5, y: center.y - 5),
+            ]
+            segments = [(0, 1), (2, 3)]
+        }
+        let lengths = segments.map { hypot(points[$0.1].x - points[$0.0].x, points[$0.1].y - points[$0.0].y) }
+        var remaining = lengths.reduce(0, +) * progress
+        guard remaining > 0 else { return }
+
+        let mark = NSBezierPath()
+        mark.lineWidth = kind == .check ? 2.6 : 2.2
+        mark.lineCapStyle = .round
+        mark.lineJoinStyle = .round
+        for (index, segment) in segments.enumerated() {
+            let from = points[segment.0], to = points[segment.1]
+            let step = min(remaining, lengths[index])
+            let fraction = step / lengths[index]
+            // A polyline continues from where it is; a new stroke starts fresh.
+            if index == 0 || segment.0 != segments[index - 1].1 {
+                mark.move(to: from)
+            }
+            mark.line(to: NSPoint(x: from.x + (to.x - from.x) * fraction,
+                                  y: from.y + (to.y - from.y) * fraction))
+            remaining -= step
+            if remaining <= 0 { break }
+        }
+        color.setStroke()
+        mark.stroke()
+    }
+
     private func drawResult(title: String, color rawColor: NSColor, symbol: String) {
         let centerY = bounds.midY
         let color = emphasized(rawColor)
@@ -650,51 +703,6 @@ final class RecorderHUDView: NSView {
         isDarkAppearance
             ? color
             : color.blended(withFraction: 0.38, of: .black) ?? color
-    }
-
-    // Same quiet styling as the result pills: this is the same class of
-    // transient, auto-dismissing confirmation, and the two can appear
-    // seconds apart.
-    private func drawLanguageSelection() {
-        let centerY = bounds.midY
-        accent.withAlphaComponent(0.18).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 17, y: centerY - 9, width: 18, height: 18)).fill()
-
-        accent.setStroke()
-        let globe = NSBezierPath(ovalIn: NSRect(x: 21, y: centerY - 5, width: 10, height: 10))
-        globe.lineWidth = 1.2
-        globe.stroke()
-
-        let meridian = NSBezierPath()
-        meridian.lineWidth = 1.2
-        meridian.move(to: NSPoint(x: 26, y: centerY - 5))
-        meridian.curve(
-            to: NSPoint(x: 26, y: centerY + 5),
-            controlPoint1: NSPoint(x: 23.2, y: centerY - 1.7),
-            controlPoint2: NSPoint(x: 23.2, y: centerY + 1.7)
-        )
-        meridian.stroke()
-
-        let languageName: String
-        switch languageCode {
-        case "EN": languageName = "English"
-        case "AUTO": languageName = "Automatic"
-        default: languageName = "German"
-        }
-        drawCenteredText(
-            "Language: \(languageName)",
-            centeredIn: NSRect(
-                x: RecorderHUDView.quietTextX,
-                y: centerY - 10,
-                width: bounds.width - RecorderHUDView.quietTextX - 68,
-                height: 20
-            ),
-            font: RecorderHUDView.quietTitleFont(twoLines: false),
-            color: ink.withAlphaComponent(0.90),
-            alignment: .left
-        )
-
-        drawLanguageBadge(in: NSRect(x: bounds.width - 68, y: centerY - 11, width: 50, height: 22))
     }
 
     private func drawPermission() {
@@ -842,24 +850,6 @@ final class RecorderHUDView: NSView {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    // A filled chip rather than a tinted wash: on the frosted material the
-    // faint accent-on-accent version all but disappeared.
-    private func drawLanguageBadge(in rect: NSRect) {
-        let chip = isDarkAppearance
-            ? NSColor(calibratedRed: 0.30, green: 0.53, blue: 0.94, alpha: 0.92)
-            : NSColor(calibratedRed: 0.09, green: 0.36, blue: 0.87, alpha: 0.92)
-        chip.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
-
-        drawCenteredText(
-            languageCode,
-            centeredIn: rect,
-            font: .systemFont(ofSize: 10, weight: .bold),
-            color: NSColor.white.withAlphaComponent(0.98),
-            kern: 0.5
-        )
-    }
-
     /// Draw one line with its cap-height block optically centred on the
     /// rect's vertical middle. draw(in:) lays text out from the box top, so
     /// naive boxes leave caps-only labels (DE, AUTO, digits) sitting high.
@@ -934,25 +924,33 @@ final class OverlayController: NSObject {
     private var capsuleTarget: NSSize
     private var isClosing = false
     private var isStandby = false
+    private var isArmed = false
     private var previewTimer: Timer?
 
-    init(application: NSApplication, launchMode: String, language: String) {
+    // The grow animation is stepped by hand: the blur is clipped by the
+    // window server through maskImage, which cannot follow an animator or a
+    // layer transform, so every frame sets frame, mask and shadow together.
+    private var growTimer: Timer?
+    private var growTargetSize = NSSize.zero
+    private var growCompletion: (() -> Void)?
+
+    private static let seedDiameter: CGFloat = 12
+    // The pill's own height: circle and pill are one shape, only the
+    // width changes between them.
+    private static let armDiameter: CGFloat = 44
+    private static let controlBandHeight: CGFloat = 44
+
+    init(application: NSApplication, launchMode: String) {
         self.application = application
 
-        // Recording sessions carry only dot, waveform, timer and badge and
-        // sit in the flatter capsule; status modes keep the taller panel
-        // their two text lines need. The configured compact pill drops the
-        // badge as well and shrinks the capsule accordingly.
-        let hideBadge = managedApp || loadCompactSetting()
+        // Recording sessions carry only dot, waveform and timer and sit in
+        // the flatter capsule; status modes keep the taller panel their two
+        // text lines need.
         // A standby pill becomes a recording pill when it is shown.
         let recordingCapsule = launchMode == "recording" || launchMode == "preview" || launchMode == "standby"
         let capsuleSize: NSSize
         if recordingCapsule {
-            capsuleSize = NSSize(width: hideBadge ? 240 : 300, height: 44)
-        } else if launchMode == "language" {
-            // Sized to "Language: Automatic" plus the badge, in the quiet
-            // typography the result pills use.
-            capsuleSize = NSSize(width: 250, height: 44)
+            capsuleSize = NSSize(width: 240, height: 44)
         } else {
             capsuleSize = NSSize(width: 358, height: 56)
         }
@@ -1001,8 +999,6 @@ final class OverlayController: NSObject {
         effectView = visualEffect
 
         hudView = RecorderHUDView(frame: visualEffect.bounds)
-        hudView.hideLanguageBadge = hideBadge
-        hudView.setLanguage(language)
         hudView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hudView)
 
@@ -1025,10 +1021,6 @@ final class OverlayController: NSObject {
             cornerHeight: capsuleRadius(forHeight: capsuleSize.height),
             transform: nil
         )
-
-        hudView.onLanguageToggle = { language in
-            FileHandle.standardOutput.write(Data("language \(language)\n".utf8))
-        }
 
         panel.level = .statusBar
         panel.isOpaque = false
@@ -1055,9 +1047,6 @@ final class OverlayController: NSObject {
 
         if launchMode == "preview" {
             startPreview()
-        } else if launchMode == "language" {
-            hudView.setMode(.language)
-            close(after: 1.5)
         } else if launchMode == "error" {
             // Shown by the watchdog just before it hard-exits, so this mode
             // never reads stdin: the writer is gone a moment later, and EOF
@@ -1108,6 +1097,146 @@ final class OverlayController: NSObject {
 
     private static let morphDuration: TimeInterval = 0.22
 
+    /// A capsule mask drawn at exactly `size`, for the frames of the grow
+    /// animation. Below twice the cap insets a stretchable mask would break.
+    private static func exactMask(size: NSSize) -> NSImage {
+        let radius = capsuleRadius(forHeight: size.height)
+        return NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+    }
+
+    /// Where a capsule of `size` sits in the panel: centred horizontally,
+    /// and a circle smaller than the control band centred on that band, so
+    /// it grows out from the spot the pill's middle will occupy.
+    private func capsuleRect(size: NSSize) -> NSRect {
+        let margin = OverlayController.shadowMargin
+        let width = containerView.bounds.width
+        let lift = max(0, (OverlayController.controlBandHeight - size.height) / 2)
+        return NSRect(
+            x: (width - size.width) / 2,
+            y: margin + lift,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    private func applyCapsule(_ rect: NSRect, settled: Bool) {
+        let radius = capsuleRadius(forHeight: rect.height)
+        effectView.frame = rect
+        // The stretchable mask needs room for both end caps; circles get an
+        // exact one.
+        let stretchable = settled && rect.width >= rect.height + 4
+        effectView.maskImage = stretchable
+            ? OverlayController.capsuleMask(size: rect.size)
+            : OverlayController.exactMask(size: rect.size)
+        effectView.layer?.cornerRadius = radius
+        containerView.interactiveFrame = rect
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        containerView.layer?.removeAnimation(forKey: "shadowPath")
+        containerView.layer?.shadowPath = CGPath(
+            roundedRect: rect,
+            cornerWidth: radius,
+            cornerHeight: radius,
+            transform: nil
+        )
+        CATransaction.commit()
+    }
+
+    /// Grow (or shrink) the capsule from where it is to `size` on a spring:
+    /// a fast start and one small overshoot in width, so the pill reads as
+    /// expanding out of the circle rather than fading in.
+    private func grow(
+        to size: NSSize,
+        duration: CFTimeInterval,
+        fadeInContent: Bool = false,
+        collapse: Bool = false,
+        completion: (() -> Void)? = nil
+    ) {
+        growTimer?.invalidate()
+        let start = effectView.frame.size
+        let startedAt = CACurrentMediaTime()
+        growTargetSize = size
+        growCompletion = completion
+        if fadeInContent {
+            hudView.contentAlpha = 0
+        }
+
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            let t = min(1, (CACurrentMediaTime() - startedAt) / duration)
+            guard t < 1 else {
+                self.finishGrow()
+                return
+            }
+            // Underdamped spring: about 4 % overshoot, settled by t = 1. A
+            // collapse instead accelerates into nothing (ease-in cubic).
+            let spring = collapse ? CGFloat(t * t * t) : CGFloat(1 - exp(-6 * t) * cos(6 * t))
+            let width = start.width + (size.width - start.width) * spring
+            // The height must not overshoot: the chrome sits on a fixed band.
+            let height = start.height + (size.height - start.height) * min(spring, 1)
+            self.applyCapsule(self.capsuleRect(size: NSSize(width: width, height: height)), settled: false)
+            if fadeInContent {
+                let x = max(0, min(1, (t - 0.28) / 0.45))
+                self.hudView.contentAlpha = CGFloat(x * x * (3 - 2 * x))
+            }
+            if collapse {
+                // Content leaves first, so nothing shows squeezed; the
+                // capsule itself goes transparent only at the very end.
+                self.hudView.contentAlpha = CGFloat(max(0, 1 - t / 0.35))
+                self.panel.alphaValue = CGFloat(max(0, min(1, (1 - t) / 0.3)))
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        growTimer = timer
+    }
+
+    /// Jump a running grow to its end, before anything else resizes the pill.
+    private func finishGrow() {
+        guard let timer = growTimer else { return }
+        timer.invalidate()
+        growTimer = nil
+        applyCapsule(capsuleRect(size: growTargetSize), settled: true)
+        if !isClosing {
+            hudView.contentAlpha = 1
+        }
+        let completion = growCompletion
+        growCompletion = nil
+        completion?()
+    }
+
+    /// Resize for the mode just set: the transcribing and outcome circles
+    /// grow (or shrink) into place on the spring, everything else morphs as
+    /// before.
+    private func fitToMode() {
+        guard [.processing, .success, .cancelled].contains(hudView.mode) else {
+            syncPanelSize()
+            return
+        }
+        finishGrow()
+        let circle = NSSize(width: OverlayController.armDiameter, height: OverlayController.armDiameter)
+        capsuleTarget = circle
+        grow(to: circle, duration: 0.42)
+    }
+
+    private var seedSize: NSSize {
+        NSSize(width: OverlayController.seedDiameter, height: OverlayController.seedDiameter)
+    }
+
+    /// Put the hidden standby pill on screen as a small circle.
+    private func revealSeed() {
+        positionPanel(panelSize: panel.frame.size)
+        applyCapsule(capsuleRect(size: seedSize), settled: false)
+        showPanel()
+    }
+
     /// Morph the panel to the capsule size the current state wants, keeping
     /// it horizontally centred and anchored to the bottom edge.
     ///
@@ -1121,6 +1250,7 @@ final class OverlayController: NSObject {
     /// comparison is therefore made against the target, and the shadow
     /// starts from where it is on screen, not where it was headed.
     private func syncPanelSize() {
+        finishGrow()
         guard let wanted = hudView.desiredSize() else { return }
 
         let previous = capsuleTarget
@@ -1130,10 +1260,10 @@ final class OverlayController: NSObject {
         capsuleTarget = wanted
 
         let radius = capsuleRadius(forHeight: wanted.height)
-        if abs(previous.height - wanted.height) > 1 {
-            effectView.maskImage = OverlayController.capsuleMask(size: wanted)
-            effectView.layer?.cornerRadius = radius
-        }
+        // Always a fresh stretchable mask: coming out of a circle, the exact
+        // circle mask would otherwise stretch into an ellipse.
+        effectView.maskImage = OverlayController.capsuleMask(size: wanted)
+        effectView.layer?.cornerRadius = radius
 
         let margin = OverlayController.shadowMargin
         var frame = panel.frame
@@ -1232,15 +1362,38 @@ final class OverlayController: NSObject {
         guard let action = parts.first else { return }
 
         switch action {
+        case "arm":
+            // The hotkey fired; the microphone is still opening. Answer at
+            // once with a circle that becomes the pill when "show" arrives.
+            guard isStandby, !isArmed else { return }
+            isArmed = true
+            hudView.setMode(.arming)
+            hudView.startAnimating()
+            // The active screen may have changed while the pill waited.
+            revealSeed()
+            let arm = OverlayController.armDiameter
+            grow(to: NSSize(width: arm, height: arm), duration: 0.34)
+        case "disarm":
+            // The start failed after all: fold the circle away and wait again.
+            guard isStandby, isArmed else { return }
+            isArmed = false
+            grow(to: seedSize, duration: 0.16) { [weak self] in
+                guard let self else { return }
+                self.panel.orderOut(nil)
+                self.hudView.stopAnimating()
+                self.applyCapsule(self.capsuleRect(size: self.capsuleTarget), settled: true)
+            }
         case "show":
             guard isStandby else { return }
             isStandby = false
-            hudView.setLanguage(parts.count == 2 ? parts[1] : "de")
+            let wasArmed = isArmed
+            isArmed = false
             hudView.setMode(.recording)
             hudView.startAnimating()
-            // The active screen may have changed while the pill waited.
-            positionPanel(panelSize: panel.frame.size)
-            showPanel()
+            if !wasArmed {
+                revealSeed()
+            }
+            grow(to: capsuleTarget, duration: 0.46, fadeInContent: true)
         case "level" where parts.count == 2:
             if let value = Double(parts[1]) {
                 hudView.setLevel(value)
@@ -1248,15 +1401,15 @@ final class OverlayController: NSObject {
         case "state" where parts.count == 2:
             guard let newMode = OverlayMode(rawValue: parts[1]) else { return }
             hudView.setMode(newMode)
-            syncPanelSize()
+            fitToMode()
 
             switch newMode {
             case .success:
-                close(after: 1.35)
+                close(after: 1.0)
             case .empty, .failed:
                 close(after: 1.8)
             case .cancelled:
-                close(after: 1.2)
+                close(after: 0.9)
             case .clipboard:
                 close(after: 1.8)
             default:
@@ -1298,8 +1451,8 @@ final class OverlayController: NSObject {
                 self.syncPanelSize()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
                     self.hudView.setMode(.success)
-                    self.syncPanelSize()
-                    self.close(after: 1.35)
+                    self.fitToMode()
+                    self.close(after: 1.0)
                 }
             }
         }
@@ -1316,14 +1469,14 @@ final class OverlayController: NSObject {
         isClosing = true
         FileHandle.standardInput.readabilityHandler = nil
         previewTimer?.invalidate()
-
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.20
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        // The way it came: the capsule folds back into a point and is gone,
+        // starting from wherever a running grow has got to.
+        growTimer?.invalidate()
+        growTimer = nil
+        grow(to: seedSize, duration: 0.26, collapse: true) { [weak self] in
+            self?.panel.alphaValue = 0
             self?.application.terminate(nil)
-        })
+        }
     }
 }
 
@@ -1332,13 +1485,10 @@ application.setActivationPolicy(.accessory)
 application.finishLaunching()
 
 let arguments = Array(CommandLine.arguments.dropFirst())
+// Callers still pass a language as the second argument (and after "show");
+// the pill no longer shows one, so it is ignored.
 let launchMode = arguments.first ?? "recording"
-let language = arguments.count > 1 ? arguments[1] : "de"
-let controller = OverlayController(
-    application: application,
-    launchMode: launchMode,
-    language: language
-)
+let controller = OverlayController(application: application, launchMode: launchMode)
 withExtendedLifetime(controller) {
     application.run()
 }

@@ -36,7 +36,6 @@ mic-standby = off
 | `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture |
 | `language` | `de` · `en` · `auto` | `de` | Legacy installs only: transcription language |
 | `language.<model-id>` | `auto` · `de` · `en` | `auto` | Dictation language for Whisper, Nemotron or Qwen3-ASR |
-| `compact` | `on` · `off` | `off` | Legacy installs only: hide the language badge |
 | `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
 | `microphone` | `built-in` · `system` · name | `built-in` | Which microphone records |
 | `menubar` | `on` · `off` | `on` | Show the menu bar icon |
@@ -71,14 +70,6 @@ Legacy installs still support:
 - `auto` — Whisper detects the language per recording, deliberately restricted
   to the German/English pair (the full 99-language ranking readily mistakes
   German for Dutch).
-
-In legacy installs, clicking the pill's language badge cycles the mode and
-writes the choice back to this file.
-
-### `compact`
-
-LocalVoice.app does not show a language badge. In legacy installs, `on`
-strips the pill down to the dot, waveform and timer.
 
 ### `microphone`
 

@@ -16,6 +16,27 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 - LocalVoice looks for updates once a day by default instead of asking first;
   the switch under **Settings › General › Updates** turns it off. Copies of
   1.4.0 still ask once before their first check.
+- The recording pill answers the hotkey at once: a small circle appears while
+  the microphone opens and grows into the pill as soon as it records, instead
+  of the pill fading in only after the microphone was ready.
+- Inserted text is confirmed by the pill folding into a circle with a green
+  check, without the "Text inserted" label. Every pill now leaves by folding
+  back into a point instead of fading out. While the text is transcribed,
+  the pill is already that circle, with a neutral arc running round it that
+  spirals into the check once the text lands. A discarded recording (Esc)
+  folds into a red cross the same way; the clipboard pill just says
+  "Copied". Errors and "No speech detected" keep their text.
+- The website's Homebrew command sits in its own box with a copy button.
+- The website's demo is the pill itself, large and on its own: it grows from
+  the circle, records, transcribes in the circle and lands two sentences at a
+  free-standing cursor. The mock editor window and the demo controls are gone;
+  with reduced motion the pill stands still.
+
+### Removed
+
+- The language badge on the recording pill and the `compact` setting that hid
+  it. LocalVoice.app never showed the badge; it was left over from the legacy
+  install. The language is chosen per model in Settings.
 
 ## [1.4.0] — 2026-11-27
 

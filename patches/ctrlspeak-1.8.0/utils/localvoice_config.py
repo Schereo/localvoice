@@ -3,7 +3,7 @@ LocalVoice's user configuration.
 
 Every user-facing preference lives in one key = value file at
 ~/.config/localvoice/config: the activation hotkey, the transcription
-language, the compact pill, and microphone standby. The file is plain text on
+language, the microphone, and microphone standby. The file is plain text on
 purpose — Cmd+, while the recording pill is on screen opens it in the default
 text editor, and the running service applies edits within a couple of seconds.
 
@@ -32,7 +32,6 @@ _LEGACY_FILES = {"hotkey": "hotkey", "language": "language", "mic-standby": "mic
 DEFAULTS = {
     "hotkey": "ctrl,3",
     "language": "de",
-    "compact": "off",
     "mic-standby": "off",
     "microphone": "built-in",
     "menubar": "on",
@@ -65,9 +64,6 @@ _KEY_BLOCKS = {
     "language": """\
 # Legacy installs only: de, en or auto. LocalVoice.app saves language
 # choices per model in the Model Library.
-""",
-    "compact": """\
-# Legacy installs only: "on" hides the recording pill's language badge.
 """,
     "mic-standby": """\
 # Keep the microphone stream open while idle: instant recording starts, at
@@ -245,7 +241,6 @@ def ensure_config_file():
     if parse_hotkey(values["hotkey"]) is None:
         values["hotkey"] = DEFAULTS["hotkey"]
     values["mic-standby"] = "on" if values["mic-standby"] in _TRUTHY else "off"
-    values["compact"] = "on" if values["compact"] in _TRUTHY else "off"
 
     content = _HEADER
     for key, block in _KEY_BLOCKS.items():
