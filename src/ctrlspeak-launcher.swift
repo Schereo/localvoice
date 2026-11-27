@@ -2624,7 +2624,11 @@ func openConfigFile() {
 
 // Layout shared by every Settings row, so tiles, text and controls line up across cards.
 private enum SettingsMetrics {
-    static let width: CGFloat = 660
+    static let sidebarWidth: CGFloat = 210
+    /// The section beside the sidebar; wide enough for the Models table.
+    static let width: CGFloat = 700
+    /// From the toolbar to the first card, in every section and in the sidebar.
+    static let top: CGFloat = 12
     static let margin: CGFloat = 24
     static let cardWidth = width - margin * 2
     static let inset: CGFloat = 14
@@ -2638,7 +2642,8 @@ private enum SettingsMetrics {
 private final class SettingsTile: NSView {
     private let tint: NSColor
 
-    init(symbol: String, fallback: String, tint: NSColor) {
+    init(symbol: String, fallback: String, tint: NSColor, size: CGFloat = SettingsMetrics.tile,
+         pointSize: CGFloat = 13) {
         self.tint = tint
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -2646,15 +2651,15 @@ private final class SettingsTile: NSView {
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil) ?? NSImage()
         let glyph = NSImageView(image: image)
-        glyph.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        glyph.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
         glyph.contentTintColor = .white
         glyph.imageScaling = .scaleNone
         glyph.translatesAutoresizingMaskIntoConstraints = false
         glyph.setAccessibilityElement(false)
         addSubview(glyph)
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: SettingsMetrics.tile),
-            heightAnchor.constraint(equalToConstant: SettingsMetrics.tile),
+            widthAnchor.constraint(equalToConstant: size),
+            heightAnchor.constraint(equalToConstant: size),
             glyph.centerXAnchor.constraint(equalTo: centerXAnchor),
             glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -2665,7 +2670,8 @@ private final class SettingsTile: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let base = tint.usingColorSpace(.sRGB) ?? tint
         let top = base.blended(withFraction: 0.24, of: .white) ?? base
-        let path = NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7)
+        let radius = bounds.width / 4
+        let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
         NSGradient(starting: top, ending: base)?.draw(in: path, angle: -90)
     }
 }
@@ -2738,14 +2744,16 @@ private final class SettingsKeycaps: NSView {
 @MainActor
 private final class SettingsRow: NSView {
     let detail = NSTextField(wrappingLabelWithString: "")
+    private let tile: SettingsTile
+    private let titleLabel: NSTextField
 
     /// `reserve` is the widest the control can get, when that is more than it needs now.
     init(symbol: String, fallback: String = "circle.fill", tint: NSColor, title: String, detail text: String,
          accessory: NSView? = nil, reserve: CGFloat = 0, below: NSView? = nil, separator: Bool = true) {
+        tile = SettingsTile(symbol: symbol, fallback: fallback, tint: tint)
+        titleLabel = modelLibraryLabel(title, size: 13, weight: .medium)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        let tile = SettingsTile(symbol: symbol, fallback: fallback, tint: tint)
-        let titleLabel = modelLibraryLabel(title, size: 13, weight: .medium)
         detail.stringValue = text
         detail.font = .systemFont(ofSize: 11.5)
         detail.textColor = .secondaryLabelColor
@@ -2825,18 +2833,296 @@ private final class SettingsRow: NSView {
         detail.attributedStringValue = line
         detail.setAccessibilityValue(text)
     }
+
+    /// Greys the row out for a setting that does not apply right now. Its control is
+    /// disabled separately, and keeps its value for when the setting applies again.
+    func setDimmed(_ dimmed: Bool) {
+        tile.alphaValue = dimmed ? 0.4 : 1
+        titleLabel.textColor = dimmed ? .tertiaryLabelColor : .labelColor
+    }
 }
 
 private final class SettingsDocument: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// The sections of the Settings window, in sidebar order.
+private enum SettingsPage: Int, CaseIterable {
+    case general, dictation, recording, models
+
+    var title: String {
+        switch self {
+        case .dictation: "Dictation"
+        case .recording: "Recording"
+        case .models: "Models"
+        case .general: "General"
+        }
+    }
+
+    @MainActor
+    var tile: (symbol: String, fallback: String, tint: NSColor) {
+        switch self {
+        case .dictation: ("waveform", "waveform", .systemBlue)
+        case .recording: ("record.circle.fill", "record.circle", .systemRed)
+        case .models: ("square.stack.3d.up.fill", "square.stack.3d.up", .systemPurple)
+        case .general: ("gearshape.fill", "gearshape", .systemGray)
+        }
+    }
+}
+
+/// The Settings sidebar: the app and what dictation is doing, then the sections.
+@MainActor
+private final class SettingsSidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    var onSelect: ((SettingsPage) -> Void)?
+    private let table = NSTableView()
+    private let statusDot = ModelLibraryLayerView()
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private var selecting = false
+
+    override func loadView() {
+        let icon = NSImageView(image: Bundle.main.url(forResource: "LocalVoice", withExtension: "icns")
+            .flatMap { NSImage(contentsOf: $0) } ?? NSApp.applicationIconImage ?? NSImage())
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.setAccessibilityElement(false)
+        let name = modelLibraryLabel(bundleDisplayName(), size: 13, weight: .semibold)
+        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.maximumNumberOfLines = 2
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusDot.radius = 3.5
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        statusDot.setAccessibilityElement(false)
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        for view in [icon, name, statusDot, statusLabel] { header.addSubview(view) }
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            icon.topAnchor.constraint(equalTo: header.topAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 34),
+            icon.heightAnchor.constraint(equalToConstant: 34),
+            header.bottomAnchor.constraint(greaterThanOrEqualTo: icon.bottomAnchor),
+            name.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor),
+            name.bottomAnchor.constraint(equalTo: icon.centerYAnchor, constant: 1),
+            statusDot.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            statusDot.widthAnchor.constraint(equalToConstant: 7),
+            statusDot.heightAnchor.constraint(equalToConstant: 7),
+            statusDot.centerYAnchor.constraint(equalTo: statusLabel.firstBaselineAnchor, constant: -3.5),
+            statusLabel.leadingAnchor.constraint(equalTo: statusDot.trailingAnchor, constant: 5),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor),
+            statusLabel.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 1),
+            header.bottomAnchor.constraint(greaterThanOrEqualTo: statusLabel.bottomAnchor),
+        ])
+        // Only as tall as its content; the sections get the rest.
+        let hug = header.heightAnchor.constraint(equalToConstant: 0)
+        hug.priority = .defaultLow
+        hug.isActive = true
+        statusLabel.preferredMaxLayoutWidth = SettingsMetrics.sidebarWidth - 18 - 12 - 34 - 8 - 12
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("section"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.style = .sourceList
+        table.rowSizeStyle = .custom
+        // A little larger than System Settings: four sections should not look lost in the column.
+        table.rowHeight = 38
+        table.backgroundColor = .clear
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.allowsEmptySelection = false
+        table.dataSource = self
+        table.delegate = self
+        table.setAccessibilityLabel("Settings Sections")
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let config = NSButton(title: "Open Config File…", target: self, action: #selector(openConfig))
+        config.isBordered = false
+        config.attributedTitle = NSAttributedString(string: "Open Config File…", attributes: [
+            .font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: NSColor.linkColor,
+        ])
+        config.toolTip = "Every setting is a line in \((localVoiceConfigPath() as NSString).abbreviatingWithTildeInPath)."
+        config.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSView()
+        root.addSubview(header)
+        root.addSubview(scroll)
+        root.addSubview(config)
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: SettingsMetrics.top),
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+            header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: config.topAnchor, constant: -8),
+            config.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
+            config.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -12),
+            config.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+        ])
+        view = root
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { SettingsPage.allCases.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let page = SettingsPage.allCases[row]
+        let cell = NSTableCellView()
+        let tile = SettingsTile(symbol: page.tile.symbol, fallback: page.tile.fallback, tint: page.tile.tint,
+                                size: 26, pointSize: 13)
+        let label = NSTextField(labelWithString: page.title)
+        label.font = .systemFont(ofSize: 14)
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(tile)
+        cell.addSubview(label)
+        // As the cell's text field, the label turns white on the selection.
+        cell.textField = label
+        NSLayoutConstraint.activate([
+            tile.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            tile.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: tile.trailingAnchor, constant: 10),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !selecting, SettingsPage.allCases.indices.contains(table.selectedRow) else { return }
+        onSelect?(SettingsPage.allCases[table.selectedRow])
+    }
+
+    /// Shows `page` as selected without reporting it back.
+    func select(_ page: SettingsPage) {
+        _ = view
+        selecting = true
+        table.selectRowIndexes(IndexSet(integer: page.rawValue), byExtendingSelection: false)
+        selecting = false
+    }
+
+    func focus() { view.window?.makeFirstResponder(table) }
+
+    @objc private func openConfig() { openConfigFile() }
+
+    func show(status: SettingsStatus) {
+        _ = view
+        // "Whisper Large V3 Turbo · Ready" wraps before the model's last word, not before the dot.
+        statusLabel.stringValue = status.text.replacingOccurrences(of: " · ", with: "\u{00A0}·\u{00A0}")
+        statusLabel.setAccessibilityValue(status.text)
+        switch status.level {
+        case .ready: statusDot.fill = .systemGreen
+        case .busy: statusDot.fill = .systemOrange
+        case .attention: statusDot.fill = .systemOrange
+        case .off: statusDot.fill = .tertiaryLabelColor
+        }
+    }
+}
+
+/// The Settings window's content: the sections in a sidebar, the chosen one beside it.
+@MainActor
+private final class SettingsSplitViewController: NSSplitViewController, NSToolbarDelegate {
+    let settings: SettingsViewController
+    private let sidebar = SettingsSidebarViewController()
+
+    init(settings: SettingsViewController) {
+        self.settings = settings
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        sidebar.onSelect = { [weak self] page in self?.settings.show(page) }
+        settings.onPageChange = { [weak self] page in
+            guard let self else { return }
+            sidebar.select(page)
+            view.window?.title = page.title
+            // "Choose Model…" was focused and is now out of sight; carry on from the sidebar.
+            if (view.window?.firstResponder as? NSView)?.isHiddenOrHasHiddenAncestor == true { sidebar.focus() }
+        }
+        settings.onStatus = { [weak self] status in self?.sidebar.show(status: status) }
+        settings.onContentChange = { [weak self] in self?.fitWindow() }
+        let side = NSSplitViewItem(sidebarWithViewController: sidebar)
+        side.canCollapse = false
+        side.minimumThickness = SettingsMetrics.sidebarWidth
+        side.maximumThickness = SettingsMetrics.sidebarWidth
+        let detail = NSSplitViewItem(viewController: settings)
+        detail.minimumThickness = SettingsMetrics.width
+        addSplitViewItem(side)
+        addSplitViewItem(detail)
+        sidebar.select(settings.page)
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // Arrow keys move between sections; Tab goes on into the section.
+        sidebar.focus()
+    }
+
+    /// A unified toolbar whose title names the section, at a size that fits the tallest one.
+    func configure(_ window: NSWindow) {
+        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        let toolbar = NSToolbar(identifier: "LocalVoiceSettings")
+        toolbar.delegate = self
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.title = settings.page.title
+        fitWindow()
+    }
+
+    func show(_ page: SettingsPage) { settings.show(page) }
+
+    /// Fits the window to the tallest section, so switching sections never resizes it,
+    /// or to the screen if that is less. Keeps the top edge where it is.
+    func fitWindow() {
+        guard isViewLoaded, let window = view.window else { return }
+        let chrome = window.frame.height - window.contentLayoutRect.height
+        let screen = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let height = min((settings.fittedHeight + chrome).rounded(), max(360, screen - 40))
+        let width = SettingsMetrics.sidebarWidth + splitView.dividerThickness + SettingsMetrics.width
+        guard abs(window.frame.height - height) > 0.5 || abs(window.frame.width - width) > 0.5 else { return }
+        var frame = window.frame
+        frame.origin.y += frame.height - height
+        frame.size = NSSize(width: width, height: height)
+        window.setFrame(frame, display: true)
+    }
+
+    // The tracking separator puts the title over the section rather than over the sidebar.
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.sidebarTrackingSeparator]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.sidebarTrackingSeparator]
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? { nil }
+}
+
 @MainActor
 private final class SettingsViewController: NSViewController, NSTokenFieldDelegate {
-    /// The header's state line; the app supplies the running model.
+    /// The sidebar's state line; the app supplies the running model.
     var status: (() -> SettingsStatus)?
-    /// Opens the Model Library. Without it the Models row is left out.
-    var showModels: (() -> Void)?
+    /// The Models section. Set before the view loads.
+    var models: ModelLibraryViewController?
+    /// Every model the library lists, to name them in explanations.
+    var modelEntries: (() -> [ModelLibraryEntry])?
+    /// The model dictation uses or is loading; nil when there is none.
+    var selectedModel: (() -> String?)?
+    var onStatus: ((SettingsStatus) -> Void)?
+    var onPageChange: ((SettingsPage) -> Void)?
+    /// Something changed height; the window may need to grow.
+    var onContentChange: (() -> Void)?
+    private(set) var page: SettingsPage = .dictation
 
     private let modifier = NSPopUpButton()
     private let taps = NSPopUpButton()
@@ -2852,19 +3138,22 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private let login = NSSwitch()
     private var pauseRow: SettingsRow?
     private var loginRow: SettingsRow?
+    private var vocabularyRow: SettingsRow?
+    private let vocabularyAction = NSButton(title: "Choose Model…", target: nil, action: nil)
+    private var vocabularySupported = true
     private let pauseAction = NSButton(title: "", target: nil, action: nil)
     private var pauseActionOpensSettings = false
     private var askingPlayers: [String] = []
     private var pauseNoteRevision = 0
-    private let statusDot = ModelLibraryLayerView()
-    private let statusLabel = modelLibraryLabel(size: 12, color: .secondaryLabelColor)
+    // Only a failed save says anything; saving as you go needs no explanation. It sits
+    // under the card of whichever section is showing.
     private let message = modelLibraryLabel(size: 11.5, color: .systemRed)
-    private let saved = modelLibraryLabel("Changes are saved as you make them.", size: 11.5,
-                                          color: .tertiaryLabelColor)
-    private let content = NSStackView()
+    private var pageViews: [SettingsPage: NSView] = [:]
+    private var pageStacks: [SettingsPage: NSStackView] = [:]
     private var liveTimer: Timer?
 
     private static let vocabularyWidth = SettingsMetrics.cardWidth - SettingsMetrics.textLeading - SettingsMetrics.inset
+    private static let vocabularyHelp = "Names and jargon to spell correctly, separated by commas."
 
     override func loadView() {
         configure(modifier, label: "Hotkey Modifier", action: #selector(changeHotkey))
@@ -2902,7 +3191,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         vocabulary.cell?.wraps = true
         vocabulary.cell?.isScrollable = false
         vocabulary.setAccessibilityLabel("Vocabulary")
-        vocabulary.setAccessibilityHelp("Names and jargon for Whisper to spell correctly, separated by commas.")
+        vocabulary.setAccessibilityHelp(Self.vocabularyHelp)
         vocabularyHeight = vocabulary.heightAnchor.constraint(equalToConstant: 24)
         vocabularyHeight?.isActive = true
 
@@ -2918,18 +3207,21 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         pauseControls.spacing = 10
         pauseControls.detachesHiddenViews = true
 
-        let models = NSButton(title: "Manage Models…", target: self, action: #selector(openModels))
-        models.bezelStyle = .push
-        models.controlSize = .small
-        models.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        // Only some models read the vocabulary; with another one, this leads to the Models section.
+        vocabularyAction.bezelStyle = .push
+        vocabularyAction.controlSize = .small
+        vocabularyAction.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        vocabularyAction.target = self
+        vocabularyAction.action = #selector(chooseModel)
+        vocabularyAction.isHidden = true
 
         let microphoneRow = SettingsRow(
             symbol: "mic.fill", tint: .systemRed, title: "Microphone",
             detail: "Built-in keeps AirPods in high-quality playback.", accessory: microphone)
         let vocabularyRow = SettingsRow(
             symbol: "character.book.closed.fill", fallback: "text.book.closed.fill", tint: .systemIndigo,
-            title: "Vocabulary", detail: "Names and jargon for Whisper to spell correctly, separated by commas.",
-            below: vocabulary)
+            title: "Vocabulary", detail: Self.vocabularyHelp, accessory: vocabularyAction, below: vocabulary)
+        self.vocabularyRow = vocabularyRow
         let pause = SettingsRow(
             symbol: "playpause.fill", tint: .systemPink, title: "Pause Media", detail: "",
             accessory: pauseControls, reserve: 150)
@@ -2945,7 +3237,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             microphoneRow,
             vocabularyRow,
         ])
-        let recording = card("While Recording", [
+        let recording = card("Recording", [
             SettingsRow(symbol: "captions.bubble.fill", fallback: "text.bubble.fill", tint: .systemBlue,
                         title: "Live Preview", detail: "Shows your words in the pill as you speak.",
                         accessory: preview, separator: false),
@@ -2954,82 +3246,115 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
                         accessory: standby),
             pause,
         ])
-        var appRows = [
+        let general = card("General", [
             SettingsRow(symbol: "menubar.rectangle", tint: .systemTeal, title: "Show in Menu Bar",
-                        detail: "When hidden, open LocalVoice again and press ⌘, to come back here.",
+                        detail: "When hidden, open LocalVoice again to come back here.",
                         accessory: menuBar, separator: false),
             loginItem,
-        ]
-        if showModels != nil {
-            appRows.append(SettingsRow(
-                symbol: "square.stack.3d.up.fill", tint: .systemPurple, title: "Models",
-                detail: "Download and switch models, and set each one's language.", accessory: models))
-        }
-        let application = card("General", appRows)
-
-        let config = NSButton(title: "Open Config File…", target: self, action: #selector(openConfig))
-        config.isBordered = false
-        config.attributedTitle = NSAttributedString(string: "Open Config File…", attributes: [
-            .font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: NSColor.linkColor,
         ])
-        config.toolTip = "Every setting is a line in \((localVoiceConfigPath() as NSString).abbreviatingWithTildeInPath)."
-        config.translatesAutoresizingMaskIntoConstraints = false
+
         message.isHidden = true
         message.setAccessibilityRole(.staticText)
-        let notes = NSStackView(views: [saved, message])
-        notes.detachesHiddenViews = true
-        notes.translatesAutoresizingMaskIntoConstraints = false
-        let footer = NSView()
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        footer.addSubview(notes)
-        footer.addSubview(config)
-        NSLayoutConstraint.activate([
-            footer.widthAnchor.constraint(equalToConstant: SettingsMetrics.cardWidth),
-            notes.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 4),
-            notes.topAnchor.constraint(equalTo: footer.topAnchor),
-            notes.bottomAnchor.constraint(equalTo: footer.bottomAnchor),
-            config.trailingAnchor.constraint(equalTo: footer.trailingAnchor, constant: -4),
-            config.firstBaselineAnchor.constraint(equalTo: saved.firstBaselineAnchor),
-        ])
 
-        let header = makeHeader()
-        content.setViews([header] + dictation + recording + application + [footer], in: .top)
-        content.orientation = .vertical
-        content.alignment = .leading
-        content.spacing = 6
-        content.detachesHiddenViews = true
-        content.setCustomSpacing(18, after: header)
-        for group in [dictation, recording] { content.setCustomSpacing(18, after: group[1]) }
-        content.setCustomSpacing(12, after: application[1])
-        content.translatesAutoresizingMaskIntoConstraints = false
+        pageViews[.dictation] = makePage(.dictation, dictation)
+        pageViews[.recording] = makePage(.recording, recording)
+        pageViews[.general] = makePage(.general, general)
+        if let models {
+            addChild(models)
+            pageViews[.models] = models.view
+            var modelCount = 0
+            models.onRefresh = { [weak self] in
+                guard let self else { return }
+                updateVocabularyAvailability()
+                // The catalog arrives after the window opens; the Models section may need more room.
+                let count = modelEntries?().count ?? 0
+                if count != modelCount {
+                    modelCount = count
+                    onContentChange?()
+                }
+            }
+        }
+        // Below the toolbar, so nothing scrolls under it.
+        let root = NSView()
+        for pageView in pageViews.values {
+            pageView.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(pageView)
+            NSLayoutConstraint.activate([
+                pageView.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+                pageView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                pageView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                pageView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ])
+        }
+        view = root
+        show(page)
+        refresh()
+    }
 
-        // Everything fits a 13-inch screen; on a smaller one the window scrolls.
+    /// A scrolling section: its card, then the error line while it is showing.
+    private func makePage(_ page: SettingsPage, _ card: NSView) -> NSView {
+        let stack = NSStackView(views: [card])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.detachesHiddenViews = true
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        pageStacks[page] = stack
         let document = SettingsDocument()
         document.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(content)
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: SettingsMetrics.width, height: 640))
+        document.addSubview(stack)
+        let scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
+        scroll.automaticallyAdjustsContentInsets = false
         scroll.documentView = document
         NSLayoutConstraint.activate([
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             document.widthAnchor.constraint(equalToConstant: SettingsMetrics.width),
-            content.topAnchor.constraint(equalTo: document.topAnchor, constant: 18),
-            content.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: SettingsMetrics.margin),
-            content.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: SettingsMetrics.top),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: SettingsMetrics.margin),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -Self.pageInset),
         ])
-        view = scroll
-        refresh()
+        return scroll
+    }
+
+    private static let pageInset: CGFloat = 20
+
+    func show(_ page: SettingsPage) {
+        self.page = page
+        guard isViewLoaded else { return }
+        for (key, pageView) in pageViews { pageView.isHidden = key != page }
+        if let stack = pageStacks[page], message.superview !== stack {
+            (message.superview as? NSStackView)?.removeArrangedSubview(message)
+            message.removeFromSuperview()
+            stack.addArrangedSubview(message)
+        }
+        onPageChange?(page)
+    }
+
+    /// The height that shows the tallest section whole.
+    var fittedHeight: CGFloat {
+        guard isViewLoaded else { return 480 }
+        view.layoutSubtreeIfNeeded()
+        var height: CGFloat = 0
+        for stack in pageStacks.values {
+            height = max(height, stack.fittingSize.height + SettingsMetrics.top + Self.pageInset)
+        }
+        if models != nil {
+            // Six until the catalog has loaded: every model the store lists, available or not.
+            let count = modelEntries?().count ?? 0
+            height = max(height, ModelLibraryViewController.preferredSize(
+                modelCount: count == 0 ? 6 : count, top: SettingsMetrics.top).height)
+        }
+        return height
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        // Open with nothing focused, not with the cursor in the vocabulary field.
-        view.window?.makeFirstResponder(nil)
-        // The model and the login item change outside this window; keep those two lines true.
+        // The model and the login item change outside this window; keep those lines true.
         liveTimer?.invalidate()
         liveTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshLive() }
@@ -3043,41 +3368,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         saveVocabulary()
     }
 
-    private func makeHeader() -> NSView {
-        let icon = NSImageView(image: Bundle.main.url(forResource: "LocalVoice", withExtension: "icns")
-            .flatMap { NSImage(contentsOf: $0) } ?? NSApp.applicationIconImage ?? NSImage())
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.setAccessibilityElement(false)
-        let name = modelLibraryLabel(bundleDisplayName(), size: 17, weight: .semibold)
-        statusDot.radius = 4
-        statusDot.translatesAutoresizingMaskIntoConstraints = false
-        statusDot.setAccessibilityElement(false)
-        let state = NSStackView(views: [statusDot, statusLabel])
-        state.spacing = 6
-        state.alignment = .centerY
-        let text = NSStackView(views: [name, state])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 3
-        let header = NSStackView(views: [icon, text])
-        header.spacing = 12
-        header.alignment = .centerY
-        header.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 0)
-        NSLayoutConstraint.activate([
-            icon.widthAnchor.constraint(equalToConstant: 48),
-            icon.heightAnchor.constraint(equalToConstant: 48),
-            statusDot.widthAnchor.constraint(equalToConstant: 8),
-            statusDot.heightAnchor.constraint(equalToConstant: 8),
-        ])
-        return header
-    }
-
-    /// A section: its title and the inset card holding its rows.
-    private func card(_ title: String, _ rows: [NSView]) -> [NSView] {
-        let heading = modelLibraryLabel(title, size: 12, weight: .semibold, color: .secondaryLabelColor)
-        let titleRow = NSStackView(views: [heading])
-        titleRow.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 0)
+    /// The inset card holding a section's rows. The toolbar names the section.
+    private func card(_ title: String, _ rows: [NSView]) -> NSView {
         let card = ModelLibraryLayerView()
         card.fill = .modelLibraryCard
         card.stroke = .separatorColor
@@ -3100,7 +3392,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
         ])
-        return [titleRow, card]
+        return card
     }
 
     private static func isOn(_ key: String, default fallback: Bool = false) -> Bool {
@@ -3147,14 +3439,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
 
     private func refreshLive() {
         guard isViewLoaded else { return }
-        let state = status?() ?? SettingsStatus(text: "Dictation is off", level: .off)
-        statusLabel.stringValue = state.text
-        switch state.level {
-        case .ready: statusDot.fill = .systemGreen
-        case .busy: statusDot.fill = .systemOrange
-        case .attention: statusDot.fill = .systemOrange
-        case .off: statusDot.fill = .tertiaryLabelColor
-        }
+        onStatus?(status?() ?? SettingsStatus(text: "Dictation is off", level: .off))
+        updateVocabularyAvailability()
         let service = SMAppService.mainApp.status
         login.state = service == .enabled ? .on : .off
         if service == .requiresApproval {
@@ -3171,27 +3457,6 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
                      count: Int(taps.selectedItem?.representedObject as? String ?? "") ?? 3)
     }
 
-    private var maximumHeight: CGFloat {
-        let screen = view.window?.screen ?? NSScreen.main
-        return max(320, (screen?.visibleFrame.height ?? 800) - 60)
-    }
-
-    /// Content size that fits everything at the window's fixed width, or the screen if that is less.
-    var fittedContentSize: NSSize {
-        view.layoutSubtreeIfNeeded()
-        return NSSize(width: SettingsMetrics.width,
-                      height: min((content.fittingSize.height + 36).rounded(), maximumHeight))
-    }
-
-    private func fitWindow() {
-        guard isViewLoaded, let window = view.window else { return }
-        let size = fittedContentSize
-        guard abs(size.height - view.frame.height) > 0.5 else { return }
-        let top = window.frame.maxY
-        window.setContentSize(size)
-        window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: top))
-    }
-
     // MARK: Vocabulary
 
     private func fitVocabulary() {
@@ -3200,8 +3465,48 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         let fitted = min(max(height.rounded(.up), 24), 112)
         guard fitted != vocabularyHeight?.constant else { return }
         vocabularyHeight?.constant = fitted
-        fitWindow()
+        onContentChange?()
     }
+
+    /// Greys the vocabulary out while the model in use ignores it, and says which ones read it.
+    /// The words stay saved for when such a model is in use again.
+    private func updateVocabularyAvailability() {
+        guard isViewLoaded else { return }
+        let entries = modelEntries?() ?? []
+        let model = selectedModel?()
+        let supported = model.map(DictationVocabulary.isSupported(by:)) ?? true
+        if !supported, vocabulary.currentEditor() != nil {
+            saveVocabulary()
+            view.window?.makeFirstResponder(nil)
+        }
+        let text = supported ? Self.vocabularyHelp : Self.vocabularyUnsupported(model: model ?? "", entries: entries)
+        guard supported != vocabularySupported || vocabularyRow?.detail.stringValue != text else { return }
+        vocabularySupported = supported
+        vocabulary.isEnabled = supported
+        vocabularyRow?.setDimmed(!supported)
+        vocabularyAction.isHidden = supported
+        if supported {
+            vocabularyRow?.setDetail(text)
+        } else {
+            vocabularyRow?.setDetail(text, symbol: "info.circle.fill", tint: .systemOrange)
+        }
+        vocabulary.setAccessibilityHelp(text)
+        vocabularyAction.setAccessibilityHelp(text)
+        onContentChange?()
+    }
+
+    /// "Parakeet V3 doesn't support custom vocabulary." and one model to choose instead:
+    /// a downloaded one if there is one, otherwise one that can be downloaded.
+    static func vocabularyUnsupported(model: String, entries: [ModelLibraryEntry]) -> String {
+        let name = entries.first { $0.id == model }?.name ?? "The selected model"
+        let candidates = entries.filter { DictationVocabulary.isSupported(by: $0.id) }
+        let installed = candidates.first { if case .installed = $0.state { true } else { false } }
+        let offered = candidates.first { if case .unavailable = $0.state { false } else { true } }
+        let example = (installed ?? offered)?.name ?? "Whisper Large V3 Turbo"
+        return "\(name) doesn't support custom vocabulary. Select a model that does, for example \(example)."
+    }
+
+    @objc private func chooseModel() { show(.models) }
 
     private func saveVocabulary() {
         vocabularySave?.cancel()
@@ -3241,7 +3546,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         pauseAction.isHidden = action == nil
         pauseAction.title = action ?? ""
         pauseActionOpensSettings = opensSettings
-        fitWindow()
+        onContentChange?()
     }
 
     // Reads the Automation state of the running players without asking, then explains it.
@@ -3362,8 +3667,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         if !written { refresh() }
         message.stringValue = written ? "" : "Could not save the setting."
         message.isHidden = written
-        saved.isHidden = !written
-        fitWindow()
+        onContentChange?()
     }
 
     @objc private func changeHotkey() {
@@ -3390,8 +3694,6 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         refreshLive()
     }
 
-    @objc private func openModels() { showModels?() }
-    @objc private func openConfig() { openConfigFile() }
 }
 
 /// The status item: microphone picker, language, pill options, and service
@@ -3711,7 +4013,6 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private let instanceLock: Int32
     private let menuBar = MenuBarController()
     private var library: StoreModelLibraryBackend?
-    private var modelWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var menuTimer: Timer?
     private var child: Process?
@@ -3855,7 +4156,8 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         if permissionChecklist?.isPresented == true || !permissionsGranted {
             setupPermissions()
         } else {
-            showModels()
+            // The section last shown, or Models while no model is chosen.
+            showSettings(savedModel == nil ? .models : nil)
         }
         return true
     }
@@ -3866,59 +4168,52 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func showModels() {
-        guard let library else { return }
-        library.refresh()
-        if modelWindow == nil {
-            let controller = ModelLibraryViewController(
-                backend: library,
-                notice: "Models run locally. Language changes apply to the next dictation.",
-                readLanguage: { id in
-                    DictationLanguage(rawValue: readConfigValue("language.\(id)")?.lowercased() ?? "") ?? .auto
-                },
-                saveLanguage: { id, language in
-                    DictationLanguage.canSelect(for: id) && writeConfigValue("language.\(id)", language.rawValue)
-                },
-                readyDetail: { [weak self] in
-                    // The ready screen says all this when it is up.
-                    if self?.presentingReady == true { return nil }
-                    let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
-                    return "Tap \(hotkeyDescription()) in any app to start, and again to insert the text. Esc discards."
-                        + (menuBar ? " Settings are under the LocalVoice icon in the menu bar." : "")
-                }
-            )
-            let window = NSWindow(contentViewController: controller)
-            window.title = "LocalVoice"
-            // The store lists every catalog model (six), available or not; the
-            // controller refits the window once it has the actual list.
-            window.setContentSize(ModelLibraryViewController.preferredSize(
-                modelCount: library.models.isEmpty ? 6 : library.models.count))
-            window.isReleasedWhenClosed = false
-            window.center()
-            modelWindow = window
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        modelWindow?.makeKeyAndOrderFront(nil)
-    }
+    private func showModels() { showSettings(.models) }
 
-    private func showSettings() {
+    /// Opens Settings at `page`, or at the section it showed last.
+    private func showSettings(_ page: SettingsPage? = nil) {
+        library?.refresh()
         if settingsWindow == nil {
             let controller = SettingsViewController()
             controller.status = { [weak self] in
                 self?.settingsStatus ?? SettingsStatus(text: "Dictation is off", level: .off)
             }
-            controller.showModels = { [weak self] in self?.showModels() }
-            let window = NSWindow(contentViewController: controller)
-            window.title = "LocalVoice Settings"
-            window.styleMask = [.titled, .closable]
-            window.setContentSize(controller.fittedContentSize)
+            if let library {
+                controller.models = ModelLibraryViewController(
+                    backend: library,
+                    notice: "Models run locally. Language changes apply to the next dictation.",
+                    readLanguage: { id in
+                        DictationLanguage(rawValue: readConfigValue("language.\(id)")?.lowercased() ?? "") ?? .auto
+                    },
+                    saveLanguage: { id, language in
+                        DictationLanguage.canSelect(for: id) && writeConfigValue("language.\(id)", language.rawValue)
+                    },
+                    readyDetail: { [weak self] in
+                        // The ready screen says all this when it is up.
+                        if self?.presentingReady == true { return nil }
+                        let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
+                        return "Tap \(hotkeyDescription()) in any app to start, and again to insert the text. Esc discards."
+                            + (menuBar ? " Settings stay under the LocalVoice icon in the menu bar." : "")
+                    },
+                    embedded: true, top: SettingsMetrics.top
+                )
+                controller.modelEntries = { [weak library] in library?.models ?? [] }
+            }
+            // What the next dictation will run: the model starting or running, else the saved choice.
+            controller.selectedModel = { [weak self] in self?.childModel ?? self?.savedModel }
+            let split = SettingsSplitViewController(settings: controller)
+            let window = NSWindow(contentViewController: split)
             window.isReleasedWhenClosed = false
+            split.configure(window)
             window.center()
-            // The Pause Media button comes and goes; keep Tab order in step with it.
+            // Buttons come and go; keep Tab order in step with them.
             window.autorecalculatesKeyViewLoop = true
             settingsWindow = window
         }
-        (settingsWindow?.contentViewController as? SettingsViewController)?.refresh()
+        let split = settingsWindow?.contentViewController as? SettingsSplitViewController
+        if let page { split?.show(page) }
+        split?.settings.refresh()
+        split?.fitWindow()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
@@ -4369,7 +4664,9 @@ private enum PermissionPreview {
 //   SETTINGS_PREVIEW_SNAPSHOT = <path without .png>   (omit to keep the window open)
 //   SETTINGS_PREVIEW_APPEARANCE = light | dark
 //   SETTINGS_PREVIEW_SCENARIO = off | pending | denied | allowed   (the Pause Media line)
-//   SETTINGS_PREVIEW_STATUS = ready | loading | permissions | off  (the header line)
+//   SETTINGS_PREVIEW_STATUS = ready | loading | permissions | off  (the sidebar's state line)
+//   SETTINGS_PREVIEW_PAGE = general | dictation | recording | models
+//   SETTINGS_PREVIEW_MODEL = <model id in use>   (e.g. parakeet-v3; the demo library's models)
 //   SETTINGS_PREVIEW_ICON = <image for the header>    (the preview has no app bundle)
 //   LOCALVOICE_CONFIG_DIR = <directory holding `config`>
 // Without LOCALVOICE_CONFIG_DIR the preview makes an empty temporary one, so it never
@@ -4407,24 +4704,36 @@ private enum SettingsPreview {
         if let icon = environment["SETTINGS_PREVIEW_ICON"].flatMap({ NSImage(contentsOfFile: $0) }) {
             app.applicationIconImage = icon
         }
+        let backend = DemoModelLibraryBackend(active: environment["SETTINGS_PREVIEW_MODEL"])
+        let active = backend.models.first { if case .active = $0.state { true } else { false } }
         let status: SettingsStatus
         switch environment["SETTINGS_PREVIEW_STATUS"] ?? "ready" {
-        case "loading": status = SettingsStatus(text: "Loading Whisper Large V3 Turbo…", level: .busy)
+        case "loading": status = SettingsStatus(text: "Loading \(active?.name ?? "Whisper")…", level: .busy)
         case "permissions": status = SettingsStatus(text: "Waiting for permissions", level: .attention)
         case "off": status = SettingsStatus(text: "Dictation is off", level: .off)
-        default: status = SettingsStatus(text: "Whisper Large V3 Turbo · Ready", level: .ready)
+        default: status = SettingsStatus(text: "\(active?.name ?? "Whisper") · Ready", level: .ready)
         }
         let controller = SettingsViewController()
         controller.status = { status }
-        controller.showModels = {}
-        let window = SettingsPreviewWindow(contentViewController: controller)
-        window.title = "LocalVoice Settings"
-        window.styleMask = [.titled, .closable]
+        controller.models = ModelLibraryViewController(
+            backend: backend, notice: "Models run locally. Demo only: actions are simulated.",
+            readLanguage: { _ in .auto }, saveLanguage: { _, _ in true }, embedded: true,
+            top: SettingsMetrics.top)
+        controller.modelEntries = { backend.models }
+        controller.selectedModel = {
+            backend.models.first { if case .active = $0.state { true } else { false } }?.id
+        }
+        let split = SettingsSplitViewController(settings: controller)
+        let window = SettingsPreviewWindow(contentViewController: split)
         window.claimsKey = environment["SETTINGS_PREVIEW_SNAPSHOT"] != nil
+        split.configure(window)
+        if let name = environment["SETTINGS_PREVIEW_PAGE"],
+           let page = SettingsPage.allCases.first(where: { $0.title.lowercased() == name.lowercased() }) {
+            split.show(page)
+        }
         controller.previewPauseNote(environment["SETTINGS_PREVIEW_SCENARIO"] ?? "off")
-        window.setContentSize(controller.fittedContentSize)
+        split.fitWindow()
         window.center()
-        window.makeFirstResponder(nil)
         if let path = environment["SETTINGS_PREVIEW_SNAPSHOT"] {
             // Offscreen: the window is never ordered in.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -4440,7 +4749,7 @@ private enum SettingsPreview {
             window.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)
         }
-        withExtendedLifetime((controller, window)) { app.run() }
+        withExtendedLifetime((backend, split, window)) { app.run() }
     }
 }
 #endif

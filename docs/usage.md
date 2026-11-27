@@ -29,7 +29,7 @@ If you prefer instant starts, enable **Microphone Standby** in Settings. The str
 
 ## Language modes
 
-**Automatic** is the default. In **Models…**, choose **Deutsch** or **English**
+**Automatic** is the default. In Settings › **Models**, choose **Deutsch** or **English**
 for Whisper, Nemotron or Qwen3-ASR if you want to pin a language. The choice is remembered
 per model and applies to the next dictation. Parakeet always detects automatically.
 
@@ -53,10 +53,10 @@ Disable with `pause-media = off` or in Settings.
 
 ## Menu bar
 
-The menu bar icon opens **Settings…**, **Models…**, and permission setup.
-It also has restart and quit controls. Hide it in Settings or with
-`menubar = off`; with the icon hidden, open LocalVoice again and press ⌘,
-to reach Settings.
+The menu bar icon opens **Settings…**, **Models…** (Settings at its Models
+section), and permission setup. It also has restart and quit controls. Hide
+it in Settings or with `menubar = off`; with the icon hidden, open LocalVoice
+again to reach Settings.
 
 ## Live preview
 
@@ -72,7 +72,9 @@ result is byte-for-byte the same either way. Details:
 ## Vocabulary
 
 Teach the transcriber your names and jargon: add them under **Vocabulary**
-in Settings, or write `vocabulary = Ada, ctrlSPEAK, MLX` in the config. The words are fed to Whisper as context before every
-recording, which biases it strongly toward their exact spelling. Edits apply
-from the next recording. Details:
+in Settings › Dictation, or write `vocabulary = Ada, ctrlSPEAK, MLX` in the config. The words are fed to Whisper or Qwen3-ASR as context before every
+recording, which biases it strongly toward their exact spelling. Parakeet and
+Nemotron ignore the list; while one of them is in use, Settings greys
+**Vocabulary** out and keeps the words for later. Edits apply from the next
+recording. Details:
 [configuration.md](configuration.md#vocabulary).

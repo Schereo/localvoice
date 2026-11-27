@@ -2,7 +2,7 @@
 
 Use **Settings…** in the LocalVoice menu for the hotkey, microphone,
 vocabulary, live preview, standby, media pause, the menu bar icon, and launch
-at login. Set the dictation language per model in **Models…**. Apart from
+at login. Set the dictation language per model in its **Models** section. Apart from
 launch at login, which macOS keeps, these choices are stored in one
 plain-text file:
 
@@ -106,7 +106,7 @@ default, so dictation keeps working. Changes apply from the next recording
 permission setup, restart, and quit.
 `off` hides the icon; like everything here it takes effect within seconds.
 Settings has the same switch. With the icon hidden, open LocalVoice again
-and press ⌘, to get back to Settings.
+to get back to Settings.
 
 ### `pause-media`
 
@@ -138,7 +138,9 @@ the prompt, so keep the list to the terms that actually come up — a few
 dozen at most; beyond that the oldest entries silently fall off.
 
 Qwen3-ASR receives the same list as its *context*, the prompt it was trained
-to take domain terms from. Parakeet and Nemotron ignore the list.
+to take domain terms from. Parakeet and Nemotron ignore the list. While one of
+them is in use, Settings greys **Vocabulary** out, names a model that reads
+it, and leaves the saved words untouched.
 
 ### `live-preview`
 

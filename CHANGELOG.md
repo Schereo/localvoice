@@ -20,6 +20,14 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
 
 ### Changed
 
+- Settings is one window with a sidebar: General, Dictation, Recording and
+  Models. The Model Library moved into it as the Models section; **Models…**
+  in the menu bar opens Settings there, and opening LocalVoice again returns
+  to the section shown last.
+- Vocabulary is greyed out while the model in use ignores it (Parakeet,
+  Nemotron). The row says so, names a model that reads the list, and its
+  **Choose Model…** button opens the Models section. The saved words stay.
+
 - The recording pill appears about 0.1–0.15 s after the hotkey instead of
   ~0.4–0.5 s. A hidden pill is started ahead of time (no CPU while it waits)
   and shown the moment the microphone is live (~20 ms instead of a fresh
