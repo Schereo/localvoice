@@ -12,22 +12,26 @@ The same launcher implements the permission wizard (`--setup`): it requests Micr
 
 The app, not the Python service, watches the keyboard. pynput — what the service used before — can only observe: Esc and Enter pressed to end a recording reached the frontmost app as well, so Enter also sent the half-written message in Slack. The launcher detects the shortcuts natively and sends commands to the service:
 
-- **A key combination** for dictation (⌥Space) is a Carbon hotkey as well, registered all the time: macOS hands it to LocalVoice, not the app in front, and refuses it if another app holds it — then the tap sees the key and it works unswallowed.
+- **A key combination** for dictation (⌥Space) is a Carbon hotkey as well, registered while a service is ready (not while the model loads): macOS hands it to LocalVoice, not the app in front, and refuses it if another app holds it — then the tap sees the key and it works unswallowed.
 - **The tap gesture** (Control three times by default) comes from a listen-only `CGEventTap` on a thread of its own. Presses of the configured modifier at most 0.5 s apart count up; any other key starts over. The tap thread forwards only the gesture and the few keys shortcuts use, never ordinary typing, and a busy main thread cannot delay it or get it switched off.
-- **Modifiers pressed together** (⌃⌘) come from the same tap: the shortcut fires once all of them are released, and only if no key and no mouse button went down while they were held. That leaves ⌃⌘Q, ⌃⌘Space or ⌃⌘-click alone. Modifiers cannot be swallowed, and need not be.
+- **Modifiers pressed together** (⌃⌘) come from the same tap, and only count when all of them were held at once. In toggle mode the shortcut fires once every modifier is up again, and only if nothing else — no key, no mouse button, no other modifier — came in the whole sequence. That leaves ⌃⌘Q, ⌃⌘-click or ⌃⌘ then ⌘Space alone. Hold and hybrid have to start on the press; a key or click before the release then discards that recording (⌃⌘Q), and a latched hybrid recording ends only on a clean release. Modifiers cannot be swallowed, and need not be.
 - **Esc and Enter** are Carbon hotkeys (`RegisterEventHotKey`), registered only while a recording runs. macOS then delivers them to LocalVoice instead of the frontmost app; the rest of the time they are not touched. If another app already holds one of them, the tap still sees that key and it works as before, unswallowed.
 
 The service's stdin is the channel: one end of a Unix socket pair, so it carries a line protocol in both directions and is still the lifeline — when the app quits or crashes, the kernel closes its end and the service reads EOF and stops. With `LOCALVOICE_HOTKEYS=app` set, the service runs no keyboard listener of its own.
 
 | Direction | Line | Meaning |
 |---|---|---|
-| app → service | `toggle` | The gesture: start a recording, or stop one and insert |
+| app → service | `toggle` | The hotkey in toggle mode: start a recording, or stop one and insert |
+| app → service | `start` / `stop` / `cancel` | Hold to talk: press starts, release stops and inserts, or discards when another key came in between |
 | app → service | `finish` / `discard` | Enter / Esc during a recording |
 | app → service | `quit` | Option+Esc: stop the service |
 | service → app | `ready` | Commands are accepted from now on |
 | service → app | `recording 1` / `recording 0` | A recording started collecting audio / stopped |
+| service → app | `idle` | A `start` left no recording (the microphone failed to open) |
 
 Shortcuts are stored as key codes plus modifiers (`dictate = alt+space`, letters by their US-keyboard position) and shown through `UCKeyTranslate` in the active layout, so ⌘Y on a German keyboard reads ⌘Z where the key says Z. While the recorder in Settings is open (Return saves, Esc closes), the app unregisters its hotkey and ignores the tap, so pressing the current shortcut records it rather than starting dictation.
+
+Hold to talk needs the release as well: Carbon reports a hotkey's release (`kEventHotKeyReleased`), and the tap sees modifiers go up. `stop` is not `finish`: `finish` checks for a running recording when it arrives and does nothing otherwise, which would drop a release that comes before the microphone has opened. `stop` queues behind the `start` on the service's single worker, so it always ends the recording its press began; `cancel` does the same for a discard. Hybrid is decided in the app: a release within 0.35 s of the press latches, and the next press sends `stop`. The app ties `recording 1` and `idle` to the press that sent the `start`, so a failed start leaves no latch behind, and a hold whose release can no longer be seen (the shortcut changes, the recorder opens, the tap loses events) is ended there and then.
 
 Unknown lines are ignored on both sides, so either can learn a new command first. The app drops gestures until `ready`: a tap while the model loads must not start a recording seconds later. The recording state comes from the audio manager's `is_collecting` flag, whatever ended the recording (Esc, the watchdog, a failed start), so the app never keeps Enter after the recording is gone; if the service dies, the hotkeys are released with the channel. When the event tap cannot be created, the app starts the service without the channel and it falls back to its pynput listener, as it does when run on its own.
 

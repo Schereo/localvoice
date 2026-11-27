@@ -19,6 +19,9 @@ built against is pinned separately, in `UPSTREAM_VERSION` in
   modifier tap gesture. The popover shows the keys as you press them and
   refuses a combination without a modifier. New config key `dictate`;
   `hotkey = ctrl,3` keeps working.
+- Hold to talk: next to the hotkey, **Toggle**, **Hold to Talk** (hold while
+  you speak, let go to insert) or **Hybrid** (a short press toggles, a long
+  one is hold-to-talk). Config key `dictate-mode`.
 
 ### Removed
 

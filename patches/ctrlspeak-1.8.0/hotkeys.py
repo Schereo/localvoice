@@ -603,24 +603,42 @@ def on_activate():
     return _dispatch("activate", _start_recording)
 
 
-def press_to_talk():
-    """Queue a start for hold-to-talk; a running recording is left alone."""
-    return _dispatch("start", _start_recording)
+def press_to_talk(on_nothing=None):
+    """Queue a start for hold-to-talk; a running recording is left alone.
+
+    `on_nothing` runs if the start leaves no recording collecting (the
+    microphone failed to open, the model is loading), so the app does not
+    wait for a release that has nothing to end.
+    """
+    def start():
+        _start_recording()
+        manager = state.audio_manager
+        if on_nothing is not None and (manager is None or not manager.is_collecting):
+            on_nothing()
+
+    return _dispatch("start", start)
+
+
+def _queued_end(name, *, discard):
+    # Unlike finish and cancel, this does not look at the recording now: it
+    # queues behind the start, so a press shorter than the microphone takes
+    # to open still ends the recording it began instead of leaving it running.
+    def end():
+        manager = state.audio_manager
+        if manager is not None and manager.is_collecting:
+            _end_recording(manager.recording_id, discard=discard)
+
+    return _dispatch(name, end)
 
 
 def release_to_insert():
-    """Queue stop-and-insert for hold-to-talk.
+    """Queue stop-and-insert for hold-to-talk, behind the start."""
+    return _queued_end("stop", discard=False)
 
-    Unlike finish, this does not look at the recording now: it queues behind
-    the start, so a press shorter than the microphone takes to open still
-    ends the recording it began instead of leaving it running.
-    """
-    def stop():
-        manager = state.audio_manager
-        if manager is not None and manager.is_collecting:
-            _end_recording(manager.recording_id)
 
-    return _dispatch("stop", stop)
+def release_to_discard():
+    """Queue a discard for hold-to-talk (⌃⌘ let go after a click), behind the start."""
+    return _queued_end("release-cancel", discard=True)
 
 
 def _start_recording():

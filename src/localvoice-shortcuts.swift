@@ -337,11 +337,36 @@ extension Shortcut {
 
 // MARK: - The dictation shortcut
 
+/// How the dictation shortcut behaves (`dictate-mode = …`).
+enum DictationMode: String, CaseIterable, Sendable {
+    /// Press to start, press again to insert.
+    case toggle
+    /// Hold while you speak, let go to insert.
+    case hold
+    /// A short press toggles, a long one is hold-to-talk.
+    case hybrid
+
+    var title: String {
+        switch self {
+        case .toggle: "Toggle"
+        case .hold: "Hold to Talk"
+        case .hybrid: "Hybrid"
+        }
+    }
+}
+
 /// The one configurable shortcut: start and stop dictation (`dictate = …`).
 /// Return and Esc during a recording are fixed.
 enum DictationShortcut {
     static let configKey = "dictate"
+    static let modeKey = "dictate-mode"
     static let standard = Shortcut.taps(.standard)
+
+    /// The configured mode. A tap gesture has nothing to hold, so it always toggles.
+    static func mode(for shortcut: Shortcut? = nil, _ read: (String) -> String? = readConfigValue) -> DictationMode {
+        if case .taps = shortcut ?? current(read) { return .toggle }
+        return DictationMode(rawValue: read(modeKey)?.lowercased() ?? "") ?? .toggle
+    }
 
     /// The configured shortcut, or the default. Falls back to the pre-1.5
     /// `hotkey` key, which is a tap gesture.
@@ -397,7 +422,8 @@ enum ShortcutKey {
 /// thread; ordinary typing is never forwarded.
 enum TapEvent: Sendable {
     case gesture
-    case keyDown(keyCode: Int64, flags: UInt64)
+    case chord(ChordEvent)
+    case key(keyCode: Int64, flags: UInt64, down: Bool)
 }
 
 /// Repeated-tap detection, the same rules the pynput listener applied: presses of
@@ -430,39 +456,68 @@ struct ModifierTapCounter {
     mutating func reset() { count = 0 }
 }
 
-/// Two or more modifiers pressed together and released with nothing else in
-/// between. It fires on release, so ⌃⌘Q (lock screen) or ⌃⌘-click never starts
-/// dictation: any key or click while they are held voids it.
+/// Two or more modifiers pressed together.
+///
+/// - `pressed`: exactly these are held (not reached through a superset, and
+///   nothing else came in between).
+/// - `released(clean:)`: that ends, as soon as one is let go or another
+///   modifier joins; hold-to-talk acts on this. Not clean if a key, a click or
+///   another modifier came in between.
+/// - `ended(clean:)`: every modifier is up again after the chord was pressed.
+///   Clean only if the whole sequence, from the first modifier down to the
+///   last one up, held nothing but the chord and saw no other input. Toggle
+///   acts on this, so ⌃⌘Q (lock screen), ⌃⌘-click or ⌃⌘ then ⌘Space never
+///   starts dictation.
+enum ChordEvent: Equatable, Sendable {
+    case pressed
+    case released(clean: Bool)
+    case ended(clean: Bool)
+}
+
 struct ModifierChordDetector {
     var chord: KeyModifiers
-    private var peak: KeyModifiers = []
-    // All of the chord were held at once at some point (not just in turns).
+    private var down = false
+    // Since the modifiers were last all up: the chord was pressed, and
+    // something other than the chord's own modifiers came in between.
     private var reached = false
     private var voided = false
+    private var holding: KeyModifiers = []
 
     init(chord: KeyModifiers) { self.chord = chord }
 
-    /// The modifiers now held; true when they were all released and the chord completes.
-    mutating func modifiersChanged(to held: KeyModifiers) -> Bool {
-        guard held.isEmpty else {
-            peak.formUnion(held)
-            if held == chord { reached = true }
-            return false
+    /// The modifiers now held; at most one event, `released` before `ended`.
+    mutating func modifiersChanged(to held: KeyModifiers) -> [ChordEvent] {
+        var events: [ChordEvent] = []
+        holding = held
+        if !held.isSubset(of: chord) { voided = true }
+        if down && held != chord {
+            down = false
+            events.append(.released(clean: !voided))
         }
-        defer { reset() }
-        return !voided && reached && peak == chord
+        if held.isEmpty {
+            if reached { events.append(.ended(clean: !voided)) }
+            reset()
+        } else if !down && !reached && !voided && held == chord {
+            down = true
+            reached = true
+            events.append(.pressed)
+        }
+        return events
     }
 
     /// A key, a click, caps lock or fn while modifiers are held.
     mutating func otherInput() {
-        if !peak.isEmpty { voided = true }
+        if !holding.isEmpty { voided = true }
     }
 
     mutating func reset() {
-        peak = []
+        down = false
         reached = false
         voided = false
     }
+
+    /// Whether a press is in progress whose release has not been seen.
+    var isDown: Bool { down }
 }
 
 final class KeyboardTap: @unchecked Sendable {
@@ -500,7 +555,7 @@ final class KeyboardTap: @unchecked Sendable {
     func start() -> Bool {
         if port != nil { return true }
         // Mouse buttons only void a modifier chord (⌃⌘-click is not dictation).
-        let mask = [CGEventType.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        let mask = [CGEventType.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
             .reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         // The tap lives as long as the app; this reference is never released
         // once it is installed.
@@ -544,6 +599,9 @@ final class KeyboardTap: @unchecked Sendable {
             // macOS switches a tap off after a slow callback or secure input; turn it back on.
             if let port { CGEvent.tapEnable(tap: port, enable: true) }
             counter.reset()
+            // Events were lost meanwhile, the chord's release among them perhaps:
+            // a hold must not be left running.
+            if chord?.isDown == true { deliver(.chord(.released(clean: false))) }
             chord?.reset()
             return
         default:
@@ -569,7 +627,9 @@ final class KeyboardTap: @unchecked Sendable {
         let now = ProcessInfo.processInfo.systemUptime
         if type == .flagsChanged {
             if modifierKeyMasks[keyCode] != nil {
-                if chord?.modifiersChanged(to: KeyModifiers(cgFlags: event.flags)) == true { deliver(.gesture) }
+                for change in chord?.modifiersChanged(to: KeyModifiers(cgFlags: event.flags)) ?? [] {
+                    deliver(.chord(change))
+                }
             } else {
                 chord?.otherInput()
             }
@@ -583,9 +643,11 @@ final class KeyboardTap: @unchecked Sendable {
         } else if type == .keyDown {
             _ = counter.press(isTapKey: false, at: now)
             chord?.otherInput()
-            if keys.contains(keyCode) {
-                deliver(.keyDown(keyCode: keyCode, flags: event.flags.rawValue))
+            if keys.contains(keyCode), event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                deliver(.key(keyCode: keyCode, flags: event.flags.rawValue, down: true))
             }
+        } else if type == .keyUp, keys.contains(keyCode) {
+            deliver(.key(keyCode: keyCode, flags: event.flags.rawValue, down: false))
         }
     }
 }
@@ -604,27 +666,33 @@ final class CarbonHotkeys {
     static let shared = CarbonHotkeys()
     private static let signature: OSType = 0x4C56_686B  // 'LVhk'
     private var handler: EventHandlerRef?
-    private var registered: [UInt32: (ref: EventHotKeyRef, action: @MainActor () -> Void)] = [:]
+    private var registered: [UInt32: (ref: EventHotKeyRef, action: @MainActor (_ pressed: Bool) -> Void)] = [:]
 
     private func installHandler() -> Bool {
         if handler != nil { return true }
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var specs = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
             var id = EventHotKeyID()
             let status = GetEventParameter(event, EventParamName(kEventParamDirectObject),
                                            EventParamType(typeEventHotKeyID), nil,
                                            MemoryLayout<EventHotKeyID>.size, nil, &id)
             guard status == noErr else { return status }
+            let pressed = GetEventKind(event) == UInt32(kEventHotKeyPressed)
             // Carbon dispatches hotkeys on the main thread's event loop.
-            MainActor.assumeIsolated { CarbonHotkeys.shared.fire(id) }
+            MainActor.assumeIsolated { CarbonHotkeys.shared.fire(id, pressed: pressed) }
             return noErr
-        }, 1, &spec, nil, &handler)
+        }, specs.count, &specs, nil, &handler)
         return status == noErr
     }
 
     /// False if the key is taken (eventHotKeyExistsErr) or cannot be registered.
     /// Exclusive, so an app that registers the key after us does not get it too.
-    func register(_ id: UInt32, keyCode: Int64, modifiers: Int, action: @escaping @MainActor () -> Void) -> Bool {
+    /// `action` runs with true on the press and false on the release.
+    func register(_ id: UInt32, keyCode: Int64, modifiers: Int,
+                  action: @escaping @MainActor (_ pressed: Bool) -> Void) -> Bool {
         unregister(id)
         guard installHandler() else { return false }
         var ref: EventHotKeyRef?
@@ -645,9 +713,9 @@ final class CarbonHotkeys {
         }
     }
 
-    private func fire(_ id: EventHotKeyID) {
+    private func fire(_ id: EventHotKeyID, pressed: Bool) {
         guard id.signature == Self.signature else { return }
-        registered[id.id]?.action()
+        registered[id.id]?.action(pressed)
     }
 }
 
@@ -739,6 +807,135 @@ final class ServiceChannel {
     }
 }
 
+// MARK: - Press handling
+
+/// What a press and release of the dictation shortcut mean in each mode, as the
+/// service commands to send. Toggle sends `toggle` per press. Hold sends `start`
+/// on the press and `stop` on the release. Hybrid starts on the press; a release
+/// within `holdThreshold` latches (the next press sends `stop`), a later one stops.
+/// A release that was not clean (⌃⌘ held, then Q) discards what the press began.
+struct DictationPress {
+    static let holdThreshold: TimeInterval = 0.35
+
+    // `confirmed`: the service reported the recording this press started
+    // ("recording 1"). Until then a "recording 0" belongs to an earlier one.
+    private enum State: Equatable {
+        case idle
+        /// A press started a recording; its release decides how it ends.
+        case holding(since: TimeInterval, confirmed: Bool)
+        /// Hybrid: a short press; the recording runs until the next press.
+        case latched(confirmed: Bool)
+        /// Hybrid, a chord pressed while latched: its release decides, since
+        /// ⌃⌘Q or ⌃⌘-click must not end the recording.
+        case closing(confirmed: Bool)
+        /// The press sent stop; its release is nothing.
+        case ending
+    }
+
+    var mode: DictationMode { didSet { if mode != oldValue { state = .idle } } }
+    private var state = State.idle
+
+    init(mode: DictationMode) { self.mode = mode }
+
+    /// `deferStop`: the shortcut is a modifier chord, whose press may still turn
+    /// out to be part of another shortcut.
+    mutating func pressed(at time: TimeInterval, deferStop: Bool = false) -> String? {
+        switch mode {
+        case .toggle:
+            return "toggle"
+        case .hold:
+            state = .holding(since: time, confirmed: false)
+            return "start"
+        case .hybrid:
+            if case let .latched(confirmed) = state {
+                if deferStop {
+                    state = .closing(confirmed: confirmed)
+                    return nil
+                }
+                state = .ending
+                return "stop"
+            }
+            state = .holding(since: time, confirmed: false)
+            return "start"
+        }
+    }
+
+    /// `clean`: false when another key, click or modifier came while it was held.
+    mutating func released(at time: TimeInterval, clean: Bool) -> String? {
+        switch state {
+        case let .holding(since, confirmed):
+            if !clean {
+                state = .idle
+                // Queued behind the start, so it also ends a recording whose
+                // microphone was still opening.
+                return "cancel"
+            }
+            if mode == .hybrid && time - since < Self.holdThreshold {
+                state = .latched(confirmed: confirmed)
+                return nil
+            }
+            state = .idle
+            return "stop"
+        case let .closing(confirmed):
+            if clean {
+                state = .idle
+                return "stop"
+            }
+            state = .latched(confirmed: confirmed)
+            return nil
+        case .ending:
+            state = .idle
+            return nil
+        case .idle, .latched:
+            return nil
+        }
+    }
+
+    /// "recording 1": the recording the current press started is live.
+    mutating func recordingStarted() {
+        switch state {
+        case let .holding(since, _): state = .holding(since: since, confirmed: true)
+        case .latched: state = .latched(confirmed: true)
+        case .closing: state = .closing(confirmed: true)
+        case .idle, .ending: break
+        }
+    }
+
+    /// "recording 0": Return, Esc or the pill ended it; a latch no longer applies.
+    mutating func recordingEnded() {
+        switch state {
+        case .latched(confirmed: true), .closing(confirmed: true): state = .idle
+        // Esc while still held: the release has nothing left to end or latch.
+        case .holding(_, confirmed: true): state = .ending
+        default: break
+        }
+    }
+
+    /// "idle": a start came to nothing (the microphone failed to open).
+    mutating func startFailed() {
+        switch state {
+        case .holding(_, confirmed: false), .latched(confirmed: false), .closing(confirmed: false): state = .idle
+        default: break
+        }
+    }
+
+    /// The press is cut off from its release (the shortcut changes, a recorder
+    /// opens): what ends it now. A latched recording keeps running.
+    mutating func settle() -> String? {
+        switch state {
+        case .holding, .closing:
+            state = .idle
+            return "stop"
+        case let .latched(confirmed):
+            state = .latched(confirmed: confirmed)
+            return nil
+        case .idle, .ending:
+            state = .idle
+            return nil
+        }
+    }
+}
+
 // MARK: - Controller
 
 /// Owns the shortcuts and turns them into service commands.
@@ -757,6 +954,8 @@ final class ShortcutController {
     }
 
     private var dictate: Shortcut
+    private var press: DictationPress
+    private var mode: DictationMode { press.mode }
     // Fixed: during a recording, Return inserts and Esc discards.
     private let insert = KeyCombo.returnKey
     private let discard = KeyCombo.escape
@@ -776,6 +975,7 @@ final class ShortcutController {
 
     init() {
         dictate = DictationShortcut.current()
+        press = DictationPress(mode: DictationShortcut.mode(for: dictate))
         let center = NotificationCenter.default
         center.addObserver(forName: .localVoiceShortcutRecording, object: nil, queue: .main) { [weak self] note in
             let active = note.object as? Bool ?? false
@@ -814,10 +1014,16 @@ final class ShortcutController {
     /// Follows edits of the shortcut in the config file.
     func reloadConfig() {
         let current = DictationShortcut.current()
-        guard current != dictate else { return }
-        dictate = current
-        registerDictate()
-        tap.setWatch(watch)
+        let currentMode = DictationShortcut.mode(for: current)
+        guard current != dictate || currentMode != mode else { return }
+        // A key held now would be let go under the new shortcut and not be seen.
+        if let command = press.settle() { send(command) }
+        press.mode = currentMode
+        if current != dictate {
+            dictate = current
+            registerDictate()
+            tap.setWatch(watch)
+        }
     }
 
     /// The tap's view: the gesture or modifier chord dictation uses, and the keys it
@@ -841,8 +1047,14 @@ final class ShortcutController {
         case "ready":
             serviceReady = true
             registerDictate()
-        case "recording 1": setRecording(true)
-        case "recording 0": setRecording(false)
+        case "recording 1":
+            press.recordingStarted()
+            setRecording(true)
+        case "recording 0":
+            press.recordingEnded()
+            setRecording(false)
+        case "idle":
+            press.startFailed()
         default: break  // newer service, older app: ignore
         }
     }
@@ -856,6 +1068,8 @@ final class ShortcutController {
 
     private func setPaused(_ value: Bool) {
         guard value != paused else { return }
+        // The recorder takes the keys: a hold in progress would never see its release.
+        if value, let command = press.settle() { send(command) }
         paused = value
         // Unregister so the recorder can capture the combination itself.
         registerDictate()
@@ -869,8 +1083,33 @@ final class ShortcutController {
     private func register(_ id: HotkeyID, _ combo: KeyCombo) {
         unswallowed = unswallowed.filter { $0.value != id }
         if !CarbonHotkeys.shared.register(id.rawValue, keyCode: combo.keyCode, modifiers: combo.modifiers.carbon,
-                                          action: { [weak self] in self?.send(id.command) }) {
+                                          action: { [weak self] pressed in self?.fired(id, pressed: pressed) }) {
             unswallowed[combo] = id
+        }
+    }
+
+    private func fired(_ id: HotkeyID, pressed: Bool) {
+        if id == .dictate {
+            if pressed { dictatePressed() } else { dictateReleased(clean: true) }
+        } else if pressed {
+            send(id.command)
+        }
+    }
+
+    // MARK: Modes
+
+    private func dictatePressed() {
+        guard serviceReady, !paused else { return }
+        let deferStop = if case .chord = dictate { true } else { false }
+        if let command = press.pressed(at: ProcessInfo.processInfo.systemUptime, deferStop: deferStop) {
+            send(command)
+        }
+    }
+
+    /// `clean`: false when another key or click came while it was held (⌃⌘Q).
+    private func dictateReleased(clean: Bool) {
+        if let command = press.released(at: ProcessInfo.processInfo.systemUptime, clean: clean) {
+            send(command)
         }
     }
 
@@ -910,16 +1149,35 @@ final class ShortcutController {
         switch event {
         case .gesture:
             send("toggle")
-        case let .keyDown(keyCode, rawFlags):
+        case .chord(.pressed):
+            if mode != .toggle { dictatePressed() }
+        case let .chord(.released(clean)):
+            if mode != .toggle { dictateReleased(clean: clean) }
+        case let .chord(.ended(clean)):
+            // Toggle waits for every modifier to be up, with nothing else in
+            // the whole sequence: ⌃⌘ then ⌘Space is Spotlight, not dictation.
+            if mode == .toggle && clean { dictatePressed() }
+        case let .key(keyCode, rawFlags, down):
             let modifiers = KeyModifiers(cgFlags: CGEventFlags(rawValue: rawFlags))
-            if keyCode == ShortcutKey.escape && modifiers == .option {
+            if down && keyCode == ShortcutKey.escape && modifiers == .option {
                 // Option+Esc stops the service, as it always has; observed, not swallowed.
                 send("quit")
                 return
             }
+            if !down {
+                // The modifiers may already be up; the key alone identifies the release.
+                if let combo = dictate.combo, combo.keyCode == keyCode, unswallowed[combo] == .dictate {
+                    dictateReleased(clean: true)
+                }
+                return
+            }
             let combo = KeyCombo(keyCode: keyCode, modifiers: modifiers)
             if let id = unswallowed[combo] {
-                if id == .dictate || recording { send(id.command) }
+                if id == .dictate {
+                    dictatePressed()
+                } else if recording {
+                    send(id.command)
+                }
                 return
             }
             // The plain keys are Carbon hotkeys and arrive there, swallowed.

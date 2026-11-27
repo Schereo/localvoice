@@ -722,6 +722,28 @@ class RecordingBoundaryTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(changes, [True, False])
 
+    def test_cancelled_release_discards_the_recording_even_before_capture(self):
+        # ⌃⌘ let go after a click: the discard queues behind the start too.
+        self.start_worker(Mock(transcribe_pcm=None, supports_streaming=False))
+        changes = []
+        self.manager.on_collecting_changed = changes.append
+        gate = threading.Event()
+        self.manager.open_input_stream.side_effect = lambda **_: gate.wait(2)
+        self.hotkeys.press_to_talk()
+        self.hotkeys.release_to_discard()
+        gate.set()
+        deadline = time.monotonic() + 3
+        while changes != [True, False] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(changes, [True, False])
+
+    def test_a_start_that_records_nothing_tells_the_app(self):
+        nothing = threading.Event()
+        self.manager.open_input_stream.side_effect = OSError("open failed")
+        with self.assertLogs("ctrlspeak.hotkeys", "ERROR"):
+            self.hotkeys.press_to_talk(on_nothing=nothing.set)
+            self.assertTrue(nothing.wait(3))
+
     def test_vad_load_and_inference_failures_use_bounded_fallback(self):
         self.vad_loader.assert_called_once_with(self.fake_torch)
         for bad_asset in (True, False):

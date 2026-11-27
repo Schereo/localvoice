@@ -544,6 +544,7 @@ def run_app(args):
             on_activate,
             press_to_talk,
             release_to_insert,
+            release_to_discard,
             is_recording,
             cancel_recording,
             finish_recording,
@@ -596,8 +597,9 @@ def run_app(args):
                 try:
                     app_control.start({
                         "toggle": on_activate,
-                        "start": press_to_talk,
+                        "start": lambda: press_to_talk(on_nothing=app_control.publish_idle),
                         "stop": release_to_insert,
+                        "cancel": release_to_discard,
                         "finish": finish_recording,
                         "discard": cancel_recording,
                         # Off the reader thread: stopping a recording can
