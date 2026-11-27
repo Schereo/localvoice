@@ -30,6 +30,10 @@ Model activation is separate from download. Switching is allowed only between re
 
 The explicit legacy Homebrew install still starts the Hub download from the service on a cold cache and reports it in the recording pill.
 
+## Updates
+
+Release and dev builds embed [Sparkle](https://sparkle-project.org). The launcher starts it only after setup, and Sparkle asks once (second launch) before it checks GitHub on its own; dictation never waits on it. A found update is a reminder in the menu bar menu and in Settings, not a window. Updates are signed twice: with the EdDSA key the app trusts (`SUPublicEDKey`) and with the same Developer ID as the installed app. Most updates arrive as a delta patch of a few MB that rebuilds the new bundle from the installed one, file by file, after checking that the installed one is unchanged. Details: [setup](setup.md#in-app-updates).
+
 ## The microphone indicator
 
 macOS lights the mic indicator whenever any process holds an open input stream — it cannot distinguish "listening and discarding" from "recording". LocalVoice therefore opens the stream per recording session by default, so the indicator reflects actual recordings. Standby mode (see [usage](usage.md#microphone-standby)) keeps the stream open for instant starts; idle audio then exists only as the rolling 0.45 s onset buffer in memory.

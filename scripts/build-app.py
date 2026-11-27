@@ -493,7 +493,8 @@ def stage(args):
                 *(str(ROOT / "src" / name) for name in source_names), "-o", str(binary),
                 capture=False, env=compile_env)
 
-        compile_swift(["ctrlspeak-launcher.swift", "localvoice-model-library.swift"],
+        # Without Sparkle on the search path the updater compiles to its stub: this app has none.
+        compile_swift(["ctrlspeak-launcher.swift", "localvoice-model-library.swift", "localvoice-updater.swift"],
                       app / ENTRYPOINTS[0], "-parse-as-library")
         compile_swift(["ctrlspeak-overlay.swift"], app / ENTRYPOINTS[1])
         icon_generator = work / "ctrlspeak-icon"

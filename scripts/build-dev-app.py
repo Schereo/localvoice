@@ -4,7 +4,11 @@
 By default the runtime remains under build/dev and the app only works on the
 machine that built it. With --portable, a pinned standalone CPython is embedded
 in the app so the bundle can be zipped and run on another Apple Silicon Mac
-(this is what CI publishes as a dev release)."""
+(this is what CI publishes as a dev release).
+
+Every build embeds Sparkle.framework (scripts/fetch-sparkle.sh). Only with
+--feed-url does the app get an update feed and the key that update archives
+must be signed with; without it the updater stays off."""
 
 import argparse
 import hashlib
@@ -37,6 +41,13 @@ STANDALONE_PYTHON = (
     "cpython-3.11.13%2B20250918-aarch64-apple-darwin-install_only.tar.gz"
 )
 STANDALONE_PYTHON_SHA256 = "dcd46cddff1501b65edbcc6a2b2e11ad5f81cf56d3ce82b50ed9d817f102161d"
+# Public half of the EdDSA key that signs update archives and delta patches (see
+# docs/setup.md, "In-app updates"). The private half is the SPARKLE_ED_PRIVATE_KEY
+# secret of the `release` environment. Changing it strands every installed copy:
+# they would refuse all later updates.
+SPARKLE_PUBLIC_KEY = "BWe3PVy/ap6CRQquFjr+TiR8+1UXLHb5gxoBpvyPBnM="
+# Parts of Sparkle.framework a non-sandboxed app never uses at run time.
+SPARKLE_UNUSED = ("XPCServices", "Headers", "PrivateHeaders", "Modules")
 
 
 def pip_install(python):
@@ -55,6 +66,41 @@ def fetch_checked(url, path, digest, limit):
                     f"Pinned asset verification failed: {path.name}")
     path.write_bytes(data)
     return path
+
+
+def sparkle_path():
+    output = subprocess.check_output([str(ROOT / "scripts/fetch-sparkle.sh")], text=True)
+    line = next(line for line in output.splitlines() if line.startswith("Sparkle: "))
+    return Path(line[len("Sparkle: "):])
+
+
+def embed_sparkle(source, frameworks):
+    """Copy Sparkle.framework into the bundle without its build-time and sandbox-only parts."""
+    frameworks.mkdir(parents=True, exist_ok=True)
+    framework = frameworks / "Sparkle.framework"
+    # ditto keeps the framework's symlinks (Versions/Current and the links into it).
+    subprocess.run(["/usr/bin/ditto", str(source / "Sparkle.framework"), str(framework)], check=True)
+    for name in SPARKLE_UNUSED:
+        link = framework / name
+        if link.is_symlink():
+            link.unlink()
+        for version in (framework / "Versions").iterdir():
+            if not version.is_symlink() and (version / name).exists():
+                shutil.rmtree(version / name)
+    return framework
+
+
+def update_keys(feed_url):
+    """The Info.plist keys that turn the updater on, or none."""
+    if not feed_url:
+        return {}
+    return {
+        "SUFeedURL": feed_url,
+        "SUPublicEDKey": SPARKLE_PUBLIC_KEY,
+        # Sparkle asks once (second launch) before it checks on its own, and never
+        # sends a system profile.
+        "SUEnableSystemProfiling": False,
+    }
 
 
 def worker_path(option):
@@ -77,6 +123,7 @@ def main():
                         help="embed a pinned standalone Python so the app runs on other Macs")
     parser.add_argument("--version", default="1.0", help="CFBundleShortVersionString")
     parser.add_argument("--build-number", default="1", help="CFBundleVersion")
+    parser.add_argument("--feed-url", help="Sparkle appcast URL; turns on in-app updates")
     parser.add_argument("--sign", default="-", metavar="IDENTITY",
                         help="codesign identity; '-' signs ad hoc. A stable identity such as "
                              "'Apple Development: …' keeps macOS permissions across rebuilds")
@@ -90,6 +137,8 @@ def main():
             parser.error(f"Expected a dotted numeric version, got {value!r}.")
     if not re.fullmatch(r"(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+", args.bundle_identifier):
         parser.error("Expected a reverse-DNS bundle identifier.")
+    if args.feed_url and not args.feed_url.startswith("https://"):
+        parser.error("--feed-url must be an https:// URL.")
 
     destination = ROOT / "build/dev"
     output = Path(args.output)
@@ -121,6 +170,7 @@ def main():
     )
     worker = worker_path(args.worker)
     staging.require(os.access(worker, os.X_OK), "Core ML worker is missing or not executable.")
+    sparkle = sparkle_path()
 
     with tempfile.TemporaryDirectory(prefix=".staging-", dir=destination) as temporary:
         scratch = Path(temporary)
@@ -146,8 +196,14 @@ def main():
 
         swift = ["xcrun", "swiftc", "-target", "arm64-apple-macosx15.0",
                  "-module-cache-path", str(scratch / "module-cache")]
-        subprocess.run([*swift, "-parse-as-library", str(ROOT / "src/ctrlspeak-launcher.swift"),
-                        str(ROOT / "src/localvoice-model-library.swift"), "-o", str(macos / "LocalVoice")], check=True)
+        embed_sparkle(sparkle, bundle / "Contents/Frameworks")
+        subprocess.run([*swift, "-parse-as-library", "-F", str(sparkle), "-framework", "Sparkle",
+                        "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
+                        str(ROOT / "src/ctrlspeak-launcher.swift"), str(ROOT / "src/localvoice-model-library.swift"),
+                        str(ROOT / "src/localvoice-updater.swift"), "-o", str(macos / "LocalVoice")], check=True)
+        # The updater code compiles to a stub when Sparkle cannot be imported; refuse that build.
+        links = subprocess.check_output(["/usr/bin/otool", "-L", str(macos / "LocalVoice")], text=True)
+        staging.require("@rpath/Sparkle.framework/" in links, "The launcher does not link Sparkle.")
         subprocess.run([*swift, str(ROOT / "src/ctrlspeak-overlay.swift"),
                          "-o", str(helpers / "ctrlspeak-overlay")], check=True)
         icon_generator = scratch / "ctrlspeak-icon"
@@ -181,6 +237,7 @@ def main():
             "LSUIElement": True,
             "NSMicrophoneUsageDescription": "LocalVoice records audio for on-device dictation.",
             "NSAppleEventsUsageDescription": "LocalVoice can pause media when dictation starts.",
+            **update_keys(args.feed_url),
         }))
         subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", args.sign, str(bundle)], check=True)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)

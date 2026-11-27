@@ -9,6 +9,11 @@
 #                                       is redeployed with the new download and the
 #                                       Homebrew cask in Schereo/homebrew-tap moved to it
 #
+# Each build also publishes the Sparkle update feed (appcast.xml) the app's updater
+# reads, with delta patches from the last two builds of its channel that have the
+# updater. Releases are found through releases/latest/download/appcast.xml, dev
+# builds through the fixed `dev-feed` pre-release.
+#
 # Two jobs: `build` runs the checks and all third-party build code without any
 # secrets; `sign` gets the unsigned app as an artifact on a fresh runner and only
 # signs, notarizes and publishes it. The signing secrets live in the `release`
@@ -46,6 +51,7 @@ jobs:
       channel: ${{ steps.version.outputs.channel }}
       tag: ${{ steps.version.outputs.tag }}
       base: ${{ steps.version.outputs.base }}
+      build_number: ${{ steps.version.outputs.build_number }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -61,6 +67,10 @@ jobs:
           sw_vers
           xcrun swift --version
           python3 --version
+
+      # The updater framework; check.sh then compiles the launcher against it too.
+      - name: Sparkle
+        run: ./scripts/fetch-sparkle.sh
 
       - name: Checks
         run: ./scripts/check.sh
@@ -90,6 +100,7 @@ jobs:
               echo "tag=v$base"
               echo "bundle_id=com.localvoice.app"
               echo "display_name=LocalVoice"
+              echo "feed_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml"
             } >> "$GITHUB_OUTPUT"
           else
             {
@@ -97,21 +108,28 @@ jobs:
               echo "tag=v$base-dev.$GITHUB_RUN_NUMBER"
               echo "bundle_id=com.localvoice.dev"
               echo "display_name=LocalVoice Test"
+              echo "feed_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/dev-feed/appcast.xml"
             } >> "$GITHUB_OUTPUT"
           fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
+          # The updater offers a build only if its CFBundleVersion is higher. The commit
+          # count on main only grows, unlike the run number (it restarts with the workflow).
+          echo "build_number=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build portable app
         env:
           VERSION_BASE: ${{ steps.version.outputs.base }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
           BUNDLE_ID: ${{ steps.version.outputs.bundle_id }}
           DISPLAY_NAME: ${{ steps.version.outputs.display_name }}
+          FEED_URL: ${{ steps.version.outputs.feed_url }}
         run: |
           python3 -B scripts/build-dev-app.py --portable \
             --version "$VERSION_BASE" \
-            --build-number "$GITHUB_RUN_NUMBER" \
+            --build-number "$BUILD_NUMBER" \
             --bundle-identifier "$BUNDLE_ID" \
-            --display-name "$DISPLAY_NAME"
+            --display-name "$DISPLAY_NAME" \
+            --feed-url "$FEED_URL"
           codesign --verify --deep --strict build/dev/LocalVoice.app
           # ditto keeps the bundle's symlinks and permissions, which the artifact zip would not.
           ditto -c -k --keepParent build/dev/LocalVoice.app build/LocalVoice-unsigned.zip
@@ -129,7 +147,7 @@ jobs:
   sign:
     needs: build
     runs-on: macos-26
-    timeout-minutes: 180
+    timeout-minutes: 200 # notarization can take 150 minutes, the delta patches a few more
     environment: release
     permissions:
       contents: write # create the release
@@ -141,6 +159,7 @@ jobs:
       CHANNEL: ${{ needs.build.outputs.channel }}
       TAG: ${{ needs.build.outputs.tag }}
       VERSION_BASE: ${{ needs.build.outputs.base }}
+      BUILD_NUMBER: ${{ needs.build.outputs.build_number }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -257,7 +276,51 @@ jobs:
 
           Signed with Developer ID and notarized by Apple. Requires an Apple Silicon Mac with macOS 15 or later.
           Models are downloaded from the app's **Models…** window.
+
+          ### Update
+
+          Releases after 1.3.0 update themselves: a new version appears in the menu bar menu and under
+          **Settings › General › Updates** and installs in place, usually as a patch of a few MB. Permissions, models
+          and settings stay. Coming from 1.3.0 or older, install this one over it once as above.
           EOF
+
+      # The feed the app's updater reads, and patches from the last two builds of this
+      # channel that have the updater: a few MB instead of the whole image. The
+      # certificate is gone by now; only the EdDSA key that signs updates is here.
+      - name: Update feed and delta patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          DMG: ${{ steps.package.outputs.dmg }}
+        run: |
+          if [[ -z "$SPARKLE_ED_PRIVATE_KEY" ]]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY is missing from the release environment."
+            exit 1
+          fi
+          # The app is in the disk image now; the earlier images and their unpacked apps need the room.
+          rm -rf build/dev
+          if [[ "$CHANNEL" == release ]]; then
+            ./scripts/release.sh --notes "$VERSION_BASE" > build/update-notes.md
+          else
+            {
+              echo "Dev build \`${GITHUB_SHA::7}\` from \`main\`."
+              echo
+              ./scripts/release.sh --notes Unreleased || true
+            } > build/update-notes.md
+          fi
+          sparkle="$(./scripts/fetch-sparkle.sh | sed -n 's/^Sparkle: //p')"
+          feed() {
+            python3 -B scripts/make-appcast.py --channel "$CHANNEL" --tag "$TAG" \
+              --build-number "$BUILD_NUMBER" --dmg "$DMG" --notes build/update-notes.md \
+              --sparkle "$sparkle" --out build/updates "$@"
+          }
+          # Patches are a saving, not a requirement: rather than hold the release back,
+          # publish the feed without them (everyone then downloads the full image).
+          if ! feed; then
+            echo "::warning::Delta patches failed; publishing the update feed without them."
+            rm -rf build/updates
+            feed --deltas 0
+          fi
 
       - name: Publish dev pre-release
         if: env.CHANNEL == 'dev'
@@ -272,9 +335,19 @@ jobs:
             echo
             cat build/install.md
           } > build/notes.md
-          gh release create "$TAG" "$DMG" "$DMG.sha256" \
+          xargs gh release create "$TAG" "$DMG" "$DMG.sha256" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-            --title "LocalVoice $TAG" --notes-file build/notes.md
+            --title "LocalVoice $TAG" --notes-file build/notes.md < build/updates/upload.txt
+          # GitHub's latest-release link skips pre-releases, so installed dev builds read
+          # their feed from this one fixed pre-release.
+          if gh release view dev-feed --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload dev-feed build/updates/appcast.xml --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create dev-feed build/updates/appcast.xml \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "Dev update feed" \
+              --notes "The update feed of the LocalVoice Test dev builds, replaced by every dev build. Keep it: installed dev builds read appcast.xml from here."
+          fi
 
       - name: Publish release
         if: env.CHANNEL == 'release'
@@ -287,13 +360,15 @@ jobs:
             echo
             cat build/install.md
           } > build/notes.md
+          # The installed apps find the update through releases/latest/download/appcast.xml.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # A release created by hand keeps its text; it only gains the signed app.
-            gh release upload "$TAG" "$DMG" "$DMG.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+            # A release created by hand keeps its text; it only gains the signed app and the feed.
+            xargs gh release upload "$TAG" "$DMG" "$DMG.sha256" --repo "$GITHUB_REPOSITORY" --clobber \
+              < build/updates/upload.txt
           else
-            gh release create "$TAG" "$DMG" "$DMG.sha256" \
-              --repo "$GITHUB_REPOSITORY" --verify-tag \
-              --title "LocalVoice $VERSION_BASE" --notes-file build/notes.md
+            xargs gh release create "$TAG" "$DMG" "$DMG.sha256" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+              --title "LocalVoice $VERSION_BASE" --notes-file build/notes.md < build/updates/upload.txt
           fi
 
       # A release made with this job's token starts no workflows by itself

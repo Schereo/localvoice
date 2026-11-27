@@ -64,7 +64,7 @@ class PlanTests(unittest.TestCase):
 
     def test_entitlements_by_location(self):
         app = self.app()
-        nested, skipped, bundle = sign.plan(app)
+        nested, skipped, bundles, bundle = sign.plan(app)
         entitlements = {str(path.relative_to(app)): value and value.name for path, value in nested}
         self.assertEqual(entitlements, {
             "Contents/Helpers/ctrlspeak-overlay": None,
@@ -73,9 +73,35 @@ class PlanTests(unittest.TestCase):
             "Contents/Resources/runtime/lib/python3.11/site-packages/x/_x.so": None,
         })
         self.assertEqual([path.name for path in skipped], ["stub.o"])
+        self.assertEqual(bundles, [])
         self.assertEqual(bundle, (app, sign.ENTITLEMENTS / "app.plist"))
 
-    def test_nested_bundles_are_refused(self):
+    def sparkle(self, app):
+        """Sparkle.framework's layout: a versioned framework holding a helper tool and an app."""
+        framework = app / "Contents/Frameworks/Sparkle.framework"
+        version = framework / "Versions/B"
+        write(version / "Sparkle", thin(sign.MH_DYLIB))
+        write(version / "Resources/Info.plist", plistlib.dumps({"CFBundleExecutable": "Sparkle"}))
+        write(version / "Autoupdate", thin(sign.MH_EXECUTE))
+        updater = version / "Updater.app"
+        write(updater / "Contents/Info.plist", plistlib.dumps({"CFBundleExecutable": "Updater"}))
+        write(updater / "Contents/MacOS/Updater", thin(sign.MH_EXECUTE))
+        (framework / "Versions/Current").symlink_to("B")
+        for name in ("Sparkle", "Autoupdate", "Updater.app", "Resources"):
+            (framework / name).symlink_to(f"Versions/Current/{name}")
+        return framework
+
+    def test_frameworks_are_signed_inside_out(self):
+        app = self.app()
+        framework = self.sparkle(app)
+        nested, _, bundles, _ = sign.plan(app)
+        signed = {str(path.relative_to(app)) for path, _ in nested}
+        # The helper tool is loose; the framework's and the updater's executables come with their bundles.
+        self.assertIn("Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate", signed)
+        self.assertFalse(any(name.endswith(("/Sparkle", "/Updater")) for name in signed))
+        self.assertEqual(bundles, [framework / "Versions/B/Updater.app", framework])
+
+    def test_nested_bundles_elsewhere_are_refused(self):
         app = self.app()
         (app / "Contents/Resources/Other.app").mkdir()
         with self.assertRaises(SystemExit):

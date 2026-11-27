@@ -17,7 +17,7 @@
 
 ## Why
 
-LocalVoice runs **Whisper Large V3 Turbo**, **Parakeet**, **Nemotron Streaming** and **Qwen3-ASR** on your Mac for free. Dictation audio and text are processed locally. The private app's Model Library contacts Hugging Face only when you request a model download. Built on [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), with a native recording pill, automatic speech recognition, and a configurable hotkey.
+LocalVoice runs **Whisper Large V3 Turbo**, **Parakeet**, **Nemotron Streaming** and **Qwen3-ASR** on your Mac for free. Dictation audio and text are processed locally. The private app's Model Library contacts Hugging Face only when you request a model download, and the app asks GitHub for updates only if you allow it. Built on [ctrlSPEAK](https://github.com/patelnav/ctrlspeak), with a native recording pill, automatic speech recognition, and a configurable hotkey.
 
 ## Install
 
@@ -28,6 +28,8 @@ brew install --cask schereo/tap/localvoice
 ```
 
 Requires an Apple Silicon Mac with macOS 15 or later. The cask lives in [Schereo/homebrew-tap](https://github.com/Schereo/homebrew-tap) and follows each release; `brew upgrade --cask localvoice` updates, `brew uninstall --zap --cask localvoice` also removes settings and models.
+
+Releases after 1.3.0 update themselves: a new version shows up in the menu bar menu and under **Settings › General › Updates**, and installs in place, usually as a patch of a few MB. Permissions, models and settings stay. LocalVoice checks GitHub once a day only if you said yes when it asked; **Check for Updates…** looks right away. More: [In-app updates](docs/setup.md#in-app-updates).
 
 To build it yourself: the private ARM64 app is staged with [`scripts/build-app.sh`](scripts/build-app.sh). It keeps its runtime inside the app and does not use or change Homebrew on the target Mac. Build the [Core ML worker](docs/development-checks.md#nvidia-providers) to include the NVIDIA models. In the app, use **Models…** to download or select a model, **Set Up Permissions…** to enable dictation, and optionally **Launch at Login**. See [Setup](docs/setup.md) for build inputs and release checks.
 

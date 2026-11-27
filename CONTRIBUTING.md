@@ -21,6 +21,7 @@ its permission state — that output usually contains the answer.
 | `install.sh` / `uninstall.sh` | The whole lifecycle. Everything is installed from here; nothing is hand-placed. |
 | `src/ctrlspeak-overlay.swift` | The pill UI — a standalone AppKit process driven by a line protocol on stdin. |
 | `src/ctrlspeak-launcher.swift` | The native launcher inside `LocalVoice.app`, including the permission wizard (`--setup`). |
+| `src/localvoice-updater.swift` | In-app updates through [Sparkle](https://sparkle-project.org); a stub in builds without Sparkle. |
 | `src/ctrlspeak-icon.swift` | Generates the app icon at install time. |
 | `patches/ctrlspeak-1.8.0/` | Files that replace their [ctrlSPEAK](https://github.com/patelnav/ctrlspeak) counterparts at install time. Originals are backed up as `*.local-voice-backup` and restored on uninstall. |
 | `scripts/` | `restart`, `doctor`, `setup-permissions`, `preview-overlay`. |
