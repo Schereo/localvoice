@@ -1,6 +1,6 @@
 # Configuration reference
 
-Use **Settings…** in the LocalVoice menu for the hotkey, microphone,
+Use **Settings…** in the LocalVoice menu for the shortcuts, microphone,
 vocabulary, live preview, standby, media pause, the menu bar icon, and launch
 at login. Set the dictation language per model in its **Models** section. Apart from
 launch at login, which macOS keeps, these choices are stored in one
@@ -33,7 +33,8 @@ mic-standby = off
 
 | Key | Values | Default | Effect |
 |---|---|---|---|
-| `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture |
+| `dictate` | tap gesture, modifiers or key combination | `hotkey` | LocalVoice.app: starts and stops dictation |
+| `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture (and `dictate`'s fallback) |
 | `language` | `de` · `en` · `auto` | `de` | Legacy installs only: transcription language |
 | `language.<model-id>` | `auto` · `de` · `en` | `auto` | Dictation language for Whisper, Nemotron or Qwen3-ASR |
 | `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
@@ -54,6 +55,34 @@ followed by `Cmd+V` never triggers a double-tap. If your gesture collides with
 a system shortcut (macOS binds *press Cmd twice* to Siri, for example), change
 either side — Siri's binding lives in System Settings → Apple Intelligence &
 Siri.
+
+### `dictate`
+
+LocalVoice.app records this in **Settings › Dictation › Hotkey**: click the
+field, press the keys and hit Return. Written by hand, it is one of
+
+- a **tap gesture** like `hotkey`: `ctrl,3`;
+- **modifiers pressed together**: two or more joined with `+`, e.g.
+  `ctrl+cmd`. It fires when you let go, and only if no other key or click came
+  in between, so ⌃⌘Q still locks the screen without starting dictation;
+- a **key combination**: modifiers and one key joined with `+`, e.g.
+  `alt+space`, `shift+cmd+d`, `f5`. Modifiers are `ctrl`, `alt` (or `opt`),
+  `shift` and `cmd`. Keys are letters and digits, `space`, `return`, `tab`,
+  `escape`, `delete`, `f1`–`f20`, arrows (`left`, `up`, …), punctuation names
+  (`comma`, `period`, `slash`, …) or `#<key code>`.
+
+Letters name the key's **position on a US keyboard**: what is stored is the
+key, not the character, so a shortcut keeps working when you switch layouts.
+Settings shows it in your layout — on a German keyboard `cmd+y` appears as ⌘Z.
+Settings writes the right name for you.
+
+A key combination needs ⌘, ⌥ or ⌃ unless it is a function key: a plain or
+Shift-only key would fire while typing. It is a system-wide hotkey: macOS hands
+it to LocalVoice instead of the app in front. Return and Esc are not available:
+during a recording they insert and discard. Without
+`dictate`, LocalVoice uses `hotkey`; choosing a tap gesture in Settings writes
+both. The service's own listener — used only when it runs without the app —
+understands tap gestures only, and keeps `hotkey` otherwise.
 
 ### `language`
 

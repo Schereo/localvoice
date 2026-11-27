@@ -201,7 +201,8 @@ def main():
         subprocess.run([*swift, "-parse-as-library", "-F", str(sparkle), "-framework", "Sparkle",
                         "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
                         str(ROOT / "src/ctrlspeak-launcher.swift"), str(ROOT / "src/localvoice-model-library.swift"),
-                        str(ROOT / "src/localvoice-updater.swift"), str(ROOT / "src/localvoice-shortcuts.swift"), "-o", str(macos / "LocalVoice")], check=True)
+                        str(ROOT / "src/localvoice-updater.swift"), str(ROOT / "src/localvoice-shortcuts.swift"),
+                        str(ROOT / "src/localvoice-shortcut-recorder.swift"), "-o", str(macos / "LocalVoice")], check=True)
         # The updater code compiles to a stub when Sparkle cannot be imported; refuse that build.
         links = subprocess.check_output(["/usr/bin/otool", "-L", str(macos / "LocalVoice")], text=True)
         staging.require("@rpath/Sparkle.framework/" in links, "The launcher does not link Sparkle.")

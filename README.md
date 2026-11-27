@@ -37,7 +37,7 @@ To build it yourself: the private ARM64 app is staged with [`scripts/build-app.s
 
 | Key | Action |
 |---|---|
-| Hotkey tap (default: triple-tap **Ctrl**) | Start recording / stop and insert |
+| Your hotkey (default: triple-tap **Ctrl**, or e.g. ⌥Space or ⌃⌘) | Start recording / stop and insert |
 | **Enter** / **Esc** while recording | Insert / discard |
 | **Cmd+,** while recording | Open the settings in your text editor |
 
