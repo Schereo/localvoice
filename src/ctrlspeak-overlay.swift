@@ -115,6 +115,7 @@ final class RecorderHUDView: NSView {
             : nil
         mode = newMode
         modeChangedAt = Date()
+        stoppedAt = nil
         if newMode == .recording {
             recordingStartedAt = Date()
         }
@@ -122,6 +123,14 @@ final class RecorderHUDView: NSView {
     }
 
     private var modeChangedAt = Date()
+
+    // Set the moment recording stops, while the pill waits for the result in
+    // full size: the dot goes grey and the timer stands still.
+    private var stoppedAt: Date?
+    func markStopped() {
+        stoppedAt = Date()
+        needsDisplay = true
+    }
     private var spinnerExit: (head: CGFloat, length: CGFloat)?
 
     // The transcribing arc: about one turn a second, clockwise, its length
@@ -397,13 +406,17 @@ final class RecorderHUDView: NSView {
 
         // Soft pulse plus crisp live dot, anchored on the control band's
         // left edge with the same margin the result icons use.
-        let pulse = (sin(phase * 0.72) + 1) / 2
-        let haloRadius = 5.5 + pulse * 2.5
-        let haloRect = NSRect(x: 27 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
-        NSColor(calibratedRed: 1, green: 0.25, blue: 0.30, alpha: 0.10 + pulse * 0.10).setFill()
-        NSBezierPath(ovalIn: haloRect).fill()
-
-        NSColor(calibratedRed: 1, green: 0.27, blue: 0.31, alpha: 1).setFill()
+        if stoppedAt == nil {
+            let pulse = (sin(phase * 0.72) + 1) / 2
+            let haloRadius = 5.5 + pulse * 2.5
+            let haloRect = NSRect(x: 27 - haloRadius, y: centerY - haloRadius, width: haloRadius * 2, height: haloRadius * 2)
+            NSColor(calibratedRed: 1, green: 0.25, blue: 0.30, alpha: 0.10 + pulse * 0.10).setFill()
+            NSBezierPath(ovalIn: haloRect).fill()
+            NSColor(calibratedRed: 1, green: 0.27, blue: 0.31, alpha: 1).setFill()
+        } else {
+            // Stopped: no longer recording, so no longer red.
+            ink.withAlphaComponent(0.35).setFill()
+        }
         NSBezierPath(ovalIn: NSRect(x: 24, y: centerY - 3, width: 6, height: 6)).fill()
 
         // One shared gap between every neighbour pair — measured to the
@@ -412,7 +425,7 @@ final class RecorderHUDView: NSView {
         let gap: CGFloat = 16
         let dotRightEdge: CGFloat = 30
 
-        let seconds = max(0, Int(Date().timeIntervalSince(recordingStartedAt)))
+        let seconds = max(0, Int((stoppedAt ?? Date()).timeIntervalSince(recordingStartedAt)))
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
         let timerFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
         let timerWidth = ceil((elapsed as NSString).size(withAttributes: [.font: timerFont]).width)
@@ -565,7 +578,9 @@ final class RecorderHUDView: NSView {
         // Coming from the spinner, the arc spirals inward, turns green and
         // lands where the check starts; the check then carries on from that
         // point, so the two read as one stroke.
-        var markDelay = 0.06
+        // Straight from the pill, the mark waits until the fold has mostly
+        // become a circle.
+        var markDelay = 0.2
         if kind == .check, let exit = spinnerExit {
             let handoff = 0.26
             markDelay = handoff * 0.8
@@ -933,6 +948,16 @@ final class OverlayController: NSObject {
     private var growTimer: Timer?
     private var growTargetSize = NSSize.zero
     private var growCompletion: (() -> Void)?
+    // "processing" waits a moment before folding the pill into the circle:
+    // a quick result (no speech, copied) then goes straight from the
+    // recording pill to its own size instead of shrinking first.
+    private var pendingProcessing: DispatchWorkItem?
+    private static let processingDelay: TimeInterval = 0.45
+    // Once the pill does fold into the transcribing circle, the fold finishes
+    // and the arc turns at least this long before a result may replace it.
+    private static let minimumSpin: TimeInterval = 0.3
+    private var spinnerReadyAt: Date?
+    private var pendingOutcome: DispatchWorkItem?
 
     private static let seedDiameter: CGFloat = 12
     // The pill's own height: circle and pill are one shape, only the
@@ -1198,7 +1223,18 @@ final class OverlayController: NSObject {
         growTimer = timer
     }
 
-    /// Jump a running grow to its end, before anything else resizes the pill.
+    /// Stop a running grow where it is, so the next resize starts from the
+    /// size on screen instead of jumping to where the grow was heading.
+    private func stopGrow() {
+        growTimer?.invalidate()
+        growTimer = nil
+        growCompletion = nil
+        if !isClosing {
+            hudView.contentAlpha = 1
+        }
+    }
+
+    /// Jump a running grow to its end.
     private func finishGrow() {
         guard let timer = growTimer else { return }
         timer.invalidate()
@@ -1217,10 +1253,22 @@ final class OverlayController: NSObject {
     /// before.
     private func fitToMode() {
         guard [.processing, .success, .cancelled].contains(hudView.mode) else {
+            // A one-line message that fits the window springs from whatever
+            // size is on screen (recording pill, a half-folded circle) with a
+            // mask redrawn every frame; the stretchable mask of the animator
+            // morph pinches into a lens below twice its cap width.
+            let margin = OverlayController.shadowMargin
+            if let wanted = hudView.desiredSize(),
+               abs(wanted.height - effectView.frame.height) < 1,
+               wanted.width <= containerView.bounds.width - margin * 2 {
+                capsuleTarget = wanted
+                // The label fades in as the capsule opens, never clipped mid-word.
+                grow(to: wanted, duration: 0.42, fadeInContent: true)
+                return
+            }
             syncPanelSize()
             return
         }
-        finishGrow()
         let circle = NSSize(width: OverlayController.armDiameter, height: OverlayController.armDiameter)
         capsuleTarget = circle
         grow(to: circle, duration: 0.42)
@@ -1250,7 +1298,7 @@ final class OverlayController: NSObject {
     /// comparison is therefore made against the target, and the shadow
     /// starts from where it is on screen, not where it was headed.
     private func syncPanelSize() {
-        finishGrow()
+        stopGrow()
         guard let wanted = hudView.desiredSize() else { return }
 
         let previous = capsuleTarget
@@ -1328,6 +1376,24 @@ final class OverlayController: NSObject {
         }
     }
 
+    private func applyState(_ newMode: OverlayMode) {
+        hudView.setMode(newMode)
+        fitToMode()
+
+        switch newMode {
+        case .success:
+            close(after: 1.0)
+        case .empty, .failed:
+            close(after: 1.8)
+        case .cancelled:
+            close(after: 0.9)
+        case .clipboard:
+            close(after: 1.8)
+        default:
+            break
+        }
+    }
+
     private func startReadingCommands() {
         let input = FileHandle.standardInput
         input.readabilityHandler = { [weak self] handle in
@@ -1400,21 +1466,35 @@ final class OverlayController: NSObject {
             }
         case "state" where parts.count == 2:
             guard let newMode = OverlayMode(rawValue: parts[1]) else { return }
-            hudView.setMode(newMode)
-            fitToMode()
-
-            switch newMode {
-            case .success:
-                close(after: 1.0)
-            case .empty, .failed:
-                close(after: 1.8)
-            case .cancelled:
-                close(after: 0.9)
-            case .clipboard:
-                close(after: 1.8)
-            default:
-                break
+            pendingProcessing?.cancel()
+            pendingProcessing = nil
+            pendingOutcome?.cancel()
+            pendingOutcome = nil
+            // A result while the circle is still folding or has only just
+            // started turning waits its turn, so the motion never breaks off.
+            if hudView.mode == .processing, let ready = spinnerReadyAt, ready > Date() {
+                let work = DispatchWorkItem { [weak self] in
+                    self?.pendingOutcome = nil
+                    self?.applyState(newMode)
+                }
+                pendingOutcome = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + ready.timeIntervalSinceNow, execute: work)
+                return
             }
+            if newMode == .processing && hudView.mode == .recording {
+                // Usually the result is here within this pause and the pill
+                // goes straight to it; only a slow one brings the circle.
+                hudView.markStopped()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.pendingProcessing = nil
+                    self?.spinnerReadyAt = Date().addingTimeInterval(0.42 + OverlayController.minimumSpin)
+                    self?.applyState(.processing)
+                }
+                pendingProcessing = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + OverlayController.processingDelay, execute: work)
+                return
+            }
+            applyState(newMode)
         case "progress":
             // "progress" without a value, or a negative one, means indeterminate.
             hudView.setProgress(parts.count == 2 ? Double(parts[1]) : nil)
@@ -1469,6 +1549,10 @@ final class OverlayController: NSObject {
         isClosing = true
         FileHandle.standardInput.readabilityHandler = nil
         previewTimer?.invalidate()
+        pendingProcessing?.cancel()
+        pendingProcessing = nil
+        pendingOutcome?.cancel()
+        pendingOutcome = nil
         // The way it came: the capsule folds back into a point and is gone,
         // starting from wherever a running grow has got to.
         growTimer?.invalidate()
