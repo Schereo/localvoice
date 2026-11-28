@@ -21,9 +21,12 @@ built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
   of the pill fading in only after the microphone was ready.
 - Inserted text is confirmed by the pill folding into a circle with a green
   check, without the "Text inserted" label. Every pill now leaves by folding
-  back into a point instead of fading out. While the text is transcribed,
-  the pill is already that circle, with a neutral arc running round it that
-  spirals into the check once the text lands. A discarded recording (Esc)
+  back into a point instead of fading out. When recording stops, the pill
+  pauses at full size for a moment (grey dot, timer stopped); a quick result
+  goes straight to its circle or message from there. Only a slow transcription
+  folds the pill into a circle with a neutral arc running round it, which
+  spirals into the check once the text lands, and that fold always finishes
+  before a result replaces it. A discarded recording (Esc)
   folds into a red cross the same way; the clipboard pill just says
   "Copied". Errors and "No speech detected" keep their text.
 - The website's Homebrew command sits in its own box with a copy button.
