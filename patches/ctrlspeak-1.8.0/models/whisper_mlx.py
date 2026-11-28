@@ -4,15 +4,50 @@ from contextlib import contextmanager, nullcontext
 import logging
 from pathlib import Path
 import re
+import sys
+import types
 from typing import List
-
-from models.base_model import BaseSTTModel
 
 logger = logging.getLogger("whisper_mlx_model")
 
 
-class WhisperMLXModel(BaseSTTModel):
+def _ensure_lightweight_mlx_whisper():
+    """Avoid importing mlx_whisper.timing (scipy/numba/llvmlite) and optional
+    huggingface_hub when loading verified local weights.
+
+    Upstream mlx_whisper/transcribe.py unconditionally imports
+    ``add_word_timestamps`` from ``.timing``, which drags in ~257 MB of
+    scipy/numba/llvmlite solely for ``word_timestamps=True``. Similarly,
+    mlx_whisper/load_models.py imports ``snapshot_download`` from
+    ``huggingface_hub`` even when ``path_or_hf_repo`` is a local directory.
+    """
+    if "mlx_whisper.timing" not in sys.modules:
+        def _unsupported_word_timestamps(*_args, **_kwargs):
+            raise RuntimeError("word_timestamps is disabled in the lightweight LocalVoice runtime.")
+
+        stub = types.ModuleType("mlx_whisper.timing")
+        stub.add_word_timestamps = _unsupported_word_timestamps
+        sys.modules["mlx_whisper.timing"] = stub
+
+    if "huggingface_hub" not in sys.modules:
+        import importlib.util
+        if importlib.util.find_spec("huggingface_hub") is None:
+            def _unavailable_hub(*_args, **_kwargs):
+                raise RuntimeError(
+                    "Remote Hugging Face downloads are disabled; install models via LocalVoice."
+                )
+
+            hf_stub = types.ModuleType("huggingface_hub")
+            hf_stub.snapshot_download = _unavailable_hub
+            sys.modules["huggingface_hub"] = hf_stub
+
+
+class WhisperMLXModel:
     """Run Whisper Large V3 Turbo locally through Apple's MLX framework."""
+
+    supports_streaming = False
+    supports_forced_language = True
+    deferred_load = True
 
     SUPPORTED_LANGUAGES = {"de", "en"}
     AUTOMATIC = "auto"
@@ -41,6 +76,13 @@ class WhisperMLXModel(BaseSTTModel):
     # A word or short phrase this many times in a row is a decoder loop, not
     # dictation. Catches the milder runs that stay under the ratio above.
     REPEAT_RUN_MIN = 4
+    _REPEAT_PATTERN = re.compile(
+        r"(?<![\w])"
+        r"((?:[^\s,.;:!?]+)(?:\s+[^\s,.;:!?]+){0,3}?)"
+        rf"(?:[\s,.;:!?]+\1){{{REPEAT_RUN_MIN - 1},}}"
+        r"(?![\w])",
+        flags=re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -48,9 +90,18 @@ class WhisperMLXModel(BaseSTTModel):
         device=None,
         verbose=False,
     ):
-        super().__init__(device=None, verbose=verbose)
+        self.device = device
+        self.verbose = verbose
         self.model_name = model_name
         self.model = None
+
+    @staticmethod
+    def _clean_text(text) -> str:
+        if text is None:
+            return ""
+        if isinstance(text, dict) and "text" in text:
+            text = text["text"]
+        return str(text).strip()
 
     def _checked_model_name(self):
         path = Path(self.model_name)
@@ -67,6 +118,7 @@ class WhisperMLXModel(BaseSTTModel):
             return self.model
 
         import mlx.core as mx
+        _ensure_lightweight_mlx_whisper()
         from mlx_whisper.transcribe import ModelHolder
 
         if Path(model_name).is_absolute():
@@ -82,6 +134,21 @@ class WhisperMLXModel(BaseSTTModel):
                 self.model = ModelHolder.get_model(model_name, mx.float16)
         logger.info("MLX Whisper model loaded successfully.")
         return self.model
+
+    def unload_model(self):
+        """Release loaded MLX Whisper weights and clear Metal buffer cache."""
+        if self.model is None:
+            return
+        self.model = None
+        if "mlx_whisper.transcribe" in sys.modules:
+            holder = getattr(sys.modules["mlx_whisper.transcribe"], "ModelHolder", None)
+            if holder is not None:
+                holder.model = None
+                holder.model_path = None
+        import gc
+        import mlx.core as mx
+        gc.collect()
+        mx.clear_cache()
 
     def detect_language(self, audio) -> str:
         """Choose between German and English for one recording."""
@@ -130,7 +197,9 @@ class WhisperMLXModel(BaseSTTModel):
         _, probabilities = model.detect_language(features[0])
 
         scores = {code: float(probabilities.get(code, 0.0)) for code in self.SUPPORTED_LANGUAGES}
-        return max(scores, key=scores.get), _reused_encoding(model.encoder, window, features)
+        return max(scores, key=scores.get), _reused_encoding(
+            model.encoder, window, features, audio=audio, mel=mel
+        )
 
     def transcribe_pcm(self, samples, source_lang, target_lang):
         """Decode the recorder's mono 16 kHz float PCM without writing it to disk."""
@@ -176,6 +245,7 @@ class WhisperMLXModel(BaseSTTModel):
         if self.model is None:
             self.load_model()
 
+        _ensure_lightweight_mlx_whisper()
         import mlx_whisper
 
         from utils import localvoice_config
@@ -317,14 +387,7 @@ class WhisperMLXModel(BaseSTTModel):
         """
         if not text:
             return text
-        pattern = re.compile(
-            r"(?<![\w])"
-            r"((?:[^\s,.;:!?]+)(?:\s+[^\s,.;:!?]+){0,3}?)"
-            rf"(?:[\s,.;:!?]+\1){{{cls.REPEAT_RUN_MIN - 1},}}"
-            r"(?![\w])",
-            flags=re.IGNORECASE,
-        )
-        return pattern.sub(r"\1", text)
+        return cls._REPEAT_PATTERN.sub(r"\1", text)
 
     @staticmethod
     def _suppress_prompt_echo(text, vocabulary):
@@ -338,8 +401,9 @@ class WhisperMLXModel(BaseSTTModel):
 
 
 @contextmanager
-def _reused_encoding(encoder, window, features):
-    """Answer the encoder from `features` while it is asked for `window`.
+def _reused_encoding(encoder, window, features, *, audio=None, mel=None):
+    """Answer the encoder from `features` while it is asked for `window`,
+    and reuse the already-computed `mel` spectrogram inside transcribe().
 
     Scoped to one transcribe() call on the transcription worker, the only
     thread that runs MLX. Any other input — later 30 s windows, clipped
@@ -357,8 +421,26 @@ def _reused_encoding(encoder, window, features):
             return features
         return original(self, x)
 
+    transcribe_mod = None
+    original_mel = None
+    if mel is not None and audio is not None:
+        try:
+            import mlx_whisper.transcribe as transcribe_mod
+            original_mel = transcribe_mod.log_mel_spectrogram
+
+            def cached_mel(inp, *args, **kwargs):
+                if inp is audio:
+                    return mel
+                return original_mel(inp, *args, **kwargs)
+
+            transcribe_mod.log_mel_spectrogram = cached_mel
+        except Exception:
+            transcribe_mod = None
+
     encoder_class.__call__ = call
     try:
         yield
     finally:
         encoder_class.__call__ = original
+        if transcribe_mod is not None and original_mel is not None:
+            transcribe_mod.log_mel_spectrogram = original_mel

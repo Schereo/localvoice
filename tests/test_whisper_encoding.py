@@ -70,6 +70,29 @@ class ReusedEncodingTests(unittest.TestCase):
                 raise RuntimeError("decode failed")
         self.assertEqual(encoder(Window("first")), "encoded first")
 
+    def test_transcribe_reuses_mel_spectrogram_for_same_audio(self):
+        encoder = Encoder()
+        audio = object()
+        other_audio = object()
+        mel_calls = []
+
+        def fake_mel(inp, *args, **kwargs):
+            mel_calls.append(inp)
+            return "computed-mel"
+
+        transcribe_stub = stub("mlx_whisper.transcribe", log_mel_spectrogram=fake_mel)
+        with patch.dict(sys.modules, {
+            "mlx_whisper": stub("mlx_whisper", __path__=[]),
+            "mlx_whisper.transcribe": transcribe_stub,
+        }):
+            with self.whisper._reused_encoding(
+                encoder, Window("first"), "kept features", audio=audio, mel="cached-mel"
+            ):
+                self.assertEqual(transcribe_stub.log_mel_spectrogram(audio), "cached-mel")
+                self.assertEqual(transcribe_stub.log_mel_spectrogram(other_audio), "computed-mel")
+            self.assertIs(transcribe_stub.log_mel_spectrogram, fake_mel)
+        self.assertEqual(mel_calls, [other_audio])
+
 
 if __name__ == "__main__":
     unittest.main()

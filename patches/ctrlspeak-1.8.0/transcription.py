@@ -4,10 +4,10 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import warnings
 
 import numpy as np
-import soundfile as sf
 
 import state
 from utils.audio import SAMPLE_RATE
@@ -64,6 +64,7 @@ def _transcribe_audio(model, audio):
     if callable(transcribe_pcm):
         return transcribe_pcm(samples, state.source_lang, state.target_lang)
     # The context owns cleanup on success, failure, and a cancelled decode.
+    import soundfile as sf
     with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
         sf.write(tmp.name, samples, SAMPLE_RATE)
         results = model.transcribe_batch(
@@ -149,6 +150,38 @@ def _run_job(model, job, results_list):
                 set_overlay_transcript(final=" ".join(results_list).strip(), partial="")
 
 
+def _warmup_model(model, work_queue):
+    """Run one tiny silent pass after startup so Metal shaders / Core ML graphs
+    are already compiled before the user's very first dictation."""
+    if not work_queue.empty():
+        return
+    transcribe_pcm = getattr(model, "transcribe_pcm", None)
+    if not callable(transcribe_pcm):
+        return
+    try:
+        lang = state.source_lang
+        if lang == "auto" and getattr(model, "supports_forced_language", True):
+            lang = "de"
+        # 0.5 s of silence satisfies FluidAudio's 0.3 s minimum and exercises
+        # both encoder and decoder paths; Nemotron streaming uses one chunk.
+        samples = 35_840 if getattr(model, "supports_streaming", False) else 8_000
+        silence = np.zeros(samples, dtype=np.float32)
+        transcribe_pcm(silence, lang, lang)
+        logger.info("Worker model warmup complete.")
+    except Exception as exc:
+        logger.debug("Skipping optional model warmup (%s).", type(exc).__name__)
+
+
+def _idle_unload_seconds():
+    """Configured inactivity timeout in seconds (0 disables idle unload)."""
+    try:
+        from utils import localvoice_config
+        minutes = localvoice_config.idle_unload_minutes()
+    except Exception:
+        return 0.0
+    return float(minutes * 60) if minutes > 0 else 0.0
+
+
 def transcription_worker(model, work_queue, results_list, source_lang, target_lang):
     """Decode queued audio until shutdown. Each dequeued job is counted once."""
     # MLX streams are thread-local; load weights in the inference thread.
@@ -157,14 +190,62 @@ def transcription_worker(model, work_queue, results_list, source_lang, target_la
         logger.info("Initializing model in the transcription worker thread...")
         model.load_model()
         state.model_loaded = True
+        state.model_unloaded = False
+        loaded_event = getattr(state, "model_loaded_event", None)
+        if loaded_event is not None:
+            loaded_event.set()
         logger.info("Worker model initialization complete. Ready to record.")
+        _warmup_model(model, work_queue)
+
+    last_activity = time.monotonic()
+    can_unload = callable(getattr(model, "unload_model", None))
 
     while True:
-        job = work_queue.get()
+        idle_limit = _idle_unload_seconds() if (can_unload and not getattr(state, "model_unloaded", False)) else 0.0
+        if idle_limit > 0.0:
+            remaining = idle_limit - (time.monotonic() - last_activity)
+            if remaining <= 0.0:
+                manager = state.audio_manager
+                if manager is not None and manager.is_collecting:
+                    last_activity = time.monotonic()
+                    remaining = idle_limit
+                else:
+                    try:
+                        model.unload_model()
+                        state.model_unloaded = True
+                        logger.info(
+                            "Model unloaded after %d min of inactivity to free memory.",
+                            int(round(idle_limit / 60.0)),
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not unload idle model (%s).", type(exc).__name__)
+                        last_activity = time.monotonic()
+                    continue
+            try:
+                job = work_queue.get(timeout=remaining)
+            except queue.Empty:
+                continue
+        else:
+            job = work_queue.get()
+
         try:
             if job is None:
                 return
+            if job.kind == "idle-check":
+                continue
+            if job.kind == "preload":
+                if getattr(state, "model_unloaded", False):
+                    logger.info("Reloading idle-unloaded model in background...")
+                    model.load_model()
+                    state.model_unloaded = False
+                last_activity = time.monotonic()
+                continue
+            if getattr(state, "model_unloaded", False):
+                logger.info("Reloading idle-unloaded model...")
+                model.load_model()
+                state.model_unloaded = False
             _run_job(model, job, results_list)
+            last_activity = time.monotonic()
         except Exception as exc:
             logger.error("Transcription job failed (%s).", type(exc).__name__)
             manager = state.audio_manager

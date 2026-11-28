@@ -14,8 +14,6 @@ ensure_tqdm_thread_lock()
 import time
 import threading
 import logging
-from rich.console import Console
-from rich.panel import Panel
 
 # Add the project root to the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -25,11 +23,12 @@ from utils.config import is_first_run, mark_first_run_complete, set_preferred_mo
 
 import state
 from state import console, KNOWN_MODELS
-from logging_config import setup_logging, setup_logging_for_mode
 from environment import save_environment_variables, restore_environment_variables
 
 logger = logging.getLogger("ctrlspeak")
 MANAGED_MODEL_UNAVAILABLE = 78
+_shutdown_event = threading.Event()
+_config_watcher_kq = None
 
 
 def find_cached_models():
@@ -100,16 +99,19 @@ def _start_config_watcher():
 
     The config opens in a plain text editor (Cmd+, while the pill is up), so
     the natural flow is edit, save, speak — a restart requirement would turn
-    that into edit, save, wonder why nothing changed. Polling the mtime every
-    couple of seconds is cheap and avoids an FSEvents dependency.
+    that into edit, save, wonder why nothing changed. Uses macOS kqueue on the
+    config directory for 0 wakeups/s while idle, falling back to polling only
+    if kqueue is unavailable.
     """
+    import select
     import hotkeys
     from utils import localvoice_config
     from utils.keyboard_shortcuts import load_hotkey_config
 
-    def _mtime():
+    def _stat_key():
         try:
-            return localvoice_config.CONFIG_FILE.stat().st_mtime
+            st = localvoice_config.CONFIG_FILE.stat()
+            return (st.st_ino, st.st_mtime_ns, st.st_size)
         except OSError:
             return None
 
@@ -159,14 +161,84 @@ def _start_config_watcher():
                 except Exception as exc:
                     logger.warning(f"Could not apply the microphone standby change: {exc}")
 
+        # Wake the transcription worker so updated idle-unload timeouts take
+        # effect immediately without restarting the service.
+        if state.transcription_worker_thread and state.transcription_worker_thread.is_alive():
+            state.transcription_queue.put(state.TranscriptionJob(-1, "idle-check"))
+
     def _watch():
-        last_mtime = _mtime()
+        global _config_watcher_kq
+        last_key = _stat_key()
+
+        if hasattr(select, "kqueue"):
+            kq = None
+            dir_fd = -1
+            try:
+                config_dir = localvoice_config.CONFIG_DIR
+                config_dir.mkdir(parents=True, exist_ok=True)
+                o_evtonly = getattr(os, "O_EVTONLY", os.O_RDONLY)
+                dir_fd = os.open(str(config_dir), o_evtonly)
+                kq = select.kqueue()
+                _config_watcher_kq = kq
+                fflags = (
+                    select.KQ_NOTE_WRITE
+                    | select.KQ_NOTE_RENAME
+                    | select.KQ_NOTE_EXTEND
+                    | select.KQ_NOTE_ATTRIB
+                    | select.KQ_NOTE_DELETE
+                )
+                events = [
+                    select.kevent(
+                        dir_fd,
+                        filter=select.KQ_FILTER_VNODE,
+                        flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                        fflags=fflags,
+                    ),
+                    select.kevent(
+                        1,
+                        filter=select.KQ_FILTER_USER,
+                        flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                    ),
+                ]
+                kq.control(events, 0)
+                while state.main_loop_active:
+                    fired = kq.control(None, 4)
+                    if not state.main_loop_active:
+                        break
+                    if any(ev.filter == select.KQ_FILTER_USER for ev in fired):
+                        break
+                    key = _stat_key()
+                    if key is None or key == last_key:
+                        continue
+                    last_key = key
+                    try:
+                        _apply_changes()
+                    except Exception as exc:
+                        logger.warning(f"Could not apply the edited configuration: {exc}")
+                return
+            except OSError:
+                pass
+            finally:
+                _config_watcher_kq = None
+                if kq is not None:
+                    try:
+                        kq.close()
+                    except OSError:
+                        pass
+                if dir_fd >= 0:
+                    try:
+                        os.close(dir_fd)
+                    except OSError:
+                        pass
+
         while state.main_loop_active:
-            time.sleep(2.0)
-            mtime = _mtime()
-            if mtime is None or mtime == last_mtime:
+            _shutdown_event.wait(timeout=2.0)
+            if not state.main_loop_active:
+                break
+            key = _stat_key()
+            if key is None or key == last_key:
                 continue
-            last_mtime = mtime
+            last_key = key
             try:
                 _apply_changes()
             except Exception as exc:
@@ -410,6 +482,7 @@ def run_app(args):
 
     state.startup_time = time.time()
     if not managed:
+        from logging_config import setup_logging
         setup_logging()
 
     saved_env_vars = save_environment_variables()
@@ -430,6 +503,7 @@ def run_app(args):
             _setup_managed_logging()
             _watch_lifeline()
         else:
+            from logging_config import setup_logging_for_mode
             setup_logging_for_mode(state.DEBUG_MODE)
 
         if managed:
@@ -501,6 +575,10 @@ def run_app(args):
 
         from transcription import transcription_worker
 
+        loaded_event = getattr(state, "model_loaded_event", None)
+        if loaded_event is not None:
+            loaded_event.clear()
+
         state.transcription_worker_thread = threading.Thread(
             target=transcription_worker,
             args=(state.stt_model, state.transcription_queue, state.transcribed_chunks, state.source_lang, state.target_lang),
@@ -508,6 +586,22 @@ def run_app(args):
             name="TranscriptionWorker",
         )
         state.transcription_worker_thread.start()
+
+        # Overlap pure Python module imports (audio/numpy, pynput, hotkeys) and
+        # ApplicationServices preloading with MLX/Core ML model loading. Do not
+        # open PortAudio or touch the microphone until the weights are loaded.
+        from utils.keyboard_shortcuts import KeyboardShortcutManager
+        from utils.audio import AudioManager, resolve_input_device
+        from hotkeys import (
+            on_activate,
+            press_to_talk,
+            release_to_insert,
+            release_to_discard,
+            is_recording,
+            cancel_recording,
+            finish_recording,
+            open_config,
+        )
 
         # MLX streams are thread-local, so deferred models finish loading in
         # the transcription worker. Avoid starting PortAudio concurrently;
@@ -521,7 +615,10 @@ def run_app(args):
                 and state.transcription_worker_thread.is_alive()
                 and time.monotonic() < model_ready_deadline
             ):
-                time.sleep(0.05)
+                if loaded_event is not None:
+                    loaded_event.wait(timeout=0.05)
+                else:
+                    time.sleep(0.05)
 
             if not state.model_loaded:
                 logger.error("MLX model initialization did not complete successfully.")
@@ -537,19 +634,6 @@ def run_app(args):
         if managed and os.environ.get("LOCALVOICE_PERMISSIONS_PREFLIGHT") != "1" and not _has_permissions():
             logger.warning("Permission check failed.")
             return 0
-
-        from utils.keyboard_shortcuts import KeyboardShortcutManager
-        from utils.audio import AudioManager, resolve_input_device
-        from hotkeys import (
-            on_activate,
-            press_to_talk,
-            release_to_insert,
-            release_to_discard,
-            is_recording,
-            cancel_recording,
-            finish_recording,
-            open_config,
-        )
 
         state.audio_manager = AudioManager(
             transcription_queue=state.transcription_queue,
@@ -636,17 +720,19 @@ def run_app(args):
                     logger.error("Could not publish readiness at %s: %s", ready_file, exc)
                     return 1
 
-            hotkey_hint = (state.keyboard_manager.hotkey_description
-                           if state.keyboard_manager is not None else "The LocalVoice shortcut")
-            console.print(
-                Panel.fit(
-                    f"[bold cyan]LocalVoice[/bold cyan] - Ready to transcribe.\n"
-                    f"[bold]{hotkey_hint}[/bold] to start/stop recording.\n"
-                    f"While recording: [bold]Enter[/bold] inserts, [bold]Esc[/bold] cancels.",
-                    title="Welcome",
-                    border_style="blue",
+            if not managed and sys.stdout.isatty():
+                from rich.panel import Panel
+                hotkey_hint = (state.keyboard_manager.hotkey_description
+                               if state.keyboard_manager is not None else "The LocalVoice shortcut")
+                console.print(
+                    Panel.fit(
+                        f"[bold cyan]LocalVoice[/bold cyan] - Ready to transcribe.\n"
+                        f"[bold]{hotkey_hint}[/bold] to start/stop recording.\n"
+                        f"While recording: [bold]Enter[/bold] inserts, [bold]Esc[/bold] cancels.",
+                        title="Welcome",
+                        border_style="blue",
+                    )
                 )
-            )
 
             # Under the LaunchAgent there is no terminal: stdout and stderr are
             # the log files from the plist, and TERM is set, so Textual believes
@@ -685,7 +771,7 @@ def run_app(args):
             else:
                 logger.info("Running headless without the Textual UI.")
                 while state.main_loop_active:
-                    time.sleep(0.2)
+                    _shutdown_event.wait()
                 logger.info("Headless loop exited, cleaning up...")
         finally:
             state.audio_manager.close_input_stream()
@@ -764,6 +850,17 @@ def exit_app():
 
     logger.info("Signaling main loop to exit...")
     state.main_loop_active = False
+    _shutdown_event.set()
+    kq = _config_watcher_kq
+    if kq is not None:
+        try:
+            import select
+            kq.control(
+                [select.kevent(1, filter=select.KQ_FILTER_USER, fflags=select.KQ_NOTE_TRIGGER)],
+                0,
+            )
+        except OSError:
+            pass
 
     logger.info("Exit_app finished signaling components.")
 
@@ -779,6 +876,7 @@ def main():
 
     if args.list_models:
         from models.registry import MODEL_REGISTRY
+        from rich.console import Console
         console = Console()
         console.print("\n[bold]Supported Models:[/bold]")
 

@@ -52,7 +52,7 @@ final class RecorderHUDView: NSView {
     private var displayedLevel: CGFloat = 0
     private var phase: CGFloat = 0
     private var recordingStartedAt = Date()
-    private var animationTimer: Timer?
+    private nonisolated(unsafe) var animationTimer: Timer?
 
     // Progress is nil while the total download size is still unknown, which
     // makes the bar fall back to an indeterminate sweep. The displayed value
@@ -71,6 +71,12 @@ final class RecorderHUDView: NSView {
     private var partialTranscript = ""
     private var transcriptCacheKey = ""
     private var transcriptCache: (text: NSAttributedString, lines: Int)?
+    private var rimCacheKey: (width: Int, height: Int, dark: Bool)?
+    private var rimCacheImage: NSImage?
+    private static let timerFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+    private var cachedTimerSeconds: Int = -1
+    private var cachedTimerText = "00:00"
+    private var cachedTimerWidth: CGFloat = 0
 
     // Recording chrome (dot, waveform, timer) lives in the bottom
     // 44 pt band. With no transcript the capsule *is* that band; with text
@@ -107,6 +113,15 @@ final class RecorderHUDView: NSView {
         animationTimer?.invalidate()
     }
 
+    private static func isAnimated(_ mode: OverlayMode) -> Bool {
+        switch mode {
+        case .arming, .recording, .processing, .success, .permission, .download:
+            return true
+        case .empty, .failed, .cancelled, .clipboard, .error:
+            return false
+        }
+    }
+
     func setMode(_ newMode: OverlayMode) {
         // The check continues the spinner's stroke, so it needs to know where
         // the arc was when the text landed.
@@ -118,6 +133,12 @@ final class RecorderHUDView: NSView {
         stoppedAt = nil
         if newMode == .recording {
             recordingStartedAt = Date()
+            cachedTimerSeconds = -1
+        }
+        if RecorderHUDView.isAnimated(newMode) {
+            startAnimating()
+        } else {
+            stopAnimating()
         }
         needsDisplay = true
     }
@@ -426,9 +447,14 @@ final class RecorderHUDView: NSView {
         let dotRightEdge: CGFloat = 30
 
         let seconds = max(0, Int((stoppedAt ?? Date()).timeIntervalSince(recordingStartedAt)))
-        let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
-        let timerFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
-        let timerWidth = ceil((elapsed as NSString).size(withAttributes: [.font: timerFont]).width)
+        if seconds != cachedTimerSeconds {
+            cachedTimerSeconds = seconds
+            cachedTimerText = String(format: "%02d:%02d", seconds / 60, seconds % 60)
+            cachedTimerWidth = ceil((cachedTimerText as NSString).size(withAttributes: [.font: RecorderHUDView.timerFont]).width)
+        }
+        let elapsed = cachedTimerText
+        let timerFont = RecorderHUDView.timerFont
+        let timerWidth = cachedTimerWidth
         // The same 18 pt margin on the right as the recording dot's on the left.
         let timerX = bounds.width - 18 - timerWidth
 
@@ -455,60 +481,72 @@ final class RecorderHUDView: NSView {
     // hairline carrying that dual-glint gradient, and a faint sheen across
     // the upper face of the capsule.
     private func drawGlassRim() {
-        let radius = capsuleRadius(forHeight: bounds.height)
+        let key = (width: Int(bounds.width.rounded()), height: Int(bounds.height.rounded()), dark: isDarkAppearance)
+        guard key.width > 0, key.height > 0 else { return }
 
-        func ring(_ outerInset: CGFloat, _ innerInset: CGFloat) -> NSBezierPath {
-            let outerRect = bounds.insetBy(dx: outerInset, dy: outerInset)
-            let innerRect = bounds.insetBy(dx: innerInset, dy: innerInset)
-            let path = NSBezierPath(
-                roundedRect: outerRect,
-                xRadius: radius - outerInset,
-                yRadius: radius - outerInset
-            )
-            path.append(NSBezierPath(
-                roundedRect: innerRect,
-                xRadius: radius - innerInset,
-                yRadius: radius - innerInset
-            ))
-            path.windingRule = .evenOdd
-            return path
+        if rimCacheKey == nil || rimCacheKey! != key || rimCacheImage == nil {
+            let size = bounds.size
+            let radius = capsuleRadius(forHeight: size.height)
+            let image = NSImage(size: size, flipped: false) { rect in
+                func ring(_ outerInset: CGFloat, _ innerInset: CGFloat) -> NSBezierPath {
+                    let outerRect = rect.insetBy(dx: outerInset, dy: outerInset)
+                    let innerRect = rect.insetBy(dx: innerInset, dy: innerInset)
+                    let path = NSBezierPath(
+                        roundedRect: outerRect,
+                        xRadius: radius - outerInset,
+                        yRadius: radius - outerInset
+                    )
+                    path.append(NSBezierPath(
+                        roundedRect: innerRect,
+                        xRadius: radius - innerInset,
+                        yRadius: radius - innerInset
+                    ))
+                    path.windingRule = .evenOdd
+                    return path
+                }
+
+                // Wide, soft glow: the apparent thickness of the glass edge.
+                NSGraphicsContext.saveGraphicsState()
+                ring(0.5, 4.0).addClip()
+                NSGradient(colorsAndLocations:
+                    (NSColor.white.withAlphaComponent(0.15), 0.0),
+                    (NSColor.white.withAlphaComponent(0.02), 0.45),
+                    (NSColor.white.withAlphaComponent(0.08), 1.0)
+                )?.draw(in: rect, angle: -90)
+                NSGraphicsContext.restoreGraphicsState()
+
+                // Crisp hairline: bright top arc, near-invisible sides, faint
+                // counter-glint at the bottom.
+                NSGraphicsContext.saveGraphicsState()
+                ring(0.5, 1.8).addClip()
+                NSGradient(colorsAndLocations:
+                    (NSColor.white.withAlphaComponent(0.62), 0.0),
+                    (NSColor.white.withAlphaComponent(0.11), 0.38),
+                    (NSColor.white.withAlphaComponent(0.05), 0.66),
+                    (NSColor.white.withAlphaComponent(0.30), 1.0)
+                )?.draw(in: rect, angle: -90)
+                NSGraphicsContext.restoreGraphicsState()
+
+                // Faint sheen on the upper half sells the convex surface.
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(
+                    roundedRect: rect.insetBy(dx: 1.5, dy: 1.5),
+                    xRadius: radius - 1.5,
+                    yRadius: radius - 1.5
+                ).addClip()
+                NSGradient(colorsAndLocations:
+                    (NSColor.white.withAlphaComponent(0.08), 0.0),
+                    (NSColor.white.withAlphaComponent(0.02), 0.35),
+                    (NSColor.white.withAlphaComponent(0.0), 0.55)
+                )?.draw(in: rect, angle: -90)
+                NSGraphicsContext.restoreGraphicsState()
+                return true
+            }
+            rimCacheKey = key
+            rimCacheImage = image
         }
 
-        // Wide, soft glow: the apparent thickness of the glass edge.
-        NSGraphicsContext.saveGraphicsState()
-        ring(0.5, 4.0).addClip()
-        NSGradient(colorsAndLocations:
-            (NSColor.white.withAlphaComponent(0.15), 0.0),
-            (NSColor.white.withAlphaComponent(0.02), 0.45),
-            (NSColor.white.withAlphaComponent(0.08), 1.0)
-        )?.draw(in: bounds, angle: -90)
-        NSGraphicsContext.restoreGraphicsState()
-
-        // Crisp hairline: bright top arc, near-invisible sides, faint
-        // counter-glint at the bottom.
-        NSGraphicsContext.saveGraphicsState()
-        ring(0.5, 1.8).addClip()
-        NSGradient(colorsAndLocations:
-            (NSColor.white.withAlphaComponent(0.62), 0.0),
-            (NSColor.white.withAlphaComponent(0.11), 0.38),
-            (NSColor.white.withAlphaComponent(0.05), 0.66),
-            (NSColor.white.withAlphaComponent(0.30), 1.0)
-        )?.draw(in: bounds, angle: -90)
-        NSGraphicsContext.restoreGraphicsState()
-
-        // Faint sheen on the upper half sells the convex surface.
-        NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5),
-            xRadius: radius - 1.5,
-            yRadius: radius - 1.5
-        ).addClip()
-        NSGradient(colorsAndLocations:
-            (NSColor.white.withAlphaComponent(0.08), 0.0),
-            (NSColor.white.withAlphaComponent(0.02), 0.35),
-            (NSColor.white.withAlphaComponent(0.0), 0.55)
-        )?.draw(in: bounds, angle: -90)
-        NSGraphicsContext.restoreGraphicsState()
+        rimCacheImage?.draw(in: bounds)
     }
 
     private func drawWaveform(in rect: NSRect) {
@@ -517,6 +555,7 @@ final class RecorderHUDView: NSView {
         let gap = (rect.width - CGFloat(barCount) * barWidth) / CGFloat(barCount - 1)
         let energy = max(0.07, min(1, displayedLevel))
 
+        let bars = NSBezierPath()
         for index in 0..<barCount {
             let normalizedIndex = CGFloat(index) / CGFloat(barCount - 1)
             let centerEnvelope = 0.52 + 0.48 * sin(normalizedIndex * .pi)
@@ -526,13 +565,14 @@ final class RecorderHUDView: NSView {
             let x = rect.minX + CGFloat(index) * (barWidth + gap)
             let y = rect.midY - height / 2
 
-            ink.withAlphaComponent(0.30 + 0.55 * energy).setFill()
-            NSBezierPath(
-                roundedRect: NSRect(x: x, y: y, width: barWidth, height: height),
+            bars.appendRoundedRect(
+                NSRect(x: x, y: y, width: barWidth, height: height),
                 xRadius: barWidth / 2,
                 yRadius: barWidth / 2
-            ).fill()
+            )
         }
+        ink.withAlphaComponent(0.30 + 0.55 * energy).setFill()
+        bars.fill()
     }
 
     // One animation, nothing else: the pulsing dot row, centred. A spinner
@@ -923,11 +963,13 @@ final class ShadowContainerView: NSView {
     }
 }
 
+@MainActor
 final class OverlayController: NSObject {
     // Transparent margin around the capsule reserved for the shadow blur.
     private static let shadowMargin: CGFloat = 28
 
-    private let application: NSApplication
+    private let application: NSApplication?
+    private let embedded: Bool
     private let panel: NSPanel
     private let hudView: RecorderHUDView
     private let effectView: NSVisualEffectView
@@ -937,9 +979,12 @@ final class OverlayController: NSObject {
     // an in-between size, so it cannot tell whether a new request differs from
     // where the capsule is already heading, nor whether the mask still fits.
     private var capsuleTarget: NSSize
+    private let reusable: Bool
     private var isClosing = false
     private var isStandby = false
     private var isArmed = false
+    private var dismissWorkItem: DispatchWorkItem?
+    private var dismissGeneration = 0
     private var previewTimer: Timer?
 
     // The grow animation is stepped by hand: the blur is clipped by the
@@ -965,8 +1010,16 @@ final class OverlayController: NSObject {
     private static let armDiameter: CGFloat = 44
     private static let controlBandHeight: CGFloat = 44
 
-    init(application: NSApplication, launchMode: String) {
+    var isVisible: Bool { !isStandby }
+
+    convenience init(embedded: Bool) {
+        self.init(application: nil, launchMode: "standby", embedded: embedded)
+    }
+
+    init(application: NSApplication?, launchMode: String, embedded: Bool = false) {
         self.application = application
+        self.embedded = embedded
+        self.reusable = embedded || launchMode == "standby"
 
         // Recording sessions carry only dot, waveform and timer and sit in
         // the flatter capsule; status modes keep the taller panel their two
@@ -1059,13 +1112,15 @@ final class OverlayController: NSObject {
 
         positionPanel(panelSize: panelSize)
 
-        if launchMode == "standby" {
+        if embedded || launchMode == "standby" {
             // Started ahead of the hotkey: AppKit, the window and the blur
             // are ready, so "show" puts the pill on screen within a frame
             // instead of after a process launch (~0.15-0.25 s).
             isStandby = true
             hudView.stopAnimating()
-            startReadingCommands()
+            if !embedded {
+                startReadingCommands()
+            }
             return
         }
         showPanel()
@@ -1191,32 +1246,31 @@ final class OverlayController: NSObject {
             hudView.contentAlpha = 0
         }
 
-        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] timer in
-            guard let self else {
-                timer.invalidate()
-                return
-            }
-            let t = min(1, (CACurrentMediaTime() - startedAt) / duration)
-            guard t < 1 else {
-                self.finishGrow()
-                return
-            }
-            // Underdamped spring: about 4 % overshoot, settled by t = 1. A
-            // collapse instead accelerates into nothing (ease-in cubic).
-            let spring = collapse ? CGFloat(t * t * t) : CGFloat(1 - exp(-6 * t) * cos(6 * t))
-            let width = start.width + (size.width - start.width) * spring
-            // The height must not overshoot: the chrome sits on a fixed band.
-            let height = start.height + (size.height - start.height) * min(spring, 1)
-            self.applyCapsule(self.capsuleRect(size: NSSize(width: width, height: height)), settled: false)
-            if fadeInContent {
-                let x = max(0, min(1, (t - 0.28) / 0.45))
-                self.hudView.contentAlpha = CGFloat(x * x * (3 - 2 * x))
-            }
-            if collapse {
-                // Content leaves first, so nothing shows squeezed; the
-                // capsule itself goes transparent only at the very end.
-                self.hudView.contentAlpha = CGFloat(max(0, 1 - t / 0.35))
-                self.panel.alphaValue = CGFloat(max(0, min(1, (1 - t) / 0.3)))
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let t = min(1, (CACurrentMediaTime() - startedAt) / duration)
+                guard t < 1 else {
+                    self.finishGrow()
+                    return
+                }
+                // Underdamped spring: about 4 % overshoot, settled by t = 1. A
+                // collapse instead accelerates into nothing (ease-in cubic).
+                let spring = collapse ? CGFloat(t * t * t) : CGFloat(1 - exp(-6 * t) * cos(6 * t))
+                let width = start.width + (size.width - start.width) * spring
+                // The height must not overshoot: the chrome sits on a fixed band.
+                let height = start.height + (size.height - start.height) * min(spring, 1)
+                self.applyCapsule(self.capsuleRect(size: NSSize(width: width, height: height)), settled: false)
+                if fadeInContent {
+                    let x = max(0, min(1, (t - 0.28) / 0.45))
+                    self.hudView.contentAlpha = CGFloat(x * x * (3 - 2 * x))
+                }
+                if collapse {
+                    // Content leaves first, so nothing shows squeezed; the
+                    // capsule itself goes transparent only at the very end.
+                    self.hudView.contentAlpha = CGFloat(max(0, 1 - t / 0.35))
+                    self.panel.alphaValue = CGFloat(max(0, min(1, (1 - t) / 0.3)))
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -1333,6 +1387,7 @@ final class OverlayController: NSObject {
             cornerHeight: radius,
             transform: nil
         )
+
         if let layer = containerView.layer {
             let shadowAnimation = CABasicAnimation(keyPath: "shadowPath")
             shadowAnimation.fromValue = layer.presentation()?.shadowPath ?? layer.shadowPath
@@ -1382,13 +1437,13 @@ final class OverlayController: NSObject {
 
         switch newMode {
         case .success:
-            close(after: 1.0)
+            dismiss(after: 1.0)
         case .empty, .failed:
-            close(after: 1.8)
+            dismiss(after: 1.8)
         case .cancelled:
-            close(after: 0.9)
+            dismiss(after: 0.9)
         case .clipboard:
-            close(after: 1.8)
+            dismiss(after: 1.8)
         default:
             break
         }
@@ -1423,6 +1478,29 @@ final class OverlayController: NSObject {
         }
     }
 
+    func handleCommand(_ command: String) {
+        handle(command.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    func hideNow() {
+        dismissWorkItem?.cancel()
+        dismissWorkItem = nil
+        dismissGeneration += 1
+        pendingProcessing?.cancel()
+        pendingProcessing = nil
+        pendingOutcome?.cancel()
+        pendingOutcome = nil
+        growTimer?.invalidate()
+        growTimer = nil
+        isArmed = false
+        panel.orderOut(nil)
+        hudView.stopAnimating()
+        isStandby = true
+        isClosing = false
+        capsuleTarget = NSSize(width: 240, height: 44)
+        applyCapsule(capsuleRect(size: capsuleTarget), settled: true)
+    }
+
     private func handle(_ command: String) {
         let parts = command.split(separator: " ", maxSplits: 1).map(String.init)
         guard let action = parts.first else { return }
@@ -1432,7 +1510,17 @@ final class OverlayController: NSObject {
             // The hotkey fired; the microphone is still opening. Answer at
             // once with a circle that becomes the pill when "show" arrives.
             guard isStandby, !isArmed else { return }
+            dismissWorkItem?.cancel()
+            dismissWorkItem = nil
+            dismissGeneration += 1
+            pendingProcessing?.cancel()
+            pendingProcessing = nil
+            pendingOutcome?.cancel()
+            pendingOutcome = nil
             isArmed = true
+            hudView.setDetail("")
+            hudView.setTranscript(final: "", partial: "")
+            hudView.setLevel(0)
             hudView.setMode(.arming)
             hudView.startAnimating()
             // The active screen may have changed while the pill waited.
@@ -1450,12 +1538,23 @@ final class OverlayController: NSObject {
                 self.applyCapsule(self.capsuleRect(size: self.capsuleTarget), settled: true)
             }
         case "show":
-            guard isStandby else { return }
+            guard isStandby || reusable else { return }
+            dismissWorkItem?.cancel()
+            dismissWorkItem = nil
+            dismissGeneration += 1
+            pendingProcessing?.cancel()
+            pendingProcessing = nil
+            pendingOutcome?.cancel()
+            pendingOutcome = nil
             isStandby = false
             let wasArmed = isArmed
             isArmed = false
+            hudView.setDetail("")
+            hudView.setTranscript(final: "", partial: "")
+            hudView.setLevel(0)
             hudView.setMode(.recording)
             hudView.startAnimating()
+            capsuleTarget = NSSize(width: 240, height: 44)
             if !wasArmed {
                 revealSeed()
             }
@@ -1466,6 +1565,9 @@ final class OverlayController: NSObject {
             }
         case "state" where parts.count == 2:
             guard let newMode = OverlayMode(rawValue: parts[1]) else { return }
+            dismissWorkItem?.cancel()
+            dismissWorkItem = nil
+            dismissGeneration += 1
             pendingProcessing?.cancel()
             pendingProcessing = nil
             pendingOutcome?.cancel()
@@ -1474,8 +1576,10 @@ final class OverlayController: NSObject {
             // started turning waits its turn, so the motion never breaks off.
             if hudView.mode == .processing, let ready = spinnerReadyAt, ready > Date() {
                 let work = DispatchWorkItem { [weak self] in
-                    self?.pendingOutcome = nil
-                    self?.applyState(newMode)
+                    MainActor.assumeIsolated {
+                        self?.pendingOutcome = nil
+                        self?.applyState(newMode)
+                    }
                 }
                 pendingOutcome = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + ready.timeIntervalSinceNow, execute: work)
@@ -1486,9 +1590,11 @@ final class OverlayController: NSObject {
                 // goes straight to it; only a slow one brings the circle.
                 hudView.markStopped()
                 let work = DispatchWorkItem { [weak self] in
-                    self?.pendingProcessing = nil
-                    self?.spinnerReadyAt = Date().addingTimeInterval(0.42 + OverlayController.minimumSpin)
-                    self?.applyState(.processing)
+                    MainActor.assumeIsolated {
+                        self?.pendingProcessing = nil
+                        self?.spinnerReadyAt = Date().addingTimeInterval(0.42 + OverlayController.minimumSpin)
+                        self?.applyState(.processing)
+                    }
                 }
                 pendingProcessing = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + OverlayController.processingDelay, execute: work)
@@ -1515,38 +1621,83 @@ final class OverlayController: NSObject {
 
     private func startPreview() {
         let startedAt = Date()
-        previewTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 24.0, repeats: true) { [weak self] timer in
-            guard let self else {
-                timer.invalidate()
-                return
-            }
+        previewTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 24.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
 
-            let elapsed = Date().timeIntervalSince(startedAt)
-            let simulated = 0.18 + 0.68 * abs(sin(elapsed * 3.1)) * (0.65 + 0.35 * abs(cos(elapsed * 1.7)))
-            self.hudView.setLevel(simulated)
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let simulated = 0.18 + 0.68 * abs(sin(elapsed * 3.1)) * (0.65 + 0.35 * abs(cos(elapsed * 1.7)))
+                self.hudView.setLevel(simulated)
 
-            if elapsed > 3.5 {
-                timer.invalidate()
-                self.hudView.setMode(.processing)
-                self.syncPanelSize()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                    self.hudView.setMode(.success)
-                    self.fitToMode()
-                    self.close(after: 1.0)
+                if elapsed > 3.5 {
+                    self.previewTimer?.invalidate()
+                    self.previewTimer = nil
+                    self.hudView.setMode(.processing)
+                    self.syncPanelSize()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                        MainActor.assumeIsolated {
+                            self.hudView.setMode(.success)
+                            self.fitToMode()
+                            self.close(after: 1.0)
+                        }
+                    }
                 }
             }
         }
     }
 
+    private func dismiss(after delay: TimeInterval) {
+        guard reusable else {
+            close(after: delay)
+            return
+        }
+        dismissWorkItem?.cancel()
+        let generation = dismissGeneration
+        let item = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.dismissToStandby(generation: generation)
+            }
+        }
+        dismissWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    private func dismissToStandby(generation: Int) {
+        guard reusable, !isClosing, generation == dismissGeneration else { return }
+        pendingProcessing?.cancel()
+        pendingProcessing = nil
+        pendingOutcome?.cancel()
+        pendingOutcome = nil
+        growTimer?.invalidate()
+        growTimer = nil
+        grow(to: seedSize, duration: 0.26, collapse: true) { [weak self] in
+            guard let self, !self.isClosing, generation == self.dismissGeneration else { return }
+            self.panel.alphaValue = 0
+            self.panel.orderOut(nil)
+            self.hudView.stopAnimating()
+            self.isStandby = true
+            self.capsuleTarget = NSSize(width: 240, height: 44)
+            self.applyCapsule(self.capsuleRect(size: self.capsuleTarget), settled: true)
+        }
+    }
+
     private func close(after delay: TimeInterval) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.close()
+            MainActor.assumeIsolated {
+                self?.close()
+            }
         }
     }
 
     private func close() {
+        if embedded {
+            hideNow()
+            return
+        }
         guard !isClosing else { return }
         isClosing = true
+        dismissWorkItem?.cancel()
+        dismissWorkItem = nil
         FileHandle.standardInput.readabilityHandler = nil
         previewTimer?.invalidate()
         pendingProcessing?.cancel()
@@ -1559,20 +1710,24 @@ final class OverlayController: NSObject {
         growTimer = nil
         grow(to: seedSize, duration: 0.26, collapse: true) { [weak self] in
             self?.panel.alphaValue = 0
-            self?.application.terminate(nil)
+            self?.application?.terminate(nil)
         }
     }
 }
 
-let application = NSApplication.shared
-application.setActivationPolicy(.accessory)
-application.finishLaunching()
+#if !OVERLAY_EMBEDDED
+private let _runOverlayMain: Void = MainActor.assumeIsolated {
+    let application = NSApplication.shared
+    application.setActivationPolicy(.accessory)
+    application.finishLaunching()
 
-let arguments = Array(CommandLine.arguments.dropFirst())
-// Callers still pass a language as the second argument (and after "show");
-// the pill no longer shows one, so it is ignored.
-let launchMode = arguments.first ?? "recording"
-let controller = OverlayController(application: application, launchMode: launchMode)
-withExtendedLifetime(controller) {
-    application.run()
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    // Callers still pass a language as the second argument (and after "show");
+    // the pill no longer shows one, so it is ignored.
+    let launchMode = arguments.first ?? "recording"
+    let controller = OverlayController(application: application, launchMode: launchMode)
+    withExtendedLifetime(controller) {
+        application.run()
+    }
 }
+#endif

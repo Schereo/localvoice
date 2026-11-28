@@ -41,14 +41,14 @@ RUNTIME = f"{RESOURCES}/runtime"
 ENTRYPOINTS = (
     "Contents/MacOS/LocalVoice",
     "Contents/Helpers/ctrlspeak-overlay",
+    "Contents/Helpers/ctrlspeak-mic",
     f"{RUNTIME}/bin/python3.11",
     f"{RUNTIME}/bin/ffmpeg",
 )
 REQUIRED_PACKAGES = {
-    "certifi", "huggingface-hub", "mlx", "mlx-qwen3-asr", "mlx-whisper", "numpy", "pynput",
+    "certifi", "mlx", "mlx-qwen3-asr", "mlx-whisper", "numpy", "pynput",
     "pyobjc-core", "pyobjc-framework-applicationservices", "pyobjc-framework-cocoa",
-    "pyobjc-framework-coretext", "pyobjc-framework-quartz", "pyperclip", "rich",
-    "sounddevice", "soundfile", "textual", "torch", "tqdm",
+    "pyobjc-framework-coretext", "pyobjc-framework-quartz", "pyperclip", "tqdm",
 }
 # The backends rely on these exact releases' loading and decoding behavior.
 PINNED_PACKAGES = {"mlx-whisper": "0.4.3", "mlx-qwen3-asr": "0.4.4"}
@@ -284,7 +284,7 @@ def verify_native(app, records, minimum):
                 f"{name} needs macOS {target}, above declared macOS {minimum}.")
         images[path] = (loads, rpaths, filetype)
         arm64[name] = target
-        if name in ENTRYPOINTS[:2]:
+        if name in ENTRYPOINTS[:3]:
             require(versions == ["arm64"] and macos_version(target) == macos_version(minimum),
                     f"{name} must target exactly arm64-apple-macosx{minimum}.")
 
@@ -341,7 +341,7 @@ def verify_native(app, records, minimum):
     for executable in resolved_entries:
         resolve_image(executable, executable, ())
     # Native extensions loaded through Python are not in its initial Mach-O graph.
-    python = resolved_entries[2]
+    python = resolved_entries[ENTRYPOINTS.index(f"{RUNTIME}/bin/python3.11")]
     python_rpaths = tuple(expand(p, python, python) for p in images[python][1])
     for loader in images:
         if loader not in seen_images:
@@ -488,16 +488,20 @@ def stage(args):
                            CLANG_MODULE_CACHE_PATH=str(work / "module-cache"))
 
         def compile_swift(source_names, binary, *flags):
-            run("xcrun", "--sdk", "macosx", "swiftc", "-target", f"arm64-apple-macosx{minimum}",
+            run("xcrun", "--sdk", "macosx", "swiftc", "-O", "-target", f"arm64-apple-macosx{minimum}",
                 "-sdk", sdk, "-module-cache-path", str(work / "module-cache"), *flags,
                 *(str(ROOT / "src" / name) for name in source_names), "-o", str(binary),
                 capture=False, env=compile_env)
 
         # Without Sparkle on the search path the updater compiles to its stub: this app has none.
-        compile_swift(["ctrlspeak-launcher.swift", "localvoice-model-library.swift", "localvoice-updater.swift",
-                       "localvoice-shortcuts.swift", "localvoice-shortcut-recorder.swift"],
-                      app / ENTRYPOINTS[0], "-parse-as-library")
+        compile_swift(
+            ["ctrlspeak-launcher.swift", "localvoice-model-library.swift",
+             "localvoice-updater.swift", "localvoice-shortcuts.swift",
+             "localvoice-shortcut-recorder.swift", "ctrlspeak-overlay.swift"],
+            app / ENTRYPOINTS[0], "-parse-as-library", "-D", "OVERLAY_EMBEDDED",
+        )
         compile_swift(["ctrlspeak-overlay.swift"], app / ENTRYPOINTS[1])
+        compile_swift(["ctrlspeak-mic.swift"], app / ENTRYPOINTS[2])
         icon_generator = work / "ctrlspeak-icon"
         compile_swift(["ctrlspeak-icon.swift"], icon_generator)
         install_app_icon(icon_generator, work, resources)

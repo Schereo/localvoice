@@ -18,34 +18,54 @@ enum PCMRequest {
     static let maximumPCMBytes = 16_000 * maximumSeconds * 4
     static let maximumBase64Bytes = ((maximumPCMBytes + 2) / 3) * 4
     static let maximumLineBytes = maximumBase64Bytes + 1024
+    static let binaryPCMTag: UInt8 = 0x01
+    static let binaryNemotronChunkTag: UInt8 = 0x02
 
     private struct Payload: Decodable {
         let pcm: String
     }
 
     static func decode(_ line: Data) throws -> [Float] {
-        try decodeBase64((try? JSONDecoder().decode(Payload.self, from: line))?.pcm)
+        if line.first == binaryPCMTag {
+            return try decodeRawPCM(line.dropFirst())
+        }
+        return try decodeBase64((try? JSONDecoder().decode(Payload.self, from: line))?.pcm)
+    }
+
+    static func decodeRawPCM(_ bytes: Data) throws -> [Float] {
+        guard !bytes.isEmpty, bytes.count <= maximumPCMBytes, bytes.count.isMultiple(of: 4) else {
+            throw WorkerError.message("Expected nonempty float32 PCM at 16 kHz, at most \(maximumSeconds) seconds")
+        }
+        let count = bytes.count / 4
+        let samples = Array<Float>(unsafeUninitializedCapacity: count) { destination, initializedCount in
+            bytes.withUnsafeBytes { raw in
+                guard let src = raw.baseAddress, let dst = destination.baseAddress else { return }
+                #if _endian(little)
+                memcpy(dst, src, bytes.count)
+                #else
+                for index in 0..<count {
+                    let bits = raw.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
+                    dst[index] = Float(bitPattern: UInt32(littleEndian: bits))
+                }
+                #endif
+            }
+            initializedCount = count
+        }
+        for sample in samples {
+            guard sample.isFinite else {
+                throw WorkerError.message("PCM contains a non-finite sample")
+            }
+        }
+        return samples
     }
 
     static func decodeBase64(_ pcm: String?) throws -> [Float] {
         guard let pcm, !pcm.isEmpty,
               pcm.utf8.count <= maximumBase64Bytes,
-              let bytes = Data(base64Encoded: pcm),
-              !bytes.isEmpty, bytes.count <= maximumPCMBytes,
-              bytes.count.isMultiple(of: 4) else {
+              let bytes = Data(base64Encoded: pcm) else {
             throw WorkerError.message("Expected nonempty base64 float32 PCM at 16 kHz, at most \(maximumSeconds) seconds")
         }
-
-        return try bytes.withUnsafeBytes { buffer in
-            try stride(from: 0, to: buffer.count, by: 4).map { offset in
-                let bits = buffer.loadUnaligned(fromByteOffset: offset, as: UInt32.self)
-                let sample = Float(bitPattern: UInt32(littleEndian: bits))
-                guard sample.isFinite else {
-                    throw WorkerError.message("PCM contains a non-finite sample")
-                }
-                return sample
-            }
-        }
+        return try decodeRawPCM(bytes)
     }
 }
 
@@ -73,6 +93,9 @@ enum NemotronCommand: Equatable {
     }
 
     static func decode(_ line: Data) throws -> Self {
+        if line.first == PCMRequest.binaryNemotronChunkTag {
+            return try .chunk(PCMRequest.decodeRawPCM(line.dropFirst()))
+        }
         guard let payload = try? JSONDecoder().decode(Payload.self, from: line) else {
             throw WorkerError.message("Expected a Nemotron command and valid language or PCM")
         }
@@ -107,7 +130,67 @@ struct LineReader {
         self.nextChunk = nextChunk ?? Self.readInput
     }
 
+    private mutating func ensureAvailable(_ needed: Int) throws -> Bool {
+        while chunk.count < needed {
+            let more = try nextChunk()
+            if more.isEmpty { return false }
+            chunk.append(more)
+        }
+        return true
+    }
+
+    private mutating func nextBinaryFrame(tag: UInt8) throws -> Line? {
+        // Header: 1-byte tag + 4-byte little-endian uint32 byte count.
+        guard try ensureAvailable(5) else { return nil }
+        let start = chunk.startIndex
+        let length = Int(UInt32(chunk[start + 1])
+            | (UInt32(chunk[start + 2]) << 8)
+            | (UInt32(chunk[start + 3]) << 16)
+            | (UInt32(chunk[start + 4]) << 24))
+        chunk = chunk[(start + 5)...]
+
+        let maxBytes = min(limit, PCMRequest.maximumPCMBytes)
+        if length > maxBytes {
+            var remaining = length
+            while remaining > 0 {
+                if chunk.isEmpty {
+                    chunk = try nextChunk()
+                    if chunk.isEmpty { break }
+                }
+                let dropCount = min(remaining, chunk.count)
+                chunk = chunk[(chunk.startIndex + dropCount)...]
+                remaining -= dropCount
+            }
+            return .oversized
+        }
+
+        var payload = Data(capacity: 1 + length)
+        payload.append(tag)
+        var remaining = length
+        while remaining > 0 {
+            if chunk.isEmpty {
+                chunk = try nextChunk()
+                if chunk.isEmpty { return nil }
+            }
+            let take = min(remaining, chunk.count)
+            let end = chunk.startIndex + take
+            payload.append(contentsOf: chunk[..<end])
+            chunk = chunk[end...]
+            remaining -= take
+        }
+        return .bytes(payload)
+    }
+
     mutating func next() throws -> Line? {
+        if chunk.isEmpty {
+            chunk = try nextChunk()
+            if chunk.isEmpty { return nil }
+        }
+        if let first = chunk.first,
+           first == PCMRequest.binaryPCMTag || first == PCMRequest.binaryNemotronChunkTag {
+            return try nextBinaryFrame(tag: first)
+        }
+
         var line = Data()
         var oversized = false
         while true {
@@ -156,8 +239,9 @@ struct Response: Encodable {
     let event: String
     var text: String? = nil
     var error: String? = nil
+    var binary: Bool? = nil
 
-    static let ready = Response(event: "ready")
+    static let ready = Response(event: "ready", binary: true)
     static func result(_ text: String) -> Self { Response(event: "result", text: text) }
     static func failure(_ error: String) -> Self { Response(event: "error", error: error) }
 }

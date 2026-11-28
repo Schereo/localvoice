@@ -2,7 +2,6 @@
 """
 Audio functionality for ctrlSPEAK.
 """
-import sounddevice as sd
 import numpy as np
 import time
 import threading
@@ -13,19 +12,10 @@ import sys
 import logging
 from collections import deque
 from queue import Queue
-import soundfile as sf
-import torch
 import state
 from state import TranscriptionJob
 from utils.localvoice_vad import load_local_vad
-from rich.console import Console
 import time as timer_module
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
-from rich.panel import Panel
-from rich.style import Style
-from rich.live import Live
-from rich.text import Text
-from rich import print as rprint
 # Phase 1: Remove direct import from ctrlspeak
 # from ctrlspeak import transcription_queue 
 
@@ -42,13 +32,35 @@ CHANNELS = 1
 _BUILT_IN_MARKERS = ("macbook", "built-in", "imac", "mac mini", "mac studio")
 
 
+def _list_input_devices():
+    """Return available input device names via ctrlspeak-mic (CoreAudio) or sounddevice."""
+    helper = os.environ.get("CTRLSPEAK_MIC_PATH")
+    if helper and os.path.isfile(helper) and os.access(helper, os.X_OK):
+        result = subprocess.run(
+            [helper, "--list"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5.0,
+            check=True,
+        )
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    import sounddevice as sd
+    return [
+        device["name"]
+        for device in sd.query_devices()
+        if device["max_input_channels"] > 0
+    ]
+
+
 def resolve_input_device(setting):
     """Map the config's microphone setting to a capture device.
 
     Returns the full CoreAudio device *name* rather than a PortAudio index:
     indices shift whenever a Bluetooth device comes or goes, while the name is
-    re-resolved by sounddevice each time the capture process opens — so a
-    setting keeps pointing at the same physical microphone across replugs.
+    re-resolved each time the capture process opens — so a setting keeps
+    pointing at the same physical microphone across replugs.
 
     'system' -> None (whatever macOS considers the default input — with
     AirPods connected, that is the AirPods, which also drags audio output down
@@ -63,11 +75,7 @@ def resolve_input_device(setting):
         return None
 
     try:
-        inputs = [
-            device["name"]
-            for device in sd.query_devices()
-            if device["max_input_channels"] > 0
-        ]
+        inputs = _list_input_devices()
     except Exception as exc:
         logger.warning(f"Could not list input devices ({exc}); using the system default.")
         return None
@@ -141,7 +149,7 @@ class AudioManager:
         self._onset_samples = 0
         self.ONSET_PREROLL_SAMPLES = int(0.45 * SAMPLE_RATE)
         self.model_loaded = False # This might be managed elsewhere
-        self.console = Console()
+        self._console = None
         self.recording_start_time = None
         self.recording_duration = 0
         self.live_display = None
@@ -150,6 +158,9 @@ class AudioManager:
         self.transcription_queue = transcription_queue
         # Optional app_state for Textual UI integration
         self.app_state = app_state
+        # Signaled when enough quiet chunks follow speech for a speculative
+        # pause decode, or when recording stops, so the ticker avoids polling.
+        self.speculate_event = threading.Event()
 
         # Audio device selection
         self.input_device = None  # None means use default device
@@ -194,6 +205,13 @@ class AudioManager:
         self.FALLBACK_SEGMENT_S = 30
         self._load_vad_model()
     
+    @property
+    def console(self):
+        if self._console is None:
+            from rich.console import Console
+            self._console = Console()
+        return self._console
+
     def set_debug_mode(self, debug_mode):
         """Set debug mode"""
         self.debug_mode = debug_mode
@@ -201,7 +219,7 @@ class AudioManager:
     def _load_vad_model(self):
         """Load Silero VAD model for speech detection."""
         try:
-            self._vad_model = load_local_vad(torch)
+            self._vad_model = load_local_vad()
             logger.info("Silero VAD model loaded successfully")
         except Exception:
             self._use_rms_fallback()
@@ -226,8 +244,8 @@ class AudioManager:
             return -1.0
 
         try:
-            chunk_tensor = torch.from_numpy(audio_chunk).float()
-            speech_prob = self._vad_model(chunk_tensor, SAMPLE_RATE).item()
+            result = self._vad_model(audio_chunk, SAMPLE_RATE)
+            speech_prob = float(result.item() if hasattr(result, "item") else result)
             if not 0.0 <= speech_prob <= 1.0:
                 raise ValueError("Invalid speech probability")
             return speech_prob
@@ -247,6 +265,7 @@ class AudioManager:
             self.recording_start_time = time.time()
             # Start the live display for recording status
             if sys.stdout.isatty() and self.live_display is None:
+                from rich.live import Live
                 self.live_display = Live(
                     self._render_recording_status(),
                     refresh_per_second=4,  # Update 4 times per second
@@ -254,6 +273,7 @@ class AudioManager:
                 )
                 self.live_display.start()
         else:
+            self.speculate_event.set()
             # Stop the live display when recording ends
             if self.live_display:
                 self.live_display.stop()
@@ -261,6 +281,7 @@ class AudioManager:
     
     def _render_recording_status(self):
         """Render the recording status for the live display"""
+        from rich.text import Text
         if not self.is_collecting:
             return Text("")
         
@@ -312,7 +333,7 @@ class AudioManager:
         with self.capture_lock:
             self._collect_audio(indata, frames, time_info, status)
 
-    def _collect_audio(self, indata, frames, time_info, status):
+    def _collect_audio(self, indata, frames, time_info, status, *, copy=True):
         """Callback function to process audio input.
 
         Routes to either:
@@ -322,15 +343,14 @@ class AudioManager:
         if not self.is_collecting:
             # Keep a short pre-roll instead of discarding: whatever was said
             # in the instant before activation joins the next segment.
-            self._buffer_onset(indata.copy())
+            self._buffer_onset(indata.copy() if copy else indata)
             return
 
         if status:
             logger.warning(f"Audio callback status: {status}")
             # Potentially return or handle specific statuses
 
-        # Always make a copy
-        chunk = indata.copy()
+        chunk = indata.copy() if copy else indata
 
         # Route to appropriate mode
         if self._streaming_mode:
@@ -340,12 +360,15 @@ class AudioManager:
         # Otherwise, use VAD-based segmentation logic
         current_chunk_duration_s = float(frames) / SAMPLE_RATE
 
-        # Flatten chunk if needed
-        chunk_flat = chunk.flatten() if chunk.ndim > 1 else chunk
+        # View as 1D when possible (avoids copying mono (N, 1) frames)
+        if chunk.ndim > 1:
+            chunk_flat = chunk.reshape(-1) if hasattr(chunk, "reshape") else chunk.flatten()
+        else:
+            chunk_flat = chunk
 
         # Calculate RMS for UI feedback (keeping this for visualization)
         try:
-            rms = np.sqrt(np.mean(chunk_flat**2))
+            rms = float(np.sqrt(np.mean(chunk_flat**2)))
             self.last_rms = rms
 
             # Update app_state if available (for Textual UI)
@@ -354,29 +377,39 @@ class AudioManager:
                 self.app_state.buffer_size_samples = len(self.audio_buffer)
         except Exception:
             logger.error("Error calculating microphone level.")
-            rms = 0
+            rms = 0.0
 
         # --- VAD-based speech detection ---
-        # Accumulate samples in VAD buffer and process 512-sample chunks
-        if self._vad_model is not None:
-            self._vad_buffer.extend(chunk_flat.tolist())
-
-        # Determine if this chunk contains speech using VAD
+        # Determine if this chunk contains speech using VAD (512-sample chunks).
         is_speech_chunk = False
         speech_prob = 0.0
         ran_vad = False
 
-        # Process all complete 512-sample chunks in the buffer
-        while len(self._vad_buffer) >= self.VAD_CHUNK_SAMPLES:
-            vad_chunk = np.array(self._vad_buffer[:self.VAD_CHUNK_SAMPLES], dtype=np.float32)
-            self._vad_buffer = self._vad_buffer[self.VAD_CHUNK_SAMPLES:]
+        if self._vad_model is not None:
+            vad_step = self.VAD_CHUNK_SAMPLES
+            if not self._vad_buffer and len(chunk_flat) % vad_step == 0:
+                # Fast path: zero-copy views directly on the captured block.
+                for offset in range(0, len(chunk_flat), vad_step):
+                    prob = self._get_speech_probability(chunk_flat[offset : offset + vad_step])
+                    if prob >= 0:
+                        ran_vad = True
+                        if prob > speech_prob:
+                            speech_prob = prob
+                        if prob >= self.VAD_THRESHOLD:
+                            is_speech_chunk = True
+            else:
+                self._vad_buffer.extend(chunk_flat.tolist())
+                while len(self._vad_buffer) >= vad_step:
+                    vad_chunk = np.array(self._vad_buffer[:vad_step], dtype=np.float32)
+                    del self._vad_buffer[:vad_step]
 
-            prob = self._get_speech_probability(vad_chunk)
-            if prob >= 0:  # Valid VAD result
-                ran_vad = True
-                speech_prob = max(speech_prob, prob)
-                if prob >= self.VAD_THRESHOLD:
-                    is_speech_chunk = True
+                    prob = self._get_speech_probability(vad_chunk)
+                    if prob >= 0:  # Valid VAD result
+                        ran_vad = True
+                        if prob > speech_prob:
+                            speech_prob = prob
+                        if prob >= self.VAD_THRESHOLD:
+                            is_speech_chunk = True
 
         if self._vad_model is None:
             is_speech_chunk = rms >= self.FALLBACK_RMS_THRESHOLD
@@ -436,6 +469,8 @@ class AudioManager:
                  # A loud chunk VAD calls silence could still be a word.
                  if rms < self.FALLBACK_RMS_THRESHOLD:
                      self.quiet_tail_chunks += 1
+                     if self.quiet_tail_chunks >= 4:
+                         self.speculate_event.set()
                  else:
                      self.quiet_tail_chunks = 0
                  
@@ -495,6 +530,7 @@ class AudioManager:
 
         if not sys.stdout.isatty():
             return
+        from rich.panel import Panel
         self.console.line()
         self.console.print(Panel.fit(
             "[bold green]Started recording...[/bold green]\n[dim]Tap Ctrl key 3 times quickly to stop[/dim]",
@@ -507,6 +543,7 @@ class AudioManager:
             if not self.is_collecting:
                 return False
             self.is_collecting = False
+            self.speculate_event.set()
             self._onset_buffer.clear()
             self._onset_samples = 0
             if discard:
@@ -610,6 +647,7 @@ class AudioManager:
 
         if not sys.stdout.isatty():
             return
+        from rich.panel import Panel
         self.console.line()
         self.console.print(Panel.fit(
             "[bold green]Started streaming recording...[/bold green]\n"
@@ -732,6 +770,15 @@ class AudioManager:
             self.prewarm_input_stream()
 
     def _mic_command(self, device_arg):
+        helper = os.environ.get("CTRLSPEAK_MIC_PATH")
+        if helper and os.path.isfile(helper) and os.access(helper, os.X_OK):
+            return [
+                helper,
+                str(SAMPLE_RATE),
+                str(CHANNELS),
+                str(self.MIC_BLOCKSIZE),
+                device_arg,
+            ]
         package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return [
             sys.executable,
@@ -881,7 +928,7 @@ class AudioManager:
                 with self.capture_lock:
                     if process is not self._mic_process:
                         return  # superseded by a newer capture process
-                    self._collect_audio(chunk, self.MIC_BLOCKSIZE, None, None)
+                    self._collect_audio(chunk, self.MIC_BLOCKSIZE, None, None, copy=False)
             except Exception:
                 logger.error("Error handling captured audio.")
 
@@ -956,6 +1003,8 @@ class AudioManager:
 
 def check_microphone_permissions():
     """Check microphone permissions"""
+    from rich.console import Console
+    import sounddevice as sd
     console = Console()
     
     try:

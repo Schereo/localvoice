@@ -5,6 +5,7 @@ enum ProtocolTests {
     static func main() async throws {
         try testOversizedLine()
         try testPCM()
+        try testBinaryFrames()
         try testMaximumDuration()
         try testNemotronCommands()
         try await testSession()
@@ -44,6 +45,42 @@ enum ProtocolTests {
         }
     }
 
+    static func testBinaryFrames() throws {
+        func frame(tag: UInt8, payload: Data) -> Data {
+            var out = Data([tag])
+            var len = UInt32(payload.count).littleEndian
+            withUnsafeBytes(of: &len) { out.append(contentsOf: $0) }
+            out.append(payload)
+            return out
+        }
+
+        let raw = Data([0, 0, 128, 63, 0, 0, 0, 191]) // [1.0, -0.5]
+        let f1 = frame(tag: PCMRequest.binaryPCMTag, payload: raw)
+        let f2 = Data(#"{"command":"start","language":"de"}"#.utf8) + Data([0x0a])
+        let f3 = frame(tag: PCMRequest.binaryNemotronChunkTag, payload: raw)
+        let combined = f1 + f2 + f3
+        // Feed in small pieces to test split headers and payloads.
+        var offset = 0
+        var reader = LineReader(nextChunk: {
+            if offset >= combined.count { return Data() }
+            let end = min(offset + 3, combined.count)
+            let piece = combined[offset..<end]
+            offset = end
+            return Data(piece)
+        })
+        guard case .bytes(let b1)? = try reader.next() else { preconditionFailure("missing binary frame 1") }
+        try expect(PCMRequest.decode(b1) == [1.0, -0.5], "binary Parakeet PCM mismatch")
+        guard case .bytes(let b2)? = try reader.next() else { preconditionFailure("missing json line") }
+        try expect(NemotronCommand.decode(b2) == .start(.de), "mixed JSON after binary failed")
+        guard case .bytes(let b3)? = try reader.next() else { preconditionFailure("missing binary frame 2") }
+        try expect(NemotronCommand.decode(b3) == .chunk([1.0, -0.5]), "binary Nemotron chunk mismatch")
+        try expect(reader.next() == nil, "expected EOF after binary frames")
+
+        // Non-finite binary float (NaN) must be rejected.
+        let nanFrame = Data([PCMRequest.binaryPCMTag, 0, 0, 192, 127])
+        try expectInvalid(nanFrame)
+    }
+
     static func testMaximumDuration() throws {
         let maximum = PCMRequest.maximumPCMBytes
         let pcm = Data(count: maximum).base64EncodedString()
@@ -65,13 +102,20 @@ enum ProtocolTests {
             return "\(samples[0])\n"
         }
         try pipe.fileHandleForWriting.close()
+        struct EventReply: Decodable, Equatable {
+            let event: String
+            let text: String?
+            let error: String?
+            let binary: Bool?
+        }
         let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         let json = try output.split(separator: "\n").map {
-            try JSONDecoder().decode([String: String].self, from: Data($0.utf8))
+            try JSONDecoder().decode(EventReply.self, from: Data($0.utf8))
         }
-        expect(json.map { $0["event"] } == ["ready", "result", "error", "error", "result"], "wrong events")
-        expect(json[1] == ["event": "result", "text": "1.0\n"], "wrong result")
-        expect(json[3] == ["event": "error", "error": "inference failed"], "wrong error")
+        expect(json.map(\.event) == ["ready", "result", "error", "error", "result"], "wrong events")
+        expect(json[0].binary == true, "ready must advertise binary support")
+        expect(json[1] == EventReply(event: "result", text: "1.0\n", error: nil, binary: nil), "wrong result")
+        expect(json[3] == EventReply(event: "error", text: nil, error: "inference failed", binary: nil), "wrong error")
         expect(json[4] == json[1] && calls == 3, "worker did not recover")
     }
 

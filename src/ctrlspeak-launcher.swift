@@ -2952,6 +2952,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private let pauseMedia = NSSwitch()
     private let sounds = NSSwitch()
     private let menuBar = NSSwitch()
+    private let idleUnload = NSPopUpButton()
     private let login = NSSwitch()
     private let autoUpdate = NSSwitch()
     private let updateAction = NSButton(title: "", target: nil, action: nil)
@@ -2977,7 +2978,15 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
 
     override func loadView() {
         configure(microphone, label: "Microphone", action: #selector(changeMicrophone))
+        configure(idleUnload, label: "Unload Model When Idle", action: #selector(changeIdleUnload))
         setItems([("Built-in Microphone", "built-in"), ("System Default", "system")], on: microphone)
+        setItems([
+            ("Never", "off"),
+            ("After 5 min", "5"),
+            ("After 15 min", "15"),
+            ("After 30 min", "30"),
+            ("After 60 min", "60"),
+        ], on: idleUnload)
         microphone.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         let toggles: [(NSSwitch, String, String)] = [
@@ -3072,6 +3081,10 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
                         detail: "When hidden, open LocalVoice again to come back here.",
                         accessory: menuBar, separator: false),
             loginItem,
+            SettingsRow(symbol: "memorychip", fallback: "cpu", tint: .systemPurple,
+                        title: "Unload Model When Idle",
+                        detail: "Frees ~1 GB of memory when unused. Reloads in the background when you dictate.",
+                        accessory: idleUnload),
         ]
         if updates != nil {
             autoUpdate.controlSize = .small
@@ -3275,6 +3288,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         // The menu bar icon is on unless the config says otherwise.
         menuBar.state = Self.isOn("menubar", default: true) ? .on : .off
         sounds.state = Self.isOn("sounds", default: true) ? .on : .off
+        select(readConfigValue("idle-unload") ?? "off", fallback: "off", on: idleUnload)
         refreshLive()
         updatePauseNote()
     }
@@ -3582,6 +3596,10 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         if let device = microphone.selectedItem?.representedObject as? String { save("microphone", device) }
     }
 
+    @objc private func changeIdleUnload() {
+        if let timeout = idleUnload.selectedItem?.representedObject as? String { save("idle-unload", timeout) }
+    }
+
     @objc private func changeToggle(_ sender: NSSwitch) {
         if let key = sender.identifier?.rawValue { save(key, sender.state == .on ? "on" : "off") }
         if sender === pauseMedia {
@@ -3715,6 +3733,169 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleLogin() { toggleLaunchAtLogin() }
 }
 
+// MARK: - Embedded overlay server
+
+#if OVERLAY_EMBEDDED
+/// Hosts the recording HUD inside LocalVoice.app over a private Unix domain
+/// socket so the Python service never needs a second AppKit helper process
+/// (~35-42 MB RSS saved permanently, 0 ms process spawn).
+@MainActor
+private final class EmbeddedOverlayServer {
+    let socketPath: String
+    private var listenFD: Int32 = -1
+    private var acceptSource: DispatchSourceRead?
+    private var clientFD: Int32 = -1
+    private var clientSource: DispatchSourceRead?
+    private var clientBuffer = Data()
+    private var overlay: OverlayController?
+
+    init?(directory: URL) {
+        let preferred = directory.appendingPathComponent("o.sock").path
+        let path = preferred.utf8.count < 100
+            ? preferred
+            : "/tmp/localvoice-overlay-\(getpid()).sock"
+        self.socketPath = path
+
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(fd, F_SETFL, O_NONBLOCK)
+        unlink(path)
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
+        guard bytes.count < maxLen else {
+            close(fd)
+            return nil
+        }
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: UInt8.self, capacity: maxLen) { dest in
+                for (index, byte) in bytes.enumerated() {
+                    dest[index] = byte
+                }
+                dest[bytes.count] = 0
+            }
+        }
+        let bound = withUnsafePointer(to: &addr) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                Darwin.bind(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bound == 0 else {
+            close(fd)
+            return nil
+        }
+        chmod(path, mode_t(0o600))
+        guard Darwin.listen(fd, 4) == 0 else {
+            close(fd)
+            unlink(path)
+            return nil
+        }
+
+        self.listenFD = fd
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.acceptClient() }
+        }
+        source.setCancelHandler {
+            close(fd)
+        }
+        source.resume()
+        self.acceptSource = source
+    }
+
+    private func acceptClient() {
+        guard listenFD >= 0 else { return }
+        let accepted = Darwin.accept(listenFD, nil, nil)
+        guard accepted >= 0 else { return }
+        _ = fcntl(accepted, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(accepted, F_SETFL, O_NONBLOCK)
+        var noSigPipe: Int32 = 1
+        _ = setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+
+        closeClient(hideOverlay: false)
+        clientFD = accepted
+        clientBuffer.removeAll(keepingCapacity: true)
+
+        let source = DispatchSource.makeReadSource(fileDescriptor: accepted, queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.readFromClient() }
+        }
+        source.setCancelHandler {
+            close(accepted)
+        }
+        source.resume()
+        clientSource = source
+    }
+
+    private func ensureOverlay() -> OverlayController {
+        if let overlay { return overlay }
+        let created = OverlayController(embedded: true)
+        overlay = created
+        return created
+    }
+
+    private func readFromClient() {
+        guard clientFD >= 0 else { return }
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = Darwin.read(clientFD, &chunk, chunk.count)
+            if count > 0 {
+                clientBuffer.append(contentsOf: chunk[0..<count])
+            } else if count == 0 {
+                closeClient(hideOverlay: true)
+                return
+            } else {
+                if errno == EAGAIN || errno == EWOULDBLOCK { break }
+                if errno == EINTR { continue }
+                closeClient(hideOverlay: true)
+                return
+            }
+        }
+        while let newline = clientBuffer.firstIndex(of: 0x0A) {
+            let lineData = clientBuffer[..<newline]
+            clientBuffer.removeSubrange(...newline)
+            guard let line = String(data: lineData, encoding: .utf8) else { continue }
+            ensureOverlay().handleCommand(line)
+        }
+    }
+
+    private func closeClient(hideOverlay: Bool) {
+        if let source = clientSource {
+            clientSource = nil
+            clientFD = -1
+            source.cancel()
+        } else if clientFD >= 0 {
+            close(clientFD)
+            clientFD = -1
+        }
+        clientBuffer.removeAll(keepingCapacity: false)
+        if hideOverlay {
+            overlay?.hideNow()
+        }
+    }
+
+    func hide() {
+        overlay?.hideNow()
+    }
+
+    func stop() {
+        closeClient(hideOverlay: true)
+        if let source = acceptSource {
+            acceptSource = nil
+            listenFD = -1
+            source.cancel()
+        } else if listenFD >= 0 {
+            close(listenFD)
+            listenFD = -1
+        }
+        unlink(socketPath)
+    }
+}
+#endif
+
 // MARK: - Managed service
 
 @MainActor
@@ -3736,11 +3917,14 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     private var library: StoreModelLibraryBackend?
     private var updater: AppUpdater?
     private var settingsWindow: NSWindow?
+    private var configWatcher: DispatchSourceFileSystemObject?
     private var menuTimer: Timer?
     private var child: Process?
     private var childModel: String?
     private var runningModel: String?
+    private var readyWatcher: DispatchSourceFileSystemObject?
     private var readyTimer: Timer?
+    private var readyTimeout: DispatchWorkItem?
     private var gate: Int32 = -1
     private var pending: Switch?
     private var nextModel: String?
@@ -3761,6 +3945,9 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     // the shortcuts' event tap is unavailable; the command channel otherwise
     // plays the same part.
     private var lifeline: FileHandle?
+#if OVERLAY_EMBEDDED
+    private var overlayServer: EmbeddedOverlayServer?
+#endif
     // Global shortcuts; they talk to the running child over its stdin.
     private let shortcuts = ShortcutController()
 
@@ -3829,12 +4016,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         }
         menuBar.installApplicationMenu()
         applyMenuVisibility()
-        menuTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.applyMenuVisibility()
-                self?.shortcuts.reloadConfig()
-            }
-        }
+        startConfigWatcher()
+#if OVERLAY_EMBEDDED
+        overlayServer = EmbeddedOverlayServer(directory: scratch)
+#endif
         if permissionsGranted {
             startUpdater()
             start(savedModel ?? Self.defaultModel)
@@ -3883,6 +4068,37 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
 
     private var permissionsGranted: Bool {
         microphoneState() == .granted && accessibilityState() == .granted && inputMonitoringState() == .granted
+    }
+
+    private func startConfigWatcher() {
+        let dir = (localVoiceConfigPath() as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let fd = open(dir, O_EVTONLY)
+        guard fd >= 0 else {
+            menuTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.applyMenuVisibility()
+                    self?.shortcuts.reloadConfig()
+                }
+            }
+            return
+        }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .attrib, .delete],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.applyMenuVisibility()
+                self?.shortcuts.reloadConfig()
+            }
+        }
+        source.setCancelHandler {
+            close(fd)
+        }
+        source.resume()
+        configWatcher = source
     }
 
     private func applyMenuVisibility() {
@@ -4093,6 +4309,11 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         // Relative runtime paths are resolved by the bundle, not the user's shell.
         environment["PATH"] = config["path"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
         environment["CTRLSPEAK_OVERLAY_PATH"] = config["overlay"]
+#if OVERLAY_EMBEDDED
+        if let overlaySocket = overlayServer?.socketPath {
+            environment["LOCALVOICE_OVERLAY_SOCKET"] = overlaySocket
+        }
+#endif
         environment["LOCALVOICE_VAD_PATH"] = config["vad"]
         environment["LOCALVOICE_PARAKEET_WORKER"] = config["parakeet_worker"]
         environment["LOCALVOICE_MODEL_ID"] = model
@@ -4132,25 +4353,54 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         // Uptime does not advance while the Mac sleeps, so closing the lid
         // during a model load does not count against the deadline.
         let deadline = ProcessInfo.processInfo.systemUptime + 150
-        readyTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self, weak process] _ in
-            DispatchQueue.main.async { [weak self, weak process] in
-                guard let self, let process, self.child === process,
-                      self.nextModel == nil, !self.stopping else { return }
-                if process.isRunning,
-                   (try? String(contentsOf: ready, encoding: .utf8)) == "\(process.processIdentifier)\n" {
-                    self.becameReady(model)
-                } else if ProcessInfo.processInfo.systemUptime > deadline {
-                    self.readyTimer?.invalidate()
-                    self.readyTimer = nil
-                    self.terminate(process)
-                }
+        let checkReady: @MainActor () -> Void = { [weak self, weak process] in
+            guard let self, let process, self.child === process,
+                  self.nextModel == nil, !self.stopping else { return }
+            if process.isRunning,
+               (try? String(contentsOf: ready, encoding: .utf8)) == "\(process.processIdentifier)\n" {
+                self.becameReady(model)
+            } else if ProcessInfo.processInfo.systemUptime > deadline {
+                self.stopReadyWatch()
+                self.terminate(process)
+            }
+        }
+        stopReadyWatch()
+        let dirFD = open(scratch.path, O_EVTONLY)
+        if dirFD >= 0 {
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: dirFD,
+                eventMask: [.write, .rename, .extend],
+                queue: .main
+            )
+            source.setEventHandler {
+                MainActor.assumeIsolated { checkReady() }
+            }
+            source.setCancelHandler { close(dirFD) }
+            source.resume()
+            readyWatcher = source
+            // Re-check periodically only for the uptime deadline (sleep-aware).
+            readyTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+                MainActor.assumeIsolated { checkReady() }
+            }
+            checkReady()
+        } else {
+            readyTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+                MainActor.assumeIsolated { checkReady() }
             }
         }
     }
 
-    private func becameReady(_ model: String) {
+    private func stopReadyWatch() {
+        readyWatcher?.cancel()
+        readyWatcher = nil
         readyTimer?.invalidate()
         readyTimer = nil
+        readyTimeout?.cancel()
+        readyTimeout = nil
+    }
+
+    private func becameReady(_ model: String) {
+        stopReadyWatch()
         if let operation = pending, !operation.recovering {
             do {
                 try FileManager.default.createDirectory(at: selection.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -4204,11 +4454,13 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         readySince = nil
         child = nil
         childModel = nil
-        readyTimer?.invalidate()
-        readyTimer = nil
+        stopReadyWatch()
         runningModel = nil
         try? lifeline?.close()
         lifeline = nil
+#if OVERLAY_EMBEDDED
+        overlayServer?.hide()
+#endif
         shortcuts.disconnectService()
         library?.setActiveModel(nil)
         if stopping {
@@ -4247,6 +4499,8 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         guard !stopping else { return }
         stopping = true
         menuTimer?.invalidate()
+        configWatcher?.cancel()
+        configWatcher = nil
         library?.stop()
         if let child {
             terminate(child)
@@ -4256,6 +4510,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     }
 
     private func exitCleanly() -> Never {
+#if OVERLAY_EMBEDDED
+        overlayServer?.stop()
+        overlayServer = nil
+#endif
         releaseGate()
         try? FileManager.default.removeItem(at: scratch)
         close(instanceLock)

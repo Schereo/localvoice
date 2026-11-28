@@ -19,18 +19,37 @@ logger = logging.getLogger("ctrlspeak.media_pause")
 
 # Scriptable players with a queryable "player state". Extend as needed.
 _PLAYERS = ("Spotify", "Music")
+_PLAYER_BUNDLES = {
+    "com.spotify.client": "Spotify",
+    "com.apple.Music": "Music",
+}
 
 # Apps this module paused for the current recording session, to be resumed
 # when it ends. Only touched from the hotkey worker thread.
 _paused_apps = []
 
-# "is running" is answered by LaunchServices without launching the app and
-# without an Apple Event, so a player that is not open costs nothing — and
-# triggers no permission prompt.
-_PAUSE_SCRIPT = "\n".join(
-    ["set pausedApps to {}"]
-    + [
-        f'''if application "{app}" is running then
+
+def _running_players():
+    """Return the subset of _PLAYERS currently running, without spawning osascript."""
+    try:
+        from AppKit import NSWorkspace
+
+        running = {
+            str(app.bundleIdentifier())
+            for app in NSWorkspace.sharedWorkspace().runningApplications()
+            if app.bundleIdentifier()
+        }
+        return [name for bundle_id, name in _PLAYER_BUNDLES.items() if bundle_id in running]
+    except Exception:
+        # Outside AppKit (e.g. unit tests without PyObjC), fall back to asking osascript.
+        return list(_PLAYERS)
+
+
+def _pause_script(players):
+    return "\n".join(
+        ["set pausedApps to {}"]
+        + [
+            f'''if application "{app}" is running then
     tell application "{app}"
         if player state is playing then
             pause
@@ -38,10 +57,10 @@ _PAUSE_SCRIPT = "\n".join(
         end if
     end tell
 end if'''
-        for app in _PLAYERS
-    ]
-    + ["return pausedApps"]
-)
+            for app in players
+        ]
+        + ["return pausedApps"]
+    )
 
 
 def _osascript(script, timeout):
@@ -60,8 +79,12 @@ def pause_playing():
     global _paused_apps
     _paused_apps = []
 
+    players = _running_players()
+    if not players:
+        return
+
     try:
-        result = _osascript(_PAUSE_SCRIPT, timeout=8)
+        result = _osascript(_pause_script(players), timeout=8)
     except subprocess.TimeoutExpired:
         logger.warning(
             "Pausing media players timed out — likely waiting on the "

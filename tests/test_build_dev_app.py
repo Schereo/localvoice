@@ -59,5 +59,51 @@ class UpdateKeyTests(unittest.TestCase):
         self.assertEqual(len(base64.b64decode(build.SPARKLE_PUBLIC_KEY, validate=True)), 32)
 
 
+class RuntimePruningTests(unittest.TestCase):
+    def test_prunes_unused_runtime_bloat_and_keeps_core_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rt = Path(tmp) / "runtime"
+            pylib = rt / "lib/python3.11"
+            site = pylib / "site-packages"
+            for rel in (
+                "bin/python3.11",
+                "bin/pip3",
+                "include/python3.11/Python.h",
+                "lib/tcl8.6/init.tcl",
+                "lib/libtk8.6.dylib",
+                "lib/python3.11/os.py",
+                "lib/python3.11/encodings/__init__.py",
+                "lib/python3.11/ensurepip/__init__.py",
+                "lib/python3.11/idlelib/idle.py",
+                "lib/python3.11/tkinter/__init__.py",
+                "lib/python3.11/site-packages/pip/__init__.py",
+                "lib/python3.11/site-packages/numpy/__init__.py",
+                "lib/python3.11/site-packages/numpy/tests/test_core.py",
+                "lib/python3.11/site-packages/numpy/__pycache__/__init__.cpython-311.pyc",
+                "lib/python3.11/site-packages/mlx/lib/mlx.metallib",
+                "lib/python3.11/site-packages/mlx/include/mlx.h",
+            ):
+                p = rt / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("x")
+
+            build.prune_embedded_runtime(rt)
+
+            self.assertTrue((rt / "bin/python3.11").is_file())
+            self.assertTrue((pylib / "os.py").is_file())
+            self.assertTrue((pylib / "encodings/__init__.py").is_file())
+            self.assertTrue((site / "numpy/__init__.py").is_file())
+            self.assertTrue((site / "mlx/lib/mlx.metallib").is_file())
+            for gone in (
+                "bin/pip3", "include", "lib/tcl8.6", "lib/libtk8.6.dylib",
+                "lib/python3.11/ensurepip", "lib/python3.11/idlelib",
+                "lib/python3.11/tkinter", "lib/python3.11/site-packages/pip",
+                "lib/python3.11/site-packages/numpy/tests",
+                "lib/python3.11/site-packages/numpy/__pycache__",
+                "lib/python3.11/site-packages/mlx/include",
+            ):
+                self.assertFalse((rt / gone).exists(), f"{gone} should have been pruned")
+
+
 if __name__ == "__main__":
     unittest.main()
