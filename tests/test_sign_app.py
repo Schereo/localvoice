@@ -54,6 +54,7 @@ class PlanTests(unittest.TestCase):
         write(app / "Contents/Info.plist", plistlib.dumps({"CFBundleExecutable": "LocalVoice"}))
         write(app / "Contents/MacOS/LocalVoice", thin(sign.MH_EXECUTE))
         write(app / "Contents/Helpers/ctrlspeak-overlay", thin(sign.MH_EXECUTE))
+        write(app / "Contents/Helpers/ctrlspeak-mic", thin(sign.MH_EXECUTE))
         write(app / "Contents/Resources/runtime/bin/python3.11", thin(sign.MH_EXECUTE))
         write(app / "Contents/Resources/runtime/lib/libpython3.11.dylib", thin(sign.MH_DYLIB))
         write(app / "Contents/Resources/runtime/lib/python3.11/site-packages/x/_x.so", fat(sign.MH_BUNDLE))
@@ -67,6 +68,7 @@ class PlanTests(unittest.TestCase):
         nested, skipped, bundles, bundle = sign.plan(app)
         entitlements = {str(path.relative_to(app)): value and value.name for path, value in nested}
         self.assertEqual(entitlements, {
+            "Contents/Helpers/ctrlspeak-mic": "mic.plist",
             "Contents/Helpers/ctrlspeak-overlay": None,
             "Contents/Resources/runtime/bin/python3.11": "python.plist",
             "Contents/Resources/runtime/lib/libpython3.11.dylib": None,
@@ -108,7 +110,7 @@ class PlanTests(unittest.TestCase):
             sign.plan(app)
 
     def test_entitlement_files_are_valid_plists(self):
-        for name in ("app.plist", "python.plist"):
+        for name in ("app.plist", "python.plist", "mic.plist"):
             values = plistlib.loads((sign.ENTITLEMENTS / name).read_bytes())
             self.assertTrue(values["com.apple.security.device.audio-input"])
 

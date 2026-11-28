@@ -3,9 +3,7 @@ from pynput import keyboard
 import subprocess
 import sys
 import time
-from rich.console import Console
-from rich.panel import Panel
-from utils.permission_manager import check_keyboard_permissions
+import state
 
 # The activation hotkey is a repeated tap on one modifier key. Which modifier
 # and how many taps comes from the LocalVoice config file, e.g. "hotkey =
@@ -45,7 +43,7 @@ class KeyboardShortcutManager:
         self.hotkey_listener = None
         self.shortcuts = {}
         self.is_running = True
-        self.console = Console()
+        self.console = state.console
 
         # For repeated-tap detection on the configured modifier
         self.tap_modifier, self.tap_count_required = load_hotkey_config()
@@ -86,6 +84,7 @@ class KeyboardShortcutManager:
     
     def check_permissions(self):
         """Check and request necessary accessibility permissions for keyboard control"""
+        from utils.permission_manager import check_keyboard_permissions
         return check_keyboard_permissions(verbose=True)
     
     def register_shortcut(self, key_combination, callback):
@@ -225,7 +224,7 @@ def check_keyboard_monitoring_permissions():
     Returns:
         bool: True if permissions are granted, False otherwise
     """
-    console = Console()
+    console = state.console
     console.print("[bold]Checking keyboard monitoring permissions...[/bold]")
     
     # Multiple tests to verify permissions
@@ -344,6 +343,7 @@ def check_keyboard_monitoring_permissions():
 
 def _show_permission_request_panel(console):
     """Helper function to show the permission request panel"""
+    from rich.panel import Panel
     console.print(Panel.fit(
         "[bold red]Keyboard monitoring permissions required[/bold red]\n\n"
         "ctrlSPEAK needs Accessibility permissions to detect keyboard shortcuts.\n"

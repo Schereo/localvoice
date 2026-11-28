@@ -153,13 +153,20 @@ CTRLSPEAK_PYTHON="$BREW_PREFIX/var/ctrlspeak/venv/bin/python3.11"
 echo "Installing the verified MLX Whisper runtime..."
 "$CTRLSPEAK_PYTHON" -m pip install "mlx-whisper==0.4.3"
 
-echo "Building the native recording pill..."
-xcrun swiftc \
+echo "Building the native recording pill and microphone helper..."
+xcrun swiftc -O \
   -module-cache-path "$BUILD_DIR/module-cache" \
   "$PROJECT_DIR/src/ctrlspeak-overlay.swift" \
   -o "$BUILD_DIR/ctrlspeak-overlay"
 
 install -m 755 "$BUILD_DIR/ctrlspeak-overlay" "$BREW_PREFIX/bin/ctrlspeak-overlay"
+
+xcrun swiftc -O \
+  -module-cache-path "$BUILD_DIR/module-cache" \
+  "$PROJECT_DIR/src/ctrlspeak-mic.swift" \
+  -o "$BUILD_DIR/ctrlspeak-mic"
+
+install -m 755 "$BUILD_DIR/ctrlspeak-mic" "$BREW_PREFIX/bin/ctrlspeak-mic"
 
 backup_and_install() {
   local source_file="$1"
@@ -220,6 +227,7 @@ cat > "$BUILD_DIR/ctrlspeak-local" <<EOF
 
 export PATH="$BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export CTRLSPEAK_OVERLAY_PATH="$BREW_PREFIX/bin/ctrlspeak-overlay"
+export CTRLSPEAK_MIC_PATH="$BREW_PREFIX/bin/ctrlspeak-mic"
 
 # The language comes from the LocalVoice config file, with the pre-1.2
 # single-value file as the fallback until the service's first run migrates it.
@@ -271,12 +279,14 @@ install -m 755 "$BUILD_DIR/ctrlspeak-local" "$WRAPPER_PATH"
 # every Python upgrade. A real app bundle gives the tree one stable identity
 # named "ctrlSPEAK".
 echo "Building the LocalVoice app bundle..."
-xcrun swiftc \
+xcrun swiftc -O \
   -parse-as-library \
+  -D OVERLAY_EMBEDDED \
   -module-cache-path "$BUILD_DIR/module-cache" \
   "$PROJECT_DIR/src/ctrlspeak-launcher.swift" \
   "$PROJECT_DIR/src/localvoice-model-library.swift" \
   "$PROJECT_DIR/src/localvoice-updater.swift" \
+  "$PROJECT_DIR/src/ctrlspeak-overlay.swift" \
   -o "$BUILD_DIR/LocalVoice-launcher"
 
 xcrun swiftc \

@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import queue
+import socket
 import subprocess
 import threading
 import time
@@ -53,6 +54,7 @@ _worker_lock = threading.Lock()
 # the watchdog can never block on the thread it is watching.
 _command_started_at = None
 _command_name = None
+_watchdog_event = threading.Event()
 
 # Generous enough for a long recording's transcription (a 30 s clip decodes
 # in about a second), short enough that a wedge does not cost the morning.
@@ -85,14 +87,17 @@ def _watchdog():
     the LaunchAgent brings us back a few seconds later.
     """
     while True:
-        time.sleep(1.0)
-
         started = _command_started_at
         if started is None:
+            # Sleep without waking while idle (0 wakeups/s).
+            _watchdog_event.wait()
+            _watchdog_event.clear()
             continue
 
         elapsed = time.monotonic() - started
         if elapsed < WATCHDOG_TIMEOUT_S:
+            _watchdog_event.wait(timeout=min(1.0, WATCHDOG_TIMEOUT_S - elapsed))
+            _watchdog_event.clear()
             continue
 
         logger.error(
@@ -112,6 +117,7 @@ def _worker():
         name, handler = _command_queue.get()
         _command_name = name
         _command_started_at = time.monotonic()
+        _watchdog_event.set()
         try:
             handler()
         except Exception:
@@ -119,6 +125,7 @@ def _worker():
         finally:
             _command_started_at = None
             _command_name = None
+            _watchdog_event.set()
 
 
 def _ensure_worker():
@@ -144,13 +151,72 @@ def _dispatch(name, handler):
     return True
 
 
+class _SocketOverlayProcess:
+    """Process-compatible wrapper around LocalVoice's in-process overlay socket."""
+
+    def __init__(self, sock):
+        self._sock = sock
+        self._closed = False
+        self.stdin = sock.makefile("w", encoding="utf-8", buffering=1)
+        self.stdout = sock.makefile("r", encoding="utf-8", buffering=1)
+
+    def poll(self):
+        return 0 if self._closed else None
+
+    def _close_all(self):
+        if self._closed:
+            return
+        self._closed = True
+        for stream in (self.stdin, self.stdout):
+            try:
+                stream.close()
+            except OSError:
+                pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+    def kill(self):
+        self._close_all()
+
+    def terminate(self):
+        self._close_all()
+
+    def wait(self, timeout=None):
+        self._close_all()
+        return 0
+
+
+def _connect_overlay_socket():
+    """Connect to the launcher's embedded overlay server, or return None."""
+    socket_path = os.environ.get("LOCALVOICE_OVERLAY_SOCKET")
+    if not socket_path:
+        return None
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(1.0)
+        sock.connect(socket_path)
+        sock.settimeout(None)
+        return _SocketOverlayProcess(sock)
+    except OSError as exc:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        logger.debug("Embedded overlay socket unavailable (%s); falling back to helper.", exc)
+        return None
+
+
 class _OverlaySession:
     """Own a persistent recorder HUD and feed it microphone levels."""
 
     def __init__(self, language, initial_mode="recording"):
         self.language = language
         self.initial_mode = initial_mode
+        self.reusable = initial_mode == "recording"
         self.commands = queue.SimpleQueue()
+        self._alive = True
         self.thread = threading.Thread(
             target=self._run,
             name="ctrlspeak-overlay",
@@ -159,6 +225,19 @@ class _OverlaySession:
 
     def start(self):
         self.thread.start()
+
+    def is_reusable_and_alive(self):
+        return self.reusable and self._alive and self.thread.is_alive()
+
+    def show(self, language):
+        """Reuse this running standby/result pill for a fresh recording."""
+        self.language = language
+        while True:
+            try:
+                self.commands.get_nowait()
+            except queue.Empty:
+                break
+        self.commands.put(f"show {language}")
 
     def set_state(self, overlay_state):
         self.commands.put(f"state {overlay_state}")
@@ -219,7 +298,18 @@ class _OverlaySession:
 
         try:
             if self.initial_mode == "recording":
-                process = _take_standby_overlay()
+                process = _connect_overlay_socket()
+                if process is None:
+                    process = _take_standby_overlay()
+                if process is None:
+                    process = subprocess.Popen(
+                        [_OVERLAY_PATH, "standby", self.language],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        bufsize=1,
+                    )
                 if process is not None:
                     try:
                         self._write(process, f"show {self.language}")
@@ -227,6 +317,7 @@ class _OverlaySession:
                         process.kill()
                         process = None
             if process is None:
+                self.reusable = False
                 process = subprocess.Popen(
                     [_OVERLAY_PATH, self.initial_mode, self.language],
                     stdin=subprocess.PIPE,
@@ -244,8 +335,17 @@ class _OverlaySession:
             logger.info("Animated recorder overlay started")
 
             while process.poll() is None:
+                if mode == "recording":
+                    wait_timeout = 0.04
+                elif terminal_deadline is not None:
+                    wait_timeout = max(0.05, terminal_deadline - time.monotonic())
+                elif self.reusable:
+                    # Hidden standby between recordings: block with 0 wakeups/s.
+                    wait_timeout = None
+                else:
+                    wait_timeout = 0.5
                 try:
-                    command = self.commands.get(timeout=0.04)
+                    command = self.commands.get(timeout=wait_timeout)
                 except queue.Empty:
                     command = None
 
@@ -255,10 +355,18 @@ class _OverlaySession:
                     if command == "quit":
                         break
 
-                    if command.startswith("state "):
+                    if command.startswith("show "):
+                        mode = "recording"
+                        terminal_deadline = None
+                    elif command.startswith("state "):
                         mode = command.split(" ", 1)[1]
-                        if mode in {"success", "empty", "cancelled", "clipboard"}:
-                            terminal_deadline = time.monotonic() + 3.0
+                        if mode in {"success", "empty", "cancelled", "clipboard", "failed"}:
+                            if self.reusable:
+                                # The Swift overlay fades to hidden standby and stays alive.
+                                mode = "standby"
+                                terminal_deadline = None
+                            else:
+                                terminal_deadline = time.monotonic() + 3.0
 
                 if mode == "recording":
                     self._write(process, f"level {self._normalized_level():.4f}")
@@ -269,6 +377,7 @@ class _OverlaySession:
         except (BrokenPipeError, OSError) as exc:
             logger.warning(f"Recorder overlay stopped unexpectedly: {exc}")
         finally:
+            self._alive = False
             if process is not None:
                 try:
                     if process.stdin:
@@ -293,6 +402,9 @@ _standby_overlay_lock = threading.Lock()
 
 def prepare_overlay():
     """Have a hidden pill waiting for the next recording. Never raises."""
+    if os.environ.get("LOCALVOICE_OVERLAY_SOCKET"):
+        # The launcher hosts the recording overlay in-process; no helper needed.
+        return
     global _standby_overlay
     with _standby_overlay_lock:
         if _standby_overlay is not None and _standby_overlay.poll() is None:
@@ -321,17 +433,18 @@ def _take_standby_overlay():
 
 
 def _start_recording_overlay():
-    """Start a fresh persistent overlay for this recording session."""
+    """Show the persistent recording overlay (reusing it across sessions)."""
     global _overlay_session
 
     with _overlay_session_lock:
+        if _overlay_session is not None and _overlay_session.is_reusable_and_alive():
+            _overlay_session.show(state.source_lang)
+            return
         if _overlay_session is not None:
             _overlay_session.close()
 
         _overlay_session = _OverlaySession(state.source_lang)
         _overlay_session.start()
-    # The next recording's pill gets ready while this one is up.
-    threading.Thread(target=prepare_overlay, name="overlay-prewarm", daemon=True).start()
 
 
 def _show_start_error(detail):
@@ -459,8 +572,17 @@ def _segment_ticker(manager, recording_id):
 
     last_preview = time.monotonic()
     covered = None  # (segment, speech end) of the newest whole snapshot
+    event = getattr(manager, "speculate_event", None)
     while True:
-        time.sleep(SEGMENT_TICK_S)
+        if event is not None:
+            if state.live_preview_active:
+                timeout = min(SEGMENT_TICK_S, max(0.01, PREVIEW_INTERVAL_S - (time.monotonic() - last_preview)))
+            else:
+                timeout = SEGMENT_TICK_S
+            event.wait(timeout=timeout)
+            event.clear()
+        else:
+            time.sleep(SEGMENT_TICK_S)
         with manager.capture_lock:
             if not (manager.is_collecting and manager.recording_id == recording_id):
                 return
@@ -645,6 +767,12 @@ def _start_recording():
             _clear_transcript()
             model = state.stt_model
             _streaming_model = model if getattr(model, "supports_streaming", False) else None
+            if getattr(state, "model_unloaded", False) and _streaming_model is None:
+                # Reload the idle-unloaded model on the worker thread while the
+                # user speaks so the first segment does not wait for startup.
+                state.transcription_queue.put(
+                    TranscriptionJob(manager.recording_id, "preload")
+                )
             state.live_preview_active = (_streaming_model is not None
                                          and localvoice_config.as_bool("live-preview"))
             if _streaming_model is not None:

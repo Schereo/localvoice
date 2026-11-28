@@ -162,3 +162,57 @@ for line in sys.stdin:
         model.init_streaming("en")
         self.assertEqual(model.stream_chunk(Samples([0.7])), "en partial 1")
         self.assertEqual(model.finalize_streaming(), "en final 1")
+
+    def test_binary_pcm_frames_for_parakeet_and_nemotron(self):
+        parakeet_worker = self.worker("""
+import json, struct, sys
+print('{"event":"ready","binary":true}', flush=True)
+buf = sys.stdin.buffer
+while True:
+    hdr = buf.read(5)
+    if not hdr:
+        break
+    tag, length = struct.unpack('<BI', hdr)
+    assert tag == 1
+    pcm = buf.read(length)
+    vals = struct.unpack(f'<{length // 4}f', pcm)
+    print(json.dumps({'event': 'result', 'text': f'{vals[0]:.1f},{vals[-1]:.1f}'}), flush=True)
+""")
+        model = backend.ParakeetCoreMLModel("parakeet-v3", self.root, worker=parakeet_worker)
+        self.addCleanup(model.close)
+        model.load_model()
+        self.assertTrue(model._binary)
+        self.assertEqual(model.transcribe_pcm(Samples([0.5, -0.5]), "auto", "auto"), "0.5,-0.5")
+
+        nemotron_worker = self.worker("""
+import json, struct, sys
+print('{"event":"ready","binary":true}', flush=True)
+buf = sys.stdin.buffer
+lang = None
+chunks = 0
+while True:
+    b = buf.read(1)
+    if not b:
+        break
+    if b[0] == 2:
+        (length,) = struct.unpack('<I', buf.read(4))
+        pcm = buf.read(length)
+        assert len(pcm) == length
+        chunks += 1
+        print(json.dumps({'event': 'result', 'text': f'{lang}-bin-{chunks}'}), flush=True)
+    else:
+        line = b + buf.readline()
+        req = json.loads(line)
+        if req['command'] == 'start':
+            lang, chunks = req['language'], 0
+            print(json.dumps({'event': 'result', 'text': ''}), flush=True)
+        elif req['command'] == 'finish':
+            print(json.dumps({'event': 'result', 'text': f'{lang}-done-{chunks}'}), flush=True)
+""")
+        nem = backend.NemotronCoreMLModel(backend.NEMOTRON, self.root, worker=nemotron_worker)
+        self.addCleanup(nem.close)
+        nem.load_model()
+        self.assertTrue(nem._binary)
+        nem.init_streaming("de")
+        self.assertEqual(nem.stream_chunk(Samples([0.25, 0.75])), "de-bin-1")
+        self.assertEqual(nem.finalize_streaming(), "de-done-1")

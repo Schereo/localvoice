@@ -109,7 +109,9 @@ def plan(app):
                 continue
             relative = path.relative_to(app)
             python = kind == MH_EXECUTE and RUNTIME in relative.parents
-            nested.append((path, ENTITLEMENTS / "python.plist" if python else None))
+            mic = kind == MH_EXECUTE and relative == Path("Contents/Helpers/ctrlspeak-mic")
+            entitlement = ENTITLEMENTS / "python.plist" if python else (ENTITLEMENTS / "mic.plist" if mic else None)
+            nested.append((path, entitlement))
     # A bundle's own executable is signed with the bundle.
     covered = {main_executable(bundle).resolve() for bundle in bundles if main_executable(bundle)}
     nested = [(path, value) for path, value in nested if path.resolve() not in covered]

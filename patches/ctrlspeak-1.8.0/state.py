@@ -1,11 +1,33 @@
 
+import os
 import queue
+import sys
+import threading
 from typing import NamedTuple
-from rich.console import Console
+
+
+class _PlainConsole:
+    """Zero-dependency headless console so managed mode never imports rich."""
+
+    def print(self, *args, **kwargs):
+        pass
+
+
+def _make_console():
+    if "rich.console" in sys.modules:
+        return sys.modules["rich.console"].Console()
+    if os.environ.get("LOCALVOICE_MODEL_ID") is not None or not sys.stdout.isatty():
+        return _PlainConsole()
+    try:
+        from rich.console import Console
+        return Console()
+    except ImportError:
+        return _PlainConsole()
+
 
 # Global variables
 startup_time = 0
-console = Console()
+console = _make_console()
 print = console.print
 
 DEBUG_MODE = False
@@ -42,6 +64,8 @@ audio_manager = None
 stt_model = None
 model_type = "parakeet"
 model_loaded = False
+model_unloaded = False
+model_loaded_event = threading.Event()
 
 transcribed_chunks = []
 failed_recording_id = None

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import select
+import struct
 import subprocess
 import threading
 import time
@@ -18,6 +19,8 @@ VARIANTS = {
 NEMOTRON = "nemotron-streaming"
 MAX_SAMPLES = 30 * 16_000
 MAX_REPLY = 1024 * 1024
+_BINARY_PCM_TAG = 0x01
+_BINARY_NEMOTRON_CHUNK_TAG = 0x02
 
 
 class ParakeetCoreMLModel:
@@ -30,6 +33,7 @@ class ParakeetCoreMLModel:
         self.model_path = Path(model_path)
         self.worker = Path(worker or os.environ.get("LOCALVOICE_PARAKEET_WORKER", ""))
         self.process = None
+        self._binary = False
         self._pending = bytearray()
         self._guard = threading.Lock()
         self._closed = False
@@ -42,6 +46,7 @@ class ParakeetCoreMLModel:
                 return
             # A worker that crashed or was killed is replaced, not mourned.
             stale, self.process = self.process, None
+            self._binary = False
             self._pending.clear()
             if not self.worker.is_absolute() or not self.worker.is_file() or not os.access(self.worker, os.X_OK):
                 raise RuntimeError("The bundled Parakeet worker is unavailable.")
@@ -59,8 +64,10 @@ class ParakeetCoreMLModel:
             self._reap(stale)
         try:
             os.set_blocking(process.stdin.fileno(), False)
-            if self._read(process, time.monotonic() + 110).get("event") != "ready":
+            ready = self._read(process, time.monotonic() + 110)
+            if ready.get("event") != "ready":
                 raise RuntimeError("The Parakeet worker could not load the model.")
+            self._binary = bool(ready.get("binary"))
         except BaseException:
             self._discard()
             raise
@@ -94,12 +101,16 @@ class ParakeetCoreMLModel:
             self._pending.extend(chunk)
 
     @staticmethod
-    def _pcm(samples):
+    def _raw_pcm(samples):
         if samples.ndim != 1 or len(samples) > MAX_SAMPLES:
             raise ValueError("The Core ML worker expects at most 30 seconds of mono PCM.")
-        return base64.b64encode(samples.astype("<f4", copy=False).tobytes()).decode("ascii")
+        return samples.astype("<f4", copy=False).tobytes()
 
-    def _exchange(self, request):
+    @classmethod
+    def _pcm(cls, samples):
+        return base64.b64encode(cls._raw_pcm(samples)).decode("ascii")
+
+    def _ensure_process(self):
         process = self.process
         if process is None or process.poll() is not None:
             # The previous worker died or was dropped after an error. Start a
@@ -108,8 +119,12 @@ class ParakeetCoreMLModel:
             process = self.process
             if process is None:
                 raise RuntimeError("The Core ML worker is unavailable.")
+        return process
+
+    def _exchange_bytes(self, payload):
+        process = self._ensure_process()
         try:
-            data = memoryview(json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n")
+            data = memoryview(payload)
             fd = process.stdin.fileno()
             deadline = time.monotonic() + 45
             while data:
@@ -127,6 +142,20 @@ class ParakeetCoreMLModel:
             raise RuntimeError("The Core ML worker could not complete the audio request.")
         return reply["text"].strip()
 
+    def _exchange(self, request):
+        return self._exchange_bytes(json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n")
+
+    def _exchange_pcm(self, samples, *, tag=_BINARY_PCM_TAG, command=None):
+        self._ensure_process()
+        if self._binary:
+            raw = self._raw_pcm(samples)
+            header = struct.pack("<BI", tag, len(raw))
+            return self._exchange_bytes(header + raw)
+        payload = {"pcm": self._pcm(samples)}
+        if command is not None:
+            payload["command"] = command
+        return self._exchange(payload)
+
     def transcribe_pcm(self, samples, source_lang, target_lang):
         # Split long segments into equal parts. A fixed 30 s split can leave a
         # tail below FluidAudio's 0.3 s minimum, which fails the whole segment.
@@ -134,7 +163,7 @@ class ParakeetCoreMLModel:
         if count == 0:
             return ""
         size = -(-len(samples) // count)
-        chunks = (self._exchange({"pcm": self._pcm(samples[offset:offset + size])})
+        chunks = (self._exchange_pcm(samples[offset:offset + size])
                   for offset in range(0, len(samples), size))
         return " ".join(filter(None, chunks))
 
@@ -145,6 +174,10 @@ class ParakeetCoreMLModel:
             self._pending.clear()
         if process is not None:
             self._reap(process)
+
+    def unload_model(self):
+        """Release the Core ML worker process to free memory while idle."""
+        self._discard()
 
     def close(self):
         with self._guard:
@@ -178,7 +211,7 @@ class NemotronCoreMLModel(ParakeetCoreMLModel):
         self._exchange({"command": "start", "language": language})
 
     def stream_chunk(self, samples, *, is_final=False):
-        return self._exchange({"command": "chunk", "pcm": self._pcm(samples)})
+        return self._exchange_pcm(samples, tag=_BINARY_NEMOTRON_CHUNK_TAG, command="chunk")
 
     def finalize_streaming(self):
         return self._exchange({"command": "finish"})

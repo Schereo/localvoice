@@ -81,6 +81,7 @@ class RecordingBoundaryTests(unittest.TestCase):
             "soundfile": stub("soundfile", write=Mock()),
             "torch": self.fake_torch,
             "numpy": stub("numpy", ndarray=Samples, float32=float,
+                          zeros=lambda n, **_: Samples([0.0] * n),
                           array=lambda values, **_: Samples(values), concatenate=concatenate,
                           sqrt=lambda x: x ** 0.5, mean=lambda xs: sum(xs) / len(xs)),
             "rich": stub("rich", __path__=[], print=Mock()),
@@ -305,7 +306,7 @@ class RecordingBoundaryTests(unittest.TestCase):
         self.manager.close_input_stream.side_effect = close
         self.beep.side_effect = lambda: events.append("beep")
         self.resume.side_effect = lambda: events.append("resume")
-        self.audio.sf.write.side_effect = write
+        sys.modules["soundfile"].write.side_effect = write
         self.clipboard.side_effect = lambda _: events.append("clipboard") or True
         self.hotkeys._start_recording()
         self.manager.audio_buffer.append(Samples([0.1] * 8_000))
@@ -692,7 +693,7 @@ class RecordingBoundaryTests(unittest.TestCase):
             fcntl.flock(launcher, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_vad_load_and_inference_failures_use_bounded_fallback(self):
-        self.vad_loader.assert_called_once_with(self.fake_torch)
+        self.vad_loader.assert_called_once_with()
         for bad_asset in (True, False):
             with self.subTest(bad_asset=bad_asset):
                 self.vad_loader.side_effect = ValueError("fixture") if bad_asset else None
@@ -809,3 +810,192 @@ class RecordingBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 model.transcribe_pcm(samples, "fr", "fr")
             session_class.assert_called_once()
+
+    def test_mic_command_prefers_native_helper_when_executable(self):
+        helper = self.temp / "ctrlspeak-mic"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+        with patch.dict(os.environ, {"CTRLSPEAK_MIC_PATH": str(helper)}):
+            cmd = self.manager._mic_command("--standby")
+        self.assertEqual(cmd[0], str(helper))
+        self.assertEqual(cmd[-1], "--standby")
+        with patch.dict(os.environ, {"CTRLSPEAK_MIC_PATH": str(self.temp / "missing")}):
+            fallback = self.manager._mic_command("--standby")
+        self.assertEqual(fallback[0], sys.executable)
+        self.assertTrue(fallback[1].endswith("mic_capture.py"))
+
+    def test_config_load_caches_by_stat_and_invalidates_on_edit(self):
+        config = self.temp / "cached-config"
+        config.write_text("language = de\n")
+        with patch.object(self.config, "CONFIG_FILE", config):
+            self.assertEqual(self.config.load()["language"], "de")
+            self.assertEqual(self.config.load()["language"], "de")
+            config.write_text("language = en\ncompact = on\n")
+            loaded = self.config.load()
+            self.assertEqual(loaded["language"], "en")
+            self.assertEqual(loaded["compact"], "on")
+
+    def test_media_pause_skips_osascript_when_no_player_is_running(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("real_media_pause", PATCH / "utils/media_pause.py")
+        mp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mp)
+        with (
+            patch.object(mp, "_running_players", return_value=[]),
+            patch.object(mp, "_osascript") as run_osa,
+        ):
+            mp.pause_playing()
+        run_osa.assert_not_called()
+        self.assertFalse(mp.paused_any())
+
+    def test_persistent_overlay_reuses_same_process_across_recordings(self):
+        script = self.temp / "fake_persistent_overlay.py"
+        log = self.temp / "persistent_overlay.log"
+        script.write_text(
+            "#!" + sys.executable + "\n"
+            "import sys\n"
+            f"log = open({str(log)!r}, 'a')\n"
+            "log.write('start ' + ' '.join(sys.argv[1:]) + '\\n'); log.flush()\n"
+            "for line in sys.stdin:\n"
+            "    if not line.startswith('level'):\n"
+            "        log.write(line); log.flush()\n"
+            "    if line.strip() == 'quit':\n"
+            "        break\n"
+        )
+        script.chmod(0o755)
+        with patch.object(self.hotkeys, "_OVERLAY_PATH", str(script)):
+            self.hotkeys._overlay_session = None
+            self.state.source_lang = "de"
+            self.hotkeys.prepare_overlay()
+            standby = self.hotkeys._standby_overlay
+            # Call the real _start_recording_overlay directly via hotkeys module.
+            session = self.hotkeys._OverlaySession("de")
+            self.hotkeys._overlay_session = session
+            session.start()
+            session.set_state("success")
+            # Wait briefly so state success moves loop into reusable standby.
+            threading.Event().wait(0.05)
+            self.assertTrue(session.is_reusable_and_alive())
+            session.show("en")
+            session.close()
+            session.thread.join(timeout=3)
+            self.hotkeys._overlay_session = None
+        self.assertEqual(standby.wait(timeout=3), 0)
+        self.assertEqual(log.read_text(), "start standby de\nshow de\nstate success\nshow en\nquit\n")
+
+    def test_deferred_worker_runs_silent_warmup_after_load(self):
+        model = SimpleNamespace(
+            deferred_load=True,
+            supports_streaming=False,
+            supports_forced_language=True,
+            load_model=Mock(),
+            transcribe_pcm=Mock(return_value=""),
+        )
+        self.state.model_loaded = False
+        self.state.source_lang = "auto"
+        self.start_worker(model)
+        self.assertTrue(self.state.model_loaded_event.wait(timeout=2))
+        for _ in range(100):
+            if model.transcribe_pcm.called:
+                break
+            threading.Event().wait(0.01)
+        model.load_model.assert_called_once()
+        model.transcribe_pcm.assert_called_once()
+        samples, src, tgt = model.transcribe_pcm.call_args.args
+        self.assertEqual((len(samples), src, tgt), (8_000, "de", "de"))
+
+    def test_idle_unload_releases_model_and_preload_reloads(self):
+        unloaded = threading.Event()
+        reloaded = threading.Event()
+
+        def do_unload():
+            unloaded.set()
+
+        def do_load():
+            if unloaded.is_set():
+                reloaded.set()
+
+        model = SimpleNamespace(
+            deferred_load=True,
+            supports_streaming=False,
+            supports_forced_language=True,
+            load_model=Mock(side_effect=do_load),
+            unload_model=Mock(side_effect=do_unload),
+            transcribe_pcm=Mock(return_value="ok"),
+        )
+        self.state.model_loaded = False
+        self.state.model_unloaded = False
+        with patch.object(sys.modules["transcription"], "_idle_unload_seconds", return_value=0.05):
+            self.start_worker(model)
+            self.assertTrue(self.state.model_loaded_event.wait(timeout=2))
+            self.assertTrue(unloaded.wait(timeout=2), "Model should unload after idle timeout")
+            self.assertTrue(self.state.model_unloaded)
+            # Trigger background preload as _start_recording() does.
+            self.state.transcription_queue.put(self.state.TranscriptionJob(1, "preload"))
+            self.assertTrue(reloaded.wait(timeout=2), "Preload job should reload unloaded model")
+            self.assertFalse(self.state.model_unloaded)
+            self.assertEqual(model.load_model.call_count, 2)
+
+    def test_embedded_overlay_socket_skips_subprocess(self):
+        import socket
+        with tempfile.TemporaryDirectory() as tmp:
+            sock_path = str(Path(tmp) / "o.sock")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(sock_path)
+            server.listen(1)
+            received = []
+            done = threading.Event()
+
+            def serve():
+                conn, _ = server.accept()
+                with conn:
+                    f = conn.makefile("r", encoding="utf-8")
+                    for line in f:
+                        received.append(line.strip())
+                        if line.strip() == "quit":
+                            break
+                done.set()
+
+            srv_thread = threading.Thread(target=serve, daemon=True)
+            srv_thread.start()
+            try:
+                with patch.dict(os.environ, {"LOCALVOICE_OVERLAY_SOCKET": sock_path}):
+                    with patch.object(self.hotkeys.subprocess, "Popen") as popen:
+                        self.hotkeys.prepare_overlay()
+                        popen.assert_not_called()
+                        session = self.hotkeys._OverlaySession("de")
+                        session.start()
+                        session.set_state("success")
+                        threading.Event().wait(0.05)
+                        session.show("en")
+                        session.close()
+                        session.thread.join(timeout=3)
+                        popen.assert_not_called()
+                self.assertTrue(done.wait(timeout=3))
+            finally:
+                server.close()
+            self.assertIn("show de", received)
+            self.assertIn("state success", received)
+            self.assertIn("show en", received)
+            self.assertEqual(received[-1], "quit")
+
+    def test_native_sound_player_does_not_require_sounddevice(self):
+        import importlib.util
+        player_path = Path(__file__).resolve().parents[1] / "patches/ctrlspeak-1.8.0/utils/player.py"
+        spec = importlib.util.spec_from_file_location("localvoice_player_test", player_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        fake_copy = Mock()
+        fake_sound = Mock()
+        fake_sound.copy.return_value = fake_copy
+        fake_nssound = Mock()
+        fake_nssound.alloc.return_value.initWithContentsOfFile_byReference_.return_value = fake_sound
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "on.wav").write_bytes(b"RIFF")
+            (Path(tmp) / "off.wav").write_bytes(b"RIFF")
+            p = mod.SoundPlayer()
+            p.base_dir = tmp
+            with patch.dict(sys.modules, {"AppKit": SimpleNamespace(NSSound=fake_nssound), "sounddevice": None}):
+                p.play("start")
+                p.play("stop")
+            self.assertEqual(fake_copy.play.call_count, 2)

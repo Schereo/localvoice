@@ -84,6 +84,16 @@ class Qwen3ASRMLXModel:
             transcripts.append(self.transcribe_pcm(samples, source_lang, target_lang))
         return transcripts
 
+    def unload_model(self):
+        """Release loaded MLX Qwen3-ASR weights and clear Metal buffer cache."""
+        if self.session is None:
+            return
+        self.session = None
+        import gc
+        import mlx.core as mx
+        gc.collect()
+        mx.clear_cache()
+
     @property
     def name(self):
         return f"Qwen3ASR-{self.model_path.name}"

@@ -24,6 +24,7 @@ unset DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALL
 unset DYLD_INSERT_LIBRARIES
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
 export CTRLSPEAK_OVERLAY_PATH="${RESOURCES%/Resources}/Helpers/ctrlspeak-overlay"
+export CTRLSPEAK_MIC_PATH="${RESOURCES%/Resources}/Helpers/ctrlspeak-mic"
 
 # The Python service reads the language from the user's LocalVoice config.
 exec "$RUNTIME/bin/python3.11" "$RESOURCES/ctrlspeak/ctrlspeak.py" --model whisper-mlx "$@"

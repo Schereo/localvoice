@@ -57,16 +57,40 @@ def copy_to_clipboard(text):
         return False
 
 
+_controller = None
+_ax_funcs = None
+
+
+def _get_ax_funcs():
+    global _ax_funcs
+    if _ax_funcs is None:
+        from ApplicationServices import (
+            AXUIElementCreateSystemWide,
+            AXUIElementCopyAttributeValue,
+        )
+        _ax_funcs = (AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue)
+    return _ax_funcs
+
+
+def _get_controller():
+    global _controller
+    if _controller is None:
+        from pynput import keyboard
+        _controller = keyboard.Controller()
+    return _controller
+
+
 def prepare():
-    """Import the accessibility bindings ahead of the first paste.
+    """Import the accessibility bindings and cache the keyboard controller
+    ahead of the first paste.
 
     PyObjC's ApplicationServices takes ~0.25 s to import. Done lazily, the
     first dictation after every service start paid it between the finished
     transcript and Cmd+V. Called once from a background thread at startup.
     """
     try:
-        import ApplicationServices  # noqa: F401
-        from pynput import keyboard  # noqa: F401
+        _get_ax_funcs()
+        _get_controller()
     except Exception as exc:
         logger.debug(f"Could not preload the paste helpers: {exc}")
 
@@ -80,10 +104,7 @@ def _focused_element_accepts_text():
     preserve the old behaviour.
     """
     try:
-        from ApplicationServices import (
-            AXUIElementCreateSystemWide,
-            AXUIElementCopyAttributeValue,
-        )
+        AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue = _get_ax_funcs()
 
         system_wide = AXUIElementCreateSystemWide()
         error, focused = AXUIElementCopyAttributeValue(
@@ -132,9 +153,7 @@ def type_text(text):
     if not _focused_element_accepts_text():
         return False
 
-    from pynput import keyboard
-
-    kb = keyboard.Controller()
+    kb = _get_controller()
     time.sleep(0.1)
     try:
         kb.type(text)
@@ -152,16 +171,18 @@ def paste_from_clipboard():
     Returns True when Cmd+V was sent, False when no text target was found and
     the transcript stays on the clipboard instead.
     """
+    started = time.monotonic()
     if not _focused_element_accepts_text():
         return False
 
-    # Create keyboard controller
     from pynput import keyboard
-    kb = keyboard.Controller()
+    kb = _get_controller()
 
-    # pbcopy has returned, so the pasteboard already holds the transcript;
-    # this only gives the target app a beat before the keystroke arrives.
-    time.sleep(0.05)
+    # pbcopy has already returned, so the pasteboard holds the transcript.
+    # Count the AX focus-check IPC time toward the 50 ms settle window.
+    remaining = 0.05 - (time.monotonic() - started)
+    if remaining > 0:
+        time.sleep(remaining)
 
     # Simulate Command+V to paste
     with kb.pressed(keyboard.Key.cmd):

@@ -30,10 +30,23 @@ staging = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(staging)
 
 
+# Runtime dependencies of mlx-whisper==0.4.3 and mlx-qwen3-asr==0.4.4 excluding
+# torch (offline weight converter), scipy/numba/llvmlite (word_timestamps), and
+# huggingface-hub/hf-xet (LocalVoice downloads models via stdlib localvoice_models.py).
+# Audio capture uses native ctrlspeak-mic, beeps use NSSound, and the service runs
+# headless — so sounddevice, soundfile, textual, pygments, and rich are omitted too.
+MLX_RUNTIME_DEPS = [
+    "mlx>=0.18.0", "numpy", "regex", "tqdm", "more-itertools", "tiktoken", "certifi",
+]
 DEPENDENCIES = [
-    *(f"{name}=={version}" for name, version in staging.PINNED_PACKAGES.items()), "sounddevice", "soundfile", "pynput",
-    "pyperclip", "rich", "textual", "pyobjc-framework-Cocoa", "pyobjc-framework-Quartz",
+    *MLX_RUNTIME_DEPS,
+    "pynput", "pyperclip",
+    "pyobjc-framework-Cocoa", "pyobjc-framework-Quartz",
     "pyobjc-framework-ApplicationServices", "pyobjc-framework-CoreText",
+]
+NO_DEPS_PACKAGES = [
+    f"mlx-whisper=={staging.PINNED_PACKAGES['mlx-whisper']}",
+    f"mlx-qwen3-asr=={staging.PINNED_PACKAGES['mlx-qwen3-asr']}",
 ]
 # Relocatable CPython for --portable (astral-sh/python-build-standalone).
 STANDALONE_PYTHON = (
@@ -51,10 +64,70 @@ SPARKLE_UNUSED = ("XPCServices", "Headers", "PrivateHeaders", "Modules")
 
 
 def pip_install(python):
-    subprocess.run([
+    base = [
         str(python), "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
-        "--no-cache-dir", "install", "--only-binary=:all:", *DEPENDENCIES,
-    ], check=True)
+        "--no-cache-dir", "install", "--only-binary=:all:", "--no-compile",
+    ]
+    subprocess.run([*base, *DEPENDENCIES], check=True)
+    subprocess.run([*base, "--no-deps", *NO_DEPS_PACKAGES], check=True)
+
+
+def prune_embedded_runtime(runtime):
+    """Strip build tools, bytecode caches, test suites, Tcl/Tk, and C headers
+    that the headless LocalVoice runtime never imports."""
+    lib = runtime / "lib"
+    pylib = lib / "python3.11"
+    site = pylib / "site-packages"
+
+    def drop(path):
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+    # Bytecode caches (~50 MB uncompressed).
+    for cache in list(runtime.rglob("__pycache__")):
+        drop(cache)
+    for pyc in list(runtime.rglob("*.pyc")) + list(runtime.rglob("*.pyo")):
+        drop(pyc)
+
+    # Packaging/build tools not needed at runtime (~18 MB).
+    for pattern in ("pip", "pip-*", "setuptools", "setuptools-*", "wheel", "wheel-*",
+                    "build", "build-*", "pkg_resources", "_distutils_hack*", "distutils-precedence.pth"):
+        for match in site.glob(pattern):
+            drop(match)
+    drop(pylib / "ensurepip")
+
+    # Test suites inside packages and stdlib (~17 MB).
+    drop(pylib / "test")
+    for test_dir in list(site.rglob("*")):
+        if test_dir.is_dir() and test_dir.name in {"tests", "test", "testing"}:
+            drop(test_dir)
+
+    # Unused GUI/doc/header trees (~15 MB).
+    for rel in (
+        "include",
+        "share",
+        "lib/python3.11/idlelib",
+        "lib/python3.11/tkinter",
+        "lib/python3.11/lib2to3",
+        "lib/python3.11/pydoc_data",
+        "lib/python3.11/turtledemo",
+        "lib/python3.11/turtle.py",
+        "lib/python3.11/distutils",
+        "lib/python3.11/site-packages/mlx/include",
+    ):
+        drop(runtime / rel)
+    for pattern in ("tcl*", "tk*", "itcl*", "libtcl*", "libtk*", "tdbc*", "thread*"):
+        for match in lib.glob(pattern):
+            drop(match)
+    # Remove unused console scripts in bin/ (keep python binaries/symlinks).
+    bin_dir = runtime / "bin"
+    if bin_dir.is_dir():
+        keep = {"python3.11", "python3", "python", "ffmpeg"}
+        for item in bin_dir.iterdir():
+            if item.name not in keep:
+                drop(item)
 
 
 def fetch_checked(url, path, digest, limit):
@@ -194,19 +267,23 @@ def main():
                             "-C", str(embedded)], check=True)
             print("Installing binary dependencies into the embedded runtime…", flush=True)
             pip_install(embedded / "bin/python3.11")
+            prune_embedded_runtime(embedded)
 
-        swift = ["xcrun", "swiftc", "-target", "arm64-apple-macosx15.0",
+        swift = ["xcrun", "swiftc", "-O", "-target", "arm64-apple-macosx15.0",
                  "-module-cache-path", str(scratch / "module-cache")]
         embed_sparkle(sparkle, bundle / "Contents/Frameworks")
-        subprocess.run([*swift, "-parse-as-library", "-F", str(sparkle), "-framework", "Sparkle",
+        subprocess.run([*swift, "-parse-as-library", "-D", "OVERLAY_EMBEDDED", "-F", str(sparkle), "-framework", "Sparkle",
                         "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
                         str(ROOT / "src/ctrlspeak-launcher.swift"), str(ROOT / "src/localvoice-model-library.swift"),
-                        str(ROOT / "src/localvoice-updater.swift"), "-o", str(macos / "LocalVoice")], check=True)
+                        str(ROOT / "src/localvoice-updater.swift"), str(ROOT / "src/ctrlspeak-overlay.swift"),
+                        "-o", str(macos / "LocalVoice")], check=True)
         # The updater code compiles to a stub when Sparkle cannot be imported; refuse that build.
         links = subprocess.check_output(["/usr/bin/otool", "-L", str(macos / "LocalVoice")], text=True)
         staging.require("@rpath/Sparkle.framework/" in links, "The launcher does not link Sparkle.")
         subprocess.run([*swift, str(ROOT / "src/ctrlspeak-overlay.swift"),
                          "-o", str(helpers / "ctrlspeak-overlay")], check=True)
+        subprocess.run([*swift, str(ROOT / "src/ctrlspeak-mic.swift"),
+                         "-o", str(helpers / "ctrlspeak-mic")], check=True)
         icon_generator = scratch / "ctrlspeak-icon"
         subprocess.run([*swift, str(ROOT / "src/ctrlspeak-icon.swift"),
                         "-o", str(icon_generator)], check=True)

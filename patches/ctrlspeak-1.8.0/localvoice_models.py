@@ -32,6 +32,7 @@ the digest is reused within a process only while the file identity is unchanged.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import fcntl
@@ -447,29 +448,37 @@ def _removal_error(destination, model):
     return None
 
 
+def _status_entry(model):
+    path, location = _locate(model)
+    reason = ""
+    if model.minimum_macos is not None:
+        try:
+            coreml_worker_path(model.id)
+        except ModelStoreError as exc:
+            reason = str(exc)
+    return {
+        "id": model.id,
+        "name": model.name,
+        "bytes": model.size,
+        "source": model.repo,
+        "revision": model.revision,
+        "status": "installed" if path is not None else "not-installed",
+        "path": str(path) if path is not None else None,
+        "location": location,
+        "removable": _removal_error(_store_dir() / model.id, model) is None,
+        "available": not reason,
+        "availability_reason": reason,
+    }
+
+
 def _status():
-    models = []
-    for model in MODELS.values():
-        path, location = _locate(model)
-        reason = ""
-        if model.minimum_macos is not None:
-            try:
-                coreml_worker_path(model.id)
-            except ModelStoreError as exc:
-                reason = str(exc)
-        models.append({
-            "id": model.id,
-            "name": model.name,
-            "bytes": model.size,
-            "source": model.repo,
-            "revision": model.revision,
-            "status": "installed" if path is not None else "not-installed",
-            "path": str(path) if path is not None else None,
-            "location": location,
-            "removable": _removal_error(_store_dir() / model.id, model) is None,
-            "available": not reason,
-            "availability_reason": reason,
-        })
+    all_models = list(MODELS.values())
+    # OpenSSL SHA-256 releases the GIL; hashing installed models in parallel
+    # cuts Settings / Model Library open time linearly with CPU cores while
+    # preserving full cryptographic verification and catalog order.
+    workers = min(len(all_models), max(1, os.cpu_count() or 4))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        models = list(pool.map(_status_entry, all_models))
     return {"models": models}
 
 

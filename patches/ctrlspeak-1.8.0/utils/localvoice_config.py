@@ -39,6 +39,7 @@ DEFAULTS = {
     "pause-media": "off",
     "vocabulary": "",
     "live-preview": "off",
+    "idle-unload": "off",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
@@ -99,7 +100,16 @@ _KEY_BLOCKS = {
 # text after each pause, plus a dimmed live guess of the current phrase.
 # The live guess re-runs the model about once a second while you talk.
 """,
+    "idle-unload": """\
+# Unload the speech model from memory after this many minutes of inactivity
+# (off | 5 | 15 | 30 | 60). Frees ~1 GB of RAM while idle and reloads
+# automatically in the background when you start dictating again.
+""",
 }
+
+
+_load_cache_key = None
+_load_cache_values = None
 
 
 def load():
@@ -107,10 +117,25 @@ def load():
 
     Unknown keys are kept (harmless, and future versions may know them);
     comments and malformed lines are skipped. A missing file is an empty dict.
+    Cached by file identity (path, inode, mtime_ns, size) so repeated lookups
+    cost one stat() instead of opening and parsing the file every time.
     """
+    global _load_cache_key, _load_cache_values
+    path = CONFIG_FILE
+    try:
+        st = path.stat()
+    except OSError:
+        _load_cache_key = None
+        _load_cache_values = None
+        return {}
+
+    key = (str(path), st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+    if key == _load_cache_key and _load_cache_values is not None:
+        return dict(_load_cache_values)
+
     values = {}
     try:
-        raw = CONFIG_FILE.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError:
         return values
 
@@ -118,9 +143,12 @@ def load():
         entry = line.strip()
         if not entry or entry.startswith("#") or "=" not in entry:
             continue
-        key, _, value = entry.partition("=")
-        values[key.strip().lower()] = value.strip()
-    return values
+        k, _, value = entry.partition("=")
+        values[k.strip().lower()] = value.strip()
+
+    _load_cache_key = key
+    _load_cache_values = values
+    return dict(values)
 
 
 def _read_legacy(key):
@@ -145,6 +173,18 @@ def effective(key):
 
 def as_bool(key):
     return str(effective(key)).strip().lower() in _TRUTHY
+
+
+def idle_unload_minutes():
+    """Minutes of inactivity before unloading the speech model (0 = never)."""
+    raw = str(effective("idle-unload") or "off").strip().lower()
+    if raw in {"", "off", "false", "0", "no", "never"}:
+        return 0
+    try:
+        minutes = int(raw)
+    except ValueError:
+        return 0
+    return max(0, min(minutes, 1440))
 
 
 def language():

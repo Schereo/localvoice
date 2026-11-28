@@ -50,13 +50,10 @@ def main():
         if not line.startswith("open"):
             return 0  # EOF or anything else: the service no longer wants us
         device = _parse_device(line[len("open"):].strip())
-        # PortAudio's device list is a snapshot from import time. Taking it
-        # again costs a few milliseconds and finds a microphone plugged in
-        # (or AirPods connected) while this child was waiting.
-        sd._terminate()
-        sd._initialize()
+        standby = True
     else:
         device = _parse_device(device_arg)
+        standby = False
 
     # The audio callback must never block, so it hands blocks to a writer
     # thread. Bounded, because a stalled reader must cost us the oldest audio
@@ -84,8 +81,8 @@ def main():
                 # Parent is gone; nothing left to capture for.
                 return
 
-    try:
-        stream = sd.InputStream(
+    def open_stream():
+        s = sd.InputStream(
             device=device,
             samplerate=samplerate,
             channels=channels,
@@ -93,7 +90,26 @@ def main():
             dtype=np.float32,
             callback=callback,
         )
-        stream.start()
+        s.start()
+        return s
+
+    try:
+        if standby and device is None:
+            # System default may have changed while waiting (e.g. USB mic or
+            # AirPods connected); refresh PortAudio's device list.
+            sd._terminate()
+            sd._initialize()
+            stream = open_stream()
+        else:
+            try:
+                stream = open_stream()
+            except Exception:
+                if not standby:
+                    raise
+                # Named device may have appeared after standby started; rescan once.
+                sd._terminate()
+                sd._initialize()
+                stream = open_stream()
     except Exception as exc:
         print(f"open-failed: {exc}", file=sys.stderr, flush=True)
         return 1

@@ -321,6 +321,32 @@ def produce(args, work):
         return
 
     python_version = install_wheels(runtime / "bin/python3.11", bootstrap, site, wheels, local_lock, work)
+    # Strip unused stdlib GUI/doc/test trees and C headers from the runtime payload.
+    for rel in (
+        "lib/python3.11/ensurepip",
+        "lib/python3.11/idlelib",
+        "lib/python3.11/tkinter",
+        "lib/python3.11/lib2to3",
+        "lib/python3.11/pydoc_data",
+        "lib/python3.11/turtledemo",
+        "lib/python3.11/turtle.py",
+        "lib/python3.11/test",
+        "lib/python3.11/site-packages/mlx/include",
+    ):
+        target = runtime / rel
+        if target.is_symlink() or target.is_file():
+            target.unlink(missing_ok=True)
+        elif target.is_dir():
+            shutil.rmtree(target)
+    for pattern in ("tcl*", "tk*", "itcl*", "libtcl*", "libtk*", "tdbc*", "thread*"):
+        for match in (runtime / "lib").glob(pattern):
+            if match.is_symlink() or match.is_file():
+                match.unlink(missing_ok=True)
+            elif match.is_dir():
+                shutil.rmtree(match)
+    for test_dir in sorted(site.rglob("*"), reverse=True):
+        if test_dir.is_dir() and not test_dir.is_symlink() and test_dir.name in {"tests", "test", "testing"}:
+            shutil.rmtree(test_dir)
     require(app.runtime_packages(runtime) == {name: version for name, (version, _) in pins.items()},
             "Installed distributions don't match the wheel lock.")
     targets = native_targets(runtime, args.min_macos)
