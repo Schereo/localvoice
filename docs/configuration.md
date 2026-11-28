@@ -1,7 +1,7 @@
 # Configuration reference
 
-Use **Settings…** in the LocalVoice menu for the hotkey, microphone,
-vocabulary, live preview, standby, media pause, the menu bar icon, and launch
+Use **Settings…** in the LocalVoice menu for the shortcuts, microphone,
+vocabulary, live preview, standby, media pause, sounds, the menu bar icon, and launch
 at login. Set the dictation language per model in its **Models** section. Apart from
 launch at login, which macOS keeps, these choices are stored in one
 plain-text file:
@@ -33,16 +33,18 @@ mic-standby = off
 
 | Key | Values | Default | Effect |
 |---|---|---|---|
-| `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture |
+| `dictate` | tap gesture, modifiers or key combination | `hotkey` | LocalVoice.app: starts and stops dictation |
+| `dictate-mode` | `toggle` · `hold` · `hybrid` | `toggle` | LocalVoice.app: how `dictate` behaves |
+| `hotkey` | `<modifier>,<taps>` | `ctrl,3` | The recording toggle gesture (and `dictate`'s fallback) |
 | `language` | `de` · `en` · `auto` | `de` | Legacy installs only: transcription language |
 | `language.<model-id>` | `auto` · `de` · `en` | `auto` | Dictation language for Whisper, Nemotron or Qwen3-ASR |
-| `compact` | `on` · `off` | `off` | Legacy installs only: hide the language badge |
 | `mic-standby` | `on` · `off` | `off` | Keep the microphone open while idle |
 | `microphone` | `built-in` · `system` · name | `built-in` | Which microphone records |
 | `menubar` | `on` · `off` | `on` | Show the menu bar icon |
 | `pause-media` | `on` · `off` | `off` | Pause Spotify/Music while recording |
 | `vocabulary` | comma-separated words | empty | Words the transcriber should spell correctly |
 | `live-preview` | `on` · `off` | `off` | Show the transcript in the pill while you speak |
+| `sounds` | `on` · `off` | `on` | Play the start and stop sounds of a recording |
 
 ### `hotkey`
 
@@ -55,6 +57,50 @@ followed by `Cmd+V` never triggers a double-tap. If your gesture collides with
 a system shortcut (macOS binds *press Cmd twice* to Siri, for example), change
 either side — Siri's binding lives in System Settings → Apple Intelligence &
 Siri.
+
+### `dictate`
+
+LocalVoice.app records this in **Settings › Dictation › Hotkey**: click the
+field, press the keys and hit Return. Written by hand, it is one of
+
+- a **tap gesture** like `hotkey`: `ctrl,3`;
+- **modifiers pressed together**: two or more joined with `+`, e.g.
+  `ctrl+cmd`. All of them have to be held at once. In toggle mode it fires
+  when you let go, and only if no other key or click came in between, so ⌃⌘Q
+  still locks the screen without starting dictation; with `dictate-mode` hold
+  or hybrid it starts on the press, and a key or click before the release
+  discards that recording;
+- a **key combination**: modifiers and one key joined with `+`, e.g.
+  `alt+space`, `shift+cmd+d`, `f5`. Modifiers are `ctrl`, `alt` (or `opt`),
+  `shift` and `cmd`. Keys are letters and digits, `space`, `return`, `tab`,
+  `escape`, `delete`, `f1`–`f20`, arrows (`left`, `up`, …), punctuation names
+  (`comma`, `period`, `slash`, …) or `#<key code>`.
+
+Letters name the key's **position on a US keyboard**: what is stored is the
+key, not the character, so a shortcut keeps working when you switch layouts.
+Settings shows it in your layout — on a German keyboard `cmd+y` appears as ⌘Z.
+Settings writes the right name for you.
+
+A key combination needs ⌘, ⌥ or ⌃ unless it is a function key: a plain or
+Shift-only key would fire while typing. It is a system-wide hotkey: macOS hands
+it to LocalVoice instead of the app in front. Return, Esc and ⌥Esc are not available:
+during a recording Return and Esc insert and discard, and ⌥Esc quits
+LocalVoice. A value Settings would refuse is ignored, as if it were missing. Without
+`dictate`, LocalVoice uses `hotkey`; choosing a tap gesture in Settings writes
+both. The service's own listener — used only when it runs without the app —
+understands tap gestures only, and keeps `hotkey` otherwise.
+
+### `dictate-mode`
+
+- `toggle` — press to start, press again to insert.
+- `hold` — hold while you speak, let go to insert.
+- `hybrid` — a short press (under 0.35 s) toggles, a longer one is
+  hold-to-talk.
+
+A tap gesture always toggles. With modifiers as the hotkey (`ctrl+cmd`),
+hold and hybrid start recording the moment both are down; if you then press
+another key (⌃⌘Q), that recording is discarded. Return inserts and Esc
+discards in every mode.
 
 ### `language`
 
@@ -71,14 +117,6 @@ Legacy installs still support:
 - `auto` — Whisper detects the language per recording, deliberately restricted
   to the German/English pair (the full 99-language ranking readily mistakes
   German for Dutch).
-
-In legacy installs, clicking the pill's language badge cycles the mode and
-writes the choice back to this file.
-
-### `compact`
-
-LocalVoice.app does not show a language badge. In legacy installs, `on`
-strips the pill down to the dot, waveform and timer.
 
 ### `microphone`
 
@@ -171,16 +209,10 @@ the price of an always-lit indicator. Idle audio is held only as a rolling
 0.45 s in memory and never stored or sent anywhere. Details:
 [usage.md](usage.md#microphone-standby).
 
-## Install-time overrides
-
-The installer accepts environment variables and writes them into the config
-file: `CTRLSPEAK_LANGUAGE=de|en|auto`, `CTRLSPEAK_HOTKEY=cmd,2`,
-`CTRLSPEAK_MIC_STANDBY=on|off` — e.g. `CTRLSPEAK_HOTKEY=cmd,2 ./install.sh --legacy-homebrew`.
-
 ## Migration from pre-1.2 versions
 
 Older versions kept single-value files under `~/.config/ctrlspeak` (`hotkey`,
 `language`, `mic-standby`). On its first start, version 1.2 folds their values
 into the new config file; until then they are still honoured as a fallback.
 `~/.config/ctrlspeak` itself remains in use for the service's internal state
-(installed version, setup status, the single-instance lock).
+(installed version, the single-instance lock).

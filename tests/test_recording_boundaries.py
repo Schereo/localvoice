@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -66,6 +67,7 @@ class RecordingBoundaryTests(unittest.TestCase):
         self.paste = Mock(return_value=True)
         self.history = Mock()
         self.beep = Mock()
+        self.start_beep = Mock()
         self.resume = Mock()
         self.fake_torch = stub("torch", from_numpy=lambda _: Mock())
         models = stub("models", __path__=[str(PATCH / "models")])
@@ -75,7 +77,7 @@ class RecordingBoundaryTests(unittest.TestCase):
             "utils.media_pause": stub("utils.media_pause", resume_paused=self.resume),
             "utils.clipboard": stub("utils.clipboard", copy_to_clipboard=self.clipboard,
                                     paste_from_clipboard=self.paste, type_text=Mock(return_value=False)),
-            "utils.player": stub("utils.player", play_start_beep=Mock(), play_stop_beep=self.beep),
+            "utils.player": stub("utils.player", play_start_beep=self.start_beep, play_stop_beep=self.beep),
             "utils.history": stub("utils.history", get_history_manager=Mock(return_value=self.history)),
             "sounddevice": stub("sounddevice"),
             "soundfile": stub("soundfile", write=Mock()),
@@ -113,6 +115,7 @@ class RecordingBoundaryTests(unittest.TestCase):
         self.hotkeys._start_recording_overlay = Mock()
         self.hotkeys._show_start_error = Mock()
         self.config.as_bool = Mock(return_value=False)
+        self.config.sounds = Mock(return_value=True)
         self.state.model_loaded = True
         self.state.console.print.side_effect = AssertionError("unexpected console output")
         self.addCleanup(self.hotkeys._release_session_lock)
@@ -691,6 +694,74 @@ class RecordingBoundaryTests(unittest.TestCase):
             self.hotkeys._start_recording()
             self.hotkeys._end_recording(self.manager.recording_id, discard=True)
             fcntl.flock(launcher, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_app_hears_each_recording_start_and_end_once(self):
+        # The app swallows Esc and Enter only between these two events.
+        changes = []
+        self.manager.on_collecting_changed = changes.append
+        self.hotkeys._start_recording()
+        self.hotkeys._end_recording(self.manager.recording_id, discard=True)
+        self.manager.open_input_stream.side_effect = OSError("open failed")
+        with self.assertLogs("ctrlspeak.hotkeys", "ERROR"):
+            self.hotkeys._start_recording()
+        self.assertEqual(changes, [True, False])
+
+    def test_release_ends_the_recording_its_press_started_even_before_capture(self):
+        # Hold-to-talk: a release that arrives while the start is still queued
+        # must still end that recording, not be dropped like a too-early finish.
+        model = Mock(transcribe_pcm=None)
+        model.supports_streaming = False
+        model.transcribe_batch.return_value = ["hello"]
+        self.start_worker(model)
+        changes = []
+        self.manager.on_collecting_changed = changes.append
+        gate = threading.Event()
+        self.manager.open_input_stream.side_effect = lambda **_: gate.wait(2)
+        self.hotkeys.press_to_talk()
+        self.hotkeys.release_to_insert()
+        gate.set()
+        deadline = time.monotonic() + 3
+        while changes != [True, False] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(changes, [True, False])
+
+    def test_cancelled_release_discards_the_recording_even_before_capture(self):
+        # ⌃⌘ let go after a click: the discard queues behind the start too.
+        self.start_worker(Mock(transcribe_pcm=None, supports_streaming=False))
+        changes = []
+        self.manager.on_collecting_changed = changes.append
+        gate = threading.Event()
+        self.manager.open_input_stream.side_effect = lambda **_: gate.wait(2)
+        self.hotkeys.press_to_talk()
+        self.hotkeys.release_to_discard()
+        gate.set()
+        deadline = time.monotonic() + 3
+        while changes != [True, False] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(changes, [True, False])
+
+    def test_a_start_that_records_nothing_tells_the_app(self):
+        nothing = threading.Event()
+        self.manager.open_input_stream.side_effect = OSError("open failed")
+        with self.assertLogs("ctrlspeak.hotkeys", "ERROR"):
+            self.hotkeys.press_to_talk(on_nothing=nothing.set)
+            self.assertTrue(nothing.wait(3))
+
+    def test_start_and_stop_sounds_follow_the_setting(self):
+        model = Mock(transcribe_pcm=None)
+        model.supports_streaming = False
+        model.transcribe_batch.return_value = ["hello"]
+        self.start_worker(model)
+        for enabled in (True, False):
+            with self.subTest(sounds=enabled):
+                self.start_beep.reset_mock()
+                self.beep.reset_mock()
+                self.config.sounds.return_value = enabled
+                self.hotkeys._start_recording()
+                self.manager.audio_buffer.append(Samples([0.1] * 8_000))
+                self.hotkeys._end_recording(self.manager.recording_id)
+                self.assertEqual(self.start_beep.call_count, int(enabled))
+                self.assertEqual(self.beep.call_count, int(enabled))
 
     def test_vad_load_and_inference_failures_use_bounded_fallback(self):
         self.vad_loader.assert_called_once_with()

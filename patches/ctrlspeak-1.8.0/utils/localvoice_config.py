@@ -3,7 +3,7 @@ LocalVoice's user configuration.
 
 Every user-facing preference lives in one key = value file at
 ~/.config/localvoice/config: the activation hotkey, the transcription
-language, the compact pill, and microphone standby. The file is plain text on
+language, the microphone, and microphone standby. The file is plain text on
 purpose — Cmd+, while the recording pill is on screen opens it in the default
 text editor, and the running service applies edits within a couple of seconds.
 
@@ -25,26 +25,27 @@ CONFIG_DIR = Path(
 CONFIG_FILE = CONFIG_DIR / "config"
 
 # Where the pre-1.2 preference files live; ~/.config/ctrlspeak stays the home
-# of the service's internal state (setup-status, installed-version, lock).
+# of the service's internal state (the service lock).
 _LEGACY_DIR = Path.home() / ".config" / "ctrlspeak"
 _LEGACY_FILES = {"hotkey": "hotkey", "language": "language", "mic-standby": "mic-standby"}
 
 DEFAULTS = {
     "hotkey": "ctrl,3",
     "language": "de",
-    "compact": "off",
     "mic-standby": "off",
     "microphone": "built-in",
     "menubar": "on",
     "pause-media": "off",
     "vocabulary": "",
     "live-preview": "off",
+    "sounds": "on",
     "idle-unload": "off",
 }
 
 VALID_LANGUAGES = {"de", "en", "auto"}
 VALID_HOTKEY_MODIFIERS = {"ctrl", "cmd", "alt", "shift"}
 _TRUTHY = {"on", "true", "1", "yes"}
+_FALSY = {"off", "false", "0", "no"}
 
 _HEADER = """\
 # LocalVoice configuration.
@@ -62,13 +63,13 @@ _KEY_BLOCKS = {
     "hotkey": """\
 # Activation hotkey, as <modifier>,<taps>.
 # Modifier: ctrl, cmd, alt or shift. Taps: 2-4. Example: cmd,2 = double-tap Cmd.
+# LocalVoice.app also takes a key combination or modifiers pressed together:
+# set "dictate" (e.g. dictate = alt+space, or ctrl+cmd). Settings writes it
+# for you.
 """,
     "language": """\
 # Legacy installs only: de, en or auto. LocalVoice.app saves language
 # choices per model in the Model Library.
-""",
-    "compact": """\
-# Legacy installs only: "on" hides the recording pill's language badge.
 """,
     "mic-standby": """\
 # Keep the microphone stream open while idle: instant recording starts, at
@@ -99,6 +100,9 @@ _KEY_BLOCKS = {
 # Show the transcript inside the recording pill while you speak: confirmed
 # text after each pause, plus a dimmed live guess of the current phrase.
 # The live guess re-runs the model about once a second while you talk.
+""",
+    "sounds": """\
+# Play the short start and stop sounds of a recording (on | off).
 """,
     "idle-unload": """\
 # Unload the speech model from memory after this many minutes of inactivity
@@ -175,6 +179,14 @@ def as_bool(key):
     return str(effective(key)).strip().lower() in _TRUTHY
 
 
+def sounds():
+    """Whether recordings start and stop with a sound (default on).
+
+    Only an explicit off value silences them; a typo keeps the default.
+    """
+    return str(effective("sounds")).strip().lower() not in _FALSY
+
+
 def idle_unload_minutes():
     """Minutes of inactivity before unloading the speech model (0 = never)."""
     raw = str(effective("idle-unload") or "off").strip().lower()
@@ -217,8 +229,14 @@ def parse_hotkey(raw):
 
 
 def hotkey():
-    """The configured (modifier, taps) activation gesture, validated."""
-    return parse_hotkey(effective("hotkey")) or parse_hotkey(DEFAULTS["hotkey"])
+    """The configured (modifier, taps) activation gesture, validated.
+
+    "dictate" is the app's key since 1.5 and wins when it holds a tap gesture.
+    A key combination there is the app's business (Carbon hotkeys); this
+    listener then keeps the "hotkey" gesture, which Settings leaves alone.
+    """
+    return (parse_hotkey(load().get("dictate")) or parse_hotkey(effective("hotkey"))
+            or parse_hotkey(DEFAULTS["hotkey"]))
 
 
 # A Whisper special-token string in the vocabulary ("<|endoftext|>" and
@@ -285,7 +303,6 @@ def ensure_config_file():
     if parse_hotkey(values["hotkey"]) is None:
         values["hotkey"] = DEFAULTS["hotkey"]
     values["mic-standby"] = "on" if values["mic-standby"] in _TRUTHY else "off"
-    values["compact"] = "on" if values["compact"] in _TRUTHY else "off"
 
     content = _HEADER
     for key, block in _KEY_BLOCKS.items():

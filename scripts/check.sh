@@ -9,9 +9,6 @@ PYTHON="${LOCALVOICE_CHECK_PYTHON:-$(command -v python3)}"
 "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else "Python 3.9+ is required for tests")'
 
 echo "Checking shell syntax"
-bash -n install.sh
-bash -n uninstall.sh
-./install.sh --plan >/dev/null
 for script in scripts/*.sh; do
   bash -n "$script"
 done
@@ -37,18 +34,18 @@ if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
   done
   xcrun swiftc -swift-version 6 -parse-as-library -D OVERLAY_EMBEDDED -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" \
-    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/ctrlspeak-overlay.swift -o "$BUILD/LocalVoice"
+    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/localvoice-shortcuts.swift src/localvoice-shortcut-recorder.swift src/ctrlspeak-overlay.swift -o "$BUILD/LocalVoice"
   # The app build scripts compile in the default (Swift 5) language mode; check that too.
   xcrun swiftc -parse-as-library -D OVERLAY_EMBEDDED -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" \
-    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/ctrlspeak-overlay.swift -o "$BUILD/LocalVoice-swift5"
+    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/localvoice-shortcuts.swift src/localvoice-shortcut-recorder.swift src/ctrlspeak-overlay.swift -o "$BUILD/LocalVoice-swift5"
   # The release build links Sparkle (the in-app updater); without it the updater compiles
   # to a stub. Check the real one too once scripts/fetch-sparkle.sh has run (CI does).
   sparkle="build/sparkle/$(sed -nE 's/^SPARKLE_VERSION="([^"]+)"$/\1/p' scripts/fetch-sparkle.sh)"
   if [[ -f "$sparkle/.unpacked" ]]; then
     xcrun swiftc -swift-version 6 -parse-as-library -D OVERLAY_EMBEDDED -target arm64-apple-macosx15.0 \
       -module-cache-path "$BUILD/module-cache" -F "$sparkle" -framework Sparkle \
-      src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/ctrlspeak-overlay.swift \
+      src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/localvoice-shortcuts.swift src/localvoice-shortcut-recorder.swift src/ctrlspeak-overlay.swift \
       -o "$BUILD/LocalVoice-sparkle"
     otool -L "$BUILD/LocalVoice-sparkle" | grep -q "@rpath/Sparkle.framework/"
   else
@@ -59,14 +56,18 @@ if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
     src/localvoice-model-library.swift -o "$BUILD/model-library"
   xcrun swiftc -swift-version 6 -parse-as-library -D OVERLAY_EMBEDDED -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" -D PERMISSIONS_PREVIEW \
-    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/ctrlspeak-overlay.swift -o "$BUILD/permissions-preview"
+    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/localvoice-shortcuts.swift src/localvoice-shortcut-recorder.swift src/ctrlspeak-overlay.swift -o "$BUILD/permissions-preview"
   xcrun swiftc -swift-version 6 -parse-as-library -D OVERLAY_EMBEDDED -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" -D SETTINGS_PREVIEW \
-    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/ctrlspeak-overlay.swift -o "$BUILD/settings-preview"
+    src/ctrlspeak-launcher.swift src/localvoice-model-library.swift src/localvoice-updater.swift src/localvoice-shortcuts.swift src/localvoice-shortcut-recorder.swift src/ctrlspeak-overlay.swift -o "$BUILD/settings-preview"
   xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
     -module-cache-path "$BUILD/module-cache" \
     src/localvoice-model-library.swift tests/model_library_smoke.swift -o "$BUILD/model-library-smoke"
   "$BUILD/model-library-smoke" "$BUILD" "$PYTHON"
+  xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx13.0 \
+    -module-cache-path "$BUILD/module-cache" \
+    src/localvoice-shortcuts.swift tests/shortcuts_smoke.swift -o "$BUILD/shortcuts-smoke"
+  "$BUILD/shortcuts-smoke"
 else
   echo "Skipping native builds: Apple Silicon macOS required"
 fi

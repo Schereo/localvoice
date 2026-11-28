@@ -106,6 +106,23 @@ class AudioManager:
     2. Streaming mode: Fixed-interval chunks, calls callback for real-time transcription
     """
 
+    # Called with the new value whenever is_collecting flips; the LocalVoice
+    # app learns from it when Esc and Enter belong to a recording. It must
+    # only enqueue: it runs with the capture lock held.
+    on_collecting_changed = None
+
+    @property
+    def is_collecting(self):
+        return self._is_collecting
+
+    @is_collecting.setter
+    def is_collecting(self, value):
+        value = bool(value)
+        changed = value != getattr(self, "_is_collecting", False)
+        self._is_collecting = value
+        if changed and self.on_collecting_changed is not None:
+            self.on_collecting_changed(value)
+
     def __init__(self, transcription_queue, debug_mode=False, app_state=None):
         """Initialize the audio manager"""
         self.is_running = True

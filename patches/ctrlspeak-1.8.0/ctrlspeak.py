@@ -116,9 +116,11 @@ def _start_config_watcher():
             return None
 
     def _apply_changes():
+        # With the app owning the shortcuts there is no listener here; the
+        # app follows hotkey edits itself.
         manager = state.keyboard_manager
         modifier, taps = load_hotkey_config()
-        if (modifier, taps) != (manager.tap_modifier, manager.tap_count_required):
+        if manager is not None and (modifier, taps) != (manager.tap_modifier, manager.tap_count_required):
             manager.tap_modifier = modifier
             manager.tap_count_required = taps
             logger.info(f"Hotkey changed to: {manager.hotkey_description}")
@@ -398,12 +400,30 @@ _service_log_stream = None
 SHUTDOWN_GRACE_SECONDS = 8
 
 
+def _app_gone():
+    logger.warning("The LocalVoice app is gone; stopping the service.")
+    os.kill(os.getpid(), signal.SIGTERM)
+    # Backstop in case the main thread cannot unwind.
+    time.sleep(SHUTDOWN_GRACE_SECONDS + 2)
+    os._exit(1)
+
+
 def _watch_lifeline():
     """Stop the service once the host app is gone.
 
     The app keeps the write end of our stdin open for as long as it runs. If
     it quits, crashes or is force-quit, the kernel closes it and we read EOF.
+    When the app owns the shortcuts, stdin is its command channel instead,
+    whose reader handles EOF the same way (app_control.py).
     """
+    import app_control
+
+    if app_control.enabled():
+        try:
+            app_control.listen(on_eof=_app_gone)
+        except OSError:
+            pass  # reported when the commands are served
+        return
     if os.environ.get("LOCALVOICE_LIFELINE") != "stdin":
         return
     try:
@@ -417,11 +437,7 @@ def _watch_lifeline():
                 pass
         except OSError:
             pass
-        logger.warning("The LocalVoice app is gone; stopping the service.")
-        os.kill(os.getpid(), signal.SIGTERM)
-        # Backstop in case the main thread cannot unwind.
-        time.sleep(SHUTDOWN_GRACE_SECONDS + 2)
-        os._exit(1)
+        _app_gone()
 
     threading.Thread(target=watch, name="LifelineWatcher", daemon=True).start()
 
@@ -578,6 +594,9 @@ def run_app(args):
         from utils.audio import AudioManager, resolve_input_device
         from hotkeys import (
             on_activate,
+            press_to_talk,
+            release_to_insert,
+            release_to_discard,
             is_recording,
             cancel_recording,
             finish_recording,
@@ -630,15 +649,23 @@ def run_app(args):
             f"Capture device: {state.audio_manager.input_device or 'system default'}"
         )
 
-        state.keyboard_manager = KeyboardShortcutManager()
-        state.keyboard_manager.register_triple_ctrl_tap(on_activate)
-        state.keyboard_manager.register_recording_keys(
-            is_recording=is_recording,
-            on_cancel=cancel_recording,
-            on_finish=finish_recording,
-            on_open_config=None if managed else open_config,
-        )
-        state.keyboard_manager.register_shortcut('<alt>+<esc>', exit_app)
+        import app_control
+
+        app_hotkeys = app_control.enabled()
+        if app_hotkeys:
+            # The app owns the shortcuts and only needs to hear when Esc and
+            # Enter belong to a recording.
+            state.audio_manager.on_collecting_changed = app_control.publish_recording
+        else:
+            state.keyboard_manager = KeyboardShortcutManager()
+            state.keyboard_manager.register_triple_ctrl_tap(on_activate)
+            state.keyboard_manager.register_recording_keys(
+                is_recording=is_recording,
+                on_cancel=cancel_recording,
+                on_finish=finish_recording,
+                on_open_config=None if managed else open_config,
+            )
+            state.keyboard_manager.register_shortcut('<alt>+<esc>', exit_app)
 
         try:
             # Standby opens the stream now; on-demand leaves it to hotkeys.py.
@@ -650,13 +677,34 @@ def run_app(args):
                 # The first recording gets a capture child that is already up.
                 state.audio_manager.prewarm_input_stream()
 
-            if not state.keyboard_manager.start_listening():
-                logger.error("Could not start the hotkey listener.")
-                return 1
+            if app_hotkeys:
+                try:
+                    app_control.start({
+                        "toggle": on_activate,
+                        "start": lambda: press_to_talk(on_nothing=app_control.publish_idle),
+                        "stop": release_to_insert,
+                        "cancel": release_to_discard,
+                        "finish": finish_recording,
+                        "discard": cancel_recording,
+                        # Off the reader thread: stopping a recording can
+                        # wait on the capture lock, and the reader must stay
+                        # free to hear the app go.
+                        "quit": lambda: threading.Thread(
+                            target=exit_app, name="app-quit", daemon=True
+                        ).start(),
+                    }, on_eof=_app_gone)
+                except OSError as exc:
+                    logger.error("Could not open the command channel from the app: %s", exc)
+                    return 1
+                logger.info("Shortcuts are handled by the LocalVoice app.")
+            else:
+                if not state.keyboard_manager.start_listening():
+                    logger.error("Could not start the hotkey listener.")
+                    return 1
 
-            if ready_file and not _hotkeys_ready(state.keyboard_manager):
-                logger.error("Hotkey listener did not become ready.")
-                return 1
+                if ready_file and not _hotkeys_ready(state.keyboard_manager):
+                    logger.error("Hotkey listener did not become ready.")
+                    return 1
 
             _start_config_watcher()
             threading.Thread(target=_prepare_fast_start, name="fast-start", daemon=True).start()
@@ -674,7 +722,8 @@ def run_app(args):
 
             if not managed and sys.stdout.isatty():
                 from rich.panel import Panel
-                hotkey_hint = state.keyboard_manager.hotkey_description
+                hotkey_hint = (state.keyboard_manager.hotkey_description
+                               if state.keyboard_manager is not None else "The LocalVoice shortcut")
                 console.print(
                     Panel.fit(
                         f"[bold cyan]LocalVoice[/bold cyan] - Ready to transcribe.\n"

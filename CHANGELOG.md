@@ -6,16 +6,68 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Versions refer to LocalVoice itself. The ctrlSPEAK release the patch set is
-built against is pinned separately, in `SUPPORTED_CTRLSPEAK_VERSION` in
-`install.sh`, and moves on its own schedule.
+built against is pinned separately, in `UPSTREAM_VERSION` in
+`scripts/build-app.py`, and moves on its own schedule.
 
 ## [Unreleased]
+
+### Added
+
+- The hotkey is recorded, not picked: click the field in **Settings ›
+  Dictation**, press the keys and hit Return. It can now be a key combination
+  such as ⌥Space or modifiers pressed together such as ⌃⌘, as well as a
+  modifier tap gesture. The popover shows the keys as you press them and
+  refuses a combination without a modifier. New config key `dictate`;
+  `hotkey = ctrl,3` keeps working.
+- Hold to talk: next to the hotkey, **Toggle**, **Hold to Talk** (hold while
+  you speak, let go to insert) or **Hybrid** (a short press toggles, a long
+  one is hold-to-talk). Config key `dictate-mode`.
+- **Settings › Recording › Sounds** turns off the short sounds that mark the
+  start and end of a recording (config key `sounds`, on by default).
+
+### Removed
+
+- The legacy Homebrew installer (`install.sh --legacy-homebrew`,
+  `uninstall.sh`) and the scripts that only served it (`doctor.sh`,
+  `restart.sh`, `setup-permissions.sh`), along with the launcher's
+  LaunchAgent mode. LocalVoice is the app; [setup](docs/setup.md#coming-from-the-old-homebrew-installer)
+  shows how to move an old install over. `preview-overlay.sh` now builds the
+  pill from source instead of using the Homebrew copy.
+- The language badge on the recording pill and the `compact` setting that hid
+  it. LocalVoice.app never showed the badge; it was left over from the legacy
+  install. The language is chosen per model in Settings.
 
 ### Changed
 
 - LocalVoice looks for updates once a day by default instead of asking first;
   the switch under **Settings › General › Updates** turns it off. Copies of
   1.4.0 still ask once before their first check.
+- The recording pill answers the hotkey at once: a small circle appears while
+  the microphone opens and grows into the pill as soon as it records, instead
+  of the pill fading in only after the microphone was ready.
+- Inserted text is confirmed by the pill folding into a circle with a green
+  check, without the "Text inserted" label. Every pill now leaves by folding
+  back into a point instead of fading out. When recording stops, the pill
+  pauses at full size for a moment (grey dot, timer stopped); a quick result
+  goes straight to its circle or message from there. Only a slow transcription
+  folds the pill into a circle with a neutral arc running round it, which
+  spirals into the check once the text lands, and that fold always finishes
+  before a result replaces it. A discarded recording (Esc)
+  folds into a red cross the same way; the clipboard pill just says
+  "Copied". Errors and "No speech detected" keep their text.
+- The website's Homebrew command sits in its own box with a copy button.
+- The website's demo is the pill itself, large and on its own: it grows from
+  the circle, records, transcribes in the circle and lands two sentences at a
+  free-standing cursor. The mock editor window and the demo controls are gone;
+  with reduced motion the pill stands still.
+- The app now detects the hotkey itself and drives the dictation service over
+  its stdin; the service's own keyboard listener only runs when it is started
+  on its own.
+
+### Fixed
+
+- Enter and Esc pressed to end a recording no longer also reach the app you
+  are typing in (Enter used to send the message in Slack and similar apps).
 
 ## [1.4.0] — 2026-11-27
 

@@ -12,7 +12,7 @@
   ![License](https://img.shields.io/badge/license-MIT-green)
   ![Local](https://img.shields.io/badge/cloud-none-blue)
 
-  <img src="assets/pill-recording.png" width="330" alt="LocalVoice recording pill">
+  <img src="assets/pill-recording.png" width="264" alt="LocalVoice recording pill">
 </div>
 
 ## Why
@@ -33,25 +33,22 @@ Releases after 1.3.0 update themselves: a new version shows up in the menu bar m
 
 To build it yourself: the private ARM64 app is staged with [`scripts/build-app.sh`](scripts/build-app.sh). It keeps its runtime inside the app and does not use or change Homebrew on the target Mac. Build the [Core ML worker](docs/development-checks.md#nvidia-providers) to include the NVIDIA models. In the app, use **Models…** to download or select a model, **Set Up Permissions…** to enable dictation, and optionally **Launch at Login**. See [Setup](docs/setup.md) for build inputs and release checks.
 
-The previous source installer is available as an explicit compatibility option. Run `./install.sh --plan` before deciding whether to use `./install.sh --legacy-homebrew`.
-
 ## Use
 
 | Key | Action |
 |---|---|
-| Hotkey tap (default: triple-tap **Ctrl**) | Start recording / stop and insert |
+| Your hotkey (default: triple-tap **Ctrl**, or e.g. ⌥Space or ⌃⌘) | Start recording / stop and insert |
 | **Enter** / **Esc** while recording | Insert / discard |
 | **Cmd+,** while recording | Open the settings in your text editor |
-| Badge click (`DE` / `EN` / `AUTO`) | Cycle the language mode |
 
-Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, microphone, a compact pill without the language badge, mic standby. Edits apply within seconds, no restart needed; the menu bar icon offers the same settings as menus: **[docs/configuration.md](docs/configuration.md)**. Recording uses the built-in mic by default, so connected AirPods keep their audio quality. The mic opens only while you record (the indicator stays honest); if nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
+Everything is configured in one file, `~/.config/localvoice/config` — hotkey (`hotkey = cmd,2`), language, microphone, mic standby. Edits apply within seconds, no restart needed; the menu bar icon offers the same settings as menus: **[docs/configuration.md](docs/configuration.md)**. Recording uses the built-in mic by default, so connected AirPods keep their audio quality. The mic opens only while you record (the indicator stays honest); if nothing can take the text, it stays on the clipboard. More: **[docs/usage.md](docs/usage.md)**.
 
 For the private app, disable **Launch at Login**, quit LocalVoice, and move the app to Trash. Models and preferences are kept separately.
 
 ## More
 
-- **[docs/setup.md](docs/setup.md)** — installer steps, permissions wizard, code signing, health checks, uninstall
-- **[docs/configuration.md](docs/configuration.md)** — the config file: hotkey, language, compact pill, mic standby
+- **[docs/setup.md](docs/setup.md)** — building the app, permissions, releases and in-app updates, uninstall
+- **[docs/configuration.md](docs/configuration.md)** — the config file: hotkey, language, microphone, mic standby
 - **[docs/usage.md](docs/usage.md)** — keys, language modes, insertion behaviour
 - **[docs/how-it-works.md](docs/how-it-works.md)** — architecture: app identity, pill protocol, download pipeline, onset buffer
 - **[docs/development-checks.md](docs/development-checks.md)** — automated checks, UI preview, offline model smoke test

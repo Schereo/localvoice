@@ -496,7 +496,8 @@ def stage(args):
         # Without Sparkle on the search path the updater compiles to its stub: this app has none.
         compile_swift(
             ["ctrlspeak-launcher.swift", "localvoice-model-library.swift",
-             "localvoice-updater.swift", "ctrlspeak-overlay.swift"],
+             "localvoice-updater.swift", "localvoice-shortcuts.swift",
+             "localvoice-shortcut-recorder.swift", "ctrlspeak-overlay.swift"],
             app / ENTRYPOINTS[0], "-parse-as-library", "-D", "OVERLAY_EMBEDDED",
         )
         compile_swift(["ctrlspeak-overlay.swift"], app / ENTRYPOINTS[1])

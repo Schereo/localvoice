@@ -23,11 +23,11 @@ import ServiceManagement
 // inherits it as the responsible process.
 //
 // Modes:
-//   (default)        run the dictation service via the wrapper
-//   --setup          guided permission setup: request all three permissions so
-//                    macOS pre-lists the app in the privacy panes; the user
-//                    only confirms, never hunts for a hidden path
-//   --setup-status   print each permission's state and exit (used by doctor.sh)
+//   (default)        the app: menu bar, Settings, Models, and the dictation
+//                    service as a child process
+//   --setup          the permission window on its own: it requests all three
+//                    permissions so macOS pre-lists the app in the privacy
+//                    panes; the user only confirms, never hunts for a path
 //
 // It deliberately spawns the wrapper as a child rather than exec'ing it:
 // exec would replace this image, and the responsible process would become the
@@ -44,7 +44,7 @@ func fail(_ message: String, code: Int32) -> Never {
 func loadConfig() -> [String: String] {
     guard let configURL = Bundle.main.url(forResource: "launch", withExtension: "conf"),
           let rawConfig = try? String(contentsOf: configURL, encoding: .utf8) else {
-        fail("launch.conf is missing from the app bundle; re-run install.sh", code: 78)
+        fail("launch.conf is missing from the app bundle; reinstall LocalVoice", code: 78)
     }
 
     var config: [String: String] = [:]
@@ -113,7 +113,9 @@ enum PermissionKind: Int, CaseIterable {
         switch self {
         case .microphone: "Records your voice while you dictate."
         case .accessibility: "Types your words into the app you’re using."
-        case .inputMonitoring: "Notices when you tap \(hotkeyDescription())."
+        case .inputMonitoring: MainActor.assumeIsolated {
+            "Notices when you \(hotkeyVerb().lowercased()) \(hotkeyDescription())."
+        }
         }
     }
 
@@ -157,16 +159,26 @@ enum PermissionKind: Int, CaseIterable {
     var step: Int { rawValue + 1 }
 }
 
-/// "Command twice" for `hotkey = cmd,2`; the service's default is Control three times.
-func hotkeyDescription() -> String {
-    let parts = (readConfigValue("hotkey") ?? "ctrl,3").lowercased().split(separator: ",")
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-    let modifiers = ["ctrl": "Control", "cmd": "Command", "alt": "Option", "shift": "Shift"]
-    let taps = ["2": "twice", "3": "three times", "4": "four times"]
-    guard parts.count == 2, let modifier = modifiers[parts[0]], let count = taps[parts[1]] else {
-        return "Control three times"
+/// The dictation shortcut for sentences: "Control three times", "Option-Space".
+@MainActor
+func hotkeyDescription() -> String { DictationShortcut.current().spokenName }
+
+/// "Tap" for a tap gesture, "Hold" in hold-to-talk mode, "Press" otherwise.
+@MainActor
+func hotkeyVerb() -> String {
+    if case .taps = DictationShortcut.current() { return "Tap" }
+    return DictationShortcut.mode() == .hold ? "Hold" : "Press"
+}
+
+/// One sentence on how to dictate with the configured shortcut and mode.
+@MainActor
+func dictationHowTo() -> String {
+    let hotkey = hotkeyDescription()
+    switch DictationShortcut.mode() {
+    case .toggle: return "\(hotkeyVerb()) \(hotkey) in any app to start, and again to insert the text."
+    case .hold: return "Hold \(hotkey) in any app while you speak; let go to insert the text."
+    case .hybrid: return "Press \(hotkey) in any app to start and again to insert, or hold it while you speak."
     }
-    return "\(modifier) \(count)"
 }
 
 func bundleDisplayName() -> String {
@@ -1194,7 +1206,7 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
                 footer("Starting dictation", "Loading \(model)…", "Done")
             case .ready:
                 let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
-                footer("Ready to dictate", "Tap \(hotkeyDescription()) in any app to start."
+                footer("Ready to dictate", dictationHowTo()
                        + (menuBar ? " Settings are under the LocalVoice icon in the menu bar." : ""), "Done")
             case .stopped:
                 footer("Dictation didn’t start", "Open Models to try again or choose another model.", "Done")
@@ -1624,155 +1636,11 @@ private final class PermissionChecklist: NSWindowController, NSWindowDelegate {
 
 // MARK: - Setup wizard
 
-/// Feed status lines to the recording pill so the wizard has a visible face.
-final class SetupPill {
-    private var process: Process?
-    private var stdin: FileHandle?
-
-    init(overlayPath: String?) {
-        guard let overlayPath, FileManager.default.isExecutableFile(atPath: overlayPath) else {
-            return
-        }
-
-        let pill = Process()
-        pill.executableURL = URL(fileURLWithPath: overlayPath)
-        pill.arguments = ["permission", "de"]
-        let pipe = Pipe()
-        pill.standardInput = pipe
-        pill.standardOutput = FileHandle.nullDevice
-        pill.standardError = FileHandle.nullDevice
-
-        do {
-            try pill.run()
-            process = pill
-            stdin = pipe.fileHandleForWriting
-        } catch {
-            process = nil
-            stdin = nil
-        }
-    }
-
-    func detail(_ text: String) {
-        send("detail \(text)")
-    }
-
-    func close() {
-        send("quit")
-        try? stdin?.close()
-        process = nil
-        stdin = nil
-    }
-
-    private func send(_ command: String) {
-        guard let stdin, process?.isRunning == true else { return }
-        try? stdin.write(contentsOf: Data((command + "\n").utf8))
-    }
-}
-
 func openPrivacyPane(_ anchor: String) {
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     open.arguments = ["x-apple.systempreferences:com.apple.preference.security?\(anchor)"]
     try? open.run()
-}
-
-func writeSetupStatus(_ value: String, managed: Bool) {
-    let directory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(managed ? "Library/Application Support/LocalVoice" : ".config/ctrlspeak",
-                                isDirectory: true)
-    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try? Data((value + "\n").utf8).write(to: directory.appendingPathComponent("setup-status"))
-}
-
-func runSetup(config: [String: String]) -> Int32 {
-    let managed = config["managed_models"] == "1"
-    struct Step {
-        let name: String
-        let shortName: String
-        let state: () -> PermissionState
-        let request: () -> Void
-        let pane: String
-    }
-
-    // Requesting is what pre-lists the app in each privacy pane, which is the
-    // entire point of the wizard: the user confirms a dialog or flips one
-    // switch, instead of digging a hidden unix path out of a file picker.
-    let steps = [
-        Step(
-            name: "Microphone",
-            shortName: "Mic",
-            state: microphoneState,
-            request: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
-            pane: "Privacy_Microphone"
-        ),
-        Step(
-            name: "Accessibility",
-            shortName: "Access",
-            state: accessibilityState,
-            request: {
-                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                _ = AXIsProcessTrustedWithOptions(options)
-            },
-            pane: "Privacy_Accessibility"
-        ),
-        Step(
-            name: "Input Monitoring",
-            shortName: "Input",
-            state: inputMonitoringState,
-            request: { _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent) },
-            pane: "Privacy_ListenEvent"
-        ),
-    ]
-
-    if steps.allSatisfy({ $0.state() == .granted }) {
-        writeSetupStatus("granted", managed: managed)
-        return 0
-    }
-
-    let pill = SetupPill(overlayPath: config["overlay"])
-
-    func statusLine() -> String {
-        steps.map { "\($0.shortName) \($0.state() == .granted ? "✓" : "○")" }
-            .joined(separator: "  ·  ")
-    }
-
-    let deadline = Date().addingTimeInterval(15 * 60)
-    var requested = Set<String>()
-    var paneOpened = Set<String>()
-    var waitingSince: [String: Date] = [:]
-
-    while Date() < deadline {
-        guard let current = steps.first(where: { $0.state() != .granted }) else { break }
-
-        if !requested.contains(current.name) {
-            requested.insert(current.name)
-            waitingSince[current.name] = Date()
-            current.request()
-        }
-
-        // The system dialog covers the happy path. If it was dismissed or the
-        // permission was denied earlier (no second dialog exists), take the
-        // user to the right pane — the app is already listed there.
-        if current.state() == .denied,
-           !paneOpened.contains(current.name),
-           Date().timeIntervalSince(waitingSince[current.name] ?? Date()) > 8 {
-            paneOpened.insert(current.name)
-            openPrivacyPane(current.pane)
-        }
-
-        pill.detail("\(statusLine())  —  waiting for \(current.name)")
-        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
-    }
-
-    let allGranted = steps.allSatisfy { $0.state() == .granted }
-    if allGranted {
-        pill.detail("\(statusLine())  —  all set")
-        RunLoop.main.run(until: Date().addingTimeInterval(1.2))
-    }
-    pill.close()
-
-    writeSetupStatus(allGranted ? "granted" : "timeout", managed: managed)
-    return allGranted ? 0 : 1
 }
 
 @MainActor
@@ -1781,12 +1649,10 @@ private func runManagedSetup() -> Never {
     app.setActivationPolicy(.accessory)
     let checklist = PermissionChecklist()
     checklist.onClose = { granted in
-        writeSetupStatus(granted ? "granted" : "deferred", managed: true)
         exit(granted ? 0 : 1)
     }
     // The relaunched copy runs as the normal managed service.
     checklist.onQuit = {
-        writeSetupStatus("deferred", managed: true)
         exit(1)
     }
     checklist.present()
@@ -1794,36 +1660,11 @@ private func runManagedSetup() -> Never {
     exit(1)
 }
 
-func printSetupStatus(config: [String: String]) -> Never {
-    let report = [
-        "microphone=\(microphoneState().rawValue)",
-        "accessibility=\(accessibilityState().rawValue)",
-        "input-monitoring=\(inputMonitoringState().rawValue)",
-    ].joined(separator: "\n")
-
-    print(report)
-
-    // Also written to a file: doctor.sh must launch this through
-    // LaunchServices for the answer to be about the app rather than the
-    // terminal, and "open" provides no stdout channel.
-    let directory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(
-            config["managed_models"] == "1" ? "Library/Application Support/LocalVoice" : ".config/ctrlspeak",
-            isDirectory: true
-        )
-    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try? Data((report + "\n").utf8).write(to: directory.appendingPathComponent("permission-status"))
-
-    exit(0)
-}
-
 // MARK: - LocalVoice config file
 
 // The launcher shares the service's config file rather than owning any state:
 // the menu bar writes a key, the Python service's watcher applies it within
 // seconds, and the pill reads it per spawn. One source of truth, no IPC.
-
-let serviceLabel = "com.localvoice.app"
 
 func localVoiceConfigPath() -> String {
     ProcessInfo.processInfo.environment["LOCALVOICE_CONFIG_DIR"].map { $0 + "/config" }
@@ -1850,7 +1691,12 @@ func readConfigValue(_ key: String) -> String? {
 
 @discardableResult
 func writeConfigValue(_ key: String, _ value: String) -> Bool {
-    guard value.rangeOfCharacter(from: .newlines) == nil else { return false }
+    writeConfigValues([(key, value)])
+}
+
+/// Sets several keys in one atomic replacement of the file.
+func writeConfigValues(_ values: [(String, String)]) -> Bool {
+    guard values.allSatisfy({ $0.1.rangeOfCharacter(from: .newlines) == nil }) else { return false }
     // Follow a symlinked config (dotfiles) so the atomic write updates the
     // target instead of replacing the link with a regular file.
     let path = (localVoiceConfigPath() as NSString).resolvingSymlinksInPath
@@ -1866,19 +1712,21 @@ func writeConfigValue(_ key: String, _ value: String) -> Bool {
     let newline = raw.contains("\r\n") ? "\r\n" : "\n"
     var lines = raw.isEmpty ? [] : raw.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
 
-    var replaced = false
-    for index in lines.indices {
-        let entry = lines[index].trimmingCharacters(in: .whitespaces)
-        guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
-        if entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key {
-            lines[index] = "\(key) = \(value)"
-            replaced = true
+    for (key, value) in values {
+        var replaced = false
+        for index in lines.indices {
+            let entry = lines[index].trimmingCharacters(in: .whitespaces)
+            guard !entry.hasPrefix("#"), let separator = entry.firstIndex(of: "=") else { continue }
+            if entry[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == key {
+                lines[index] = "\(key) = \(value)"
+                replaced = true
+            }
         }
-    }
-    if !replaced {
-        if let last = lines.last, last.isEmpty { lines.removeLast() }
-        lines.append("\(key) = \(value)")
-        lines.append("")
+        if !replaced {
+            if let last = lines.last, last.isEmpty { lines.removeLast() }
+            lines.append("\(key) = \(value)")
+            lines.append("")
+        }
     }
 
     do {
@@ -1960,24 +1808,26 @@ func audioInputDeviceNames() -> [String] {
     return names
 }
 
-func runLaunchctl(_ subcommand: [String]) {
-    let launchctl = Process()
-    launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-    launchctl.arguments = subcommand
-    try? launchctl.run()
-}
-
 // MARK: - Ready screen
 
-/// The configured hotkey as a keycap: symbol, key name and tap count (default Control ×3).
+/// The dictation shortcut as one keycap: symbol, key name and tap count (default Control ×3).
+/// A key combination is one press of a keycap showing all of it.
+@MainActor
 func hotkeyKeycap() -> (symbol: String, name: String, taps: Int) {
-    let parts = (readConfigValue("hotkey") ?? "ctrl,3").lowercased().split(separator: ",")
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-    let keys = ["ctrl": ("⌃", "control"), "cmd": ("⌘", "command"), "alt": ("⌥", "option"), "shift": ("⇧", "shift")]
-    guard parts.count == 2, let key = keys[parts[0]], let taps = Int(parts[1]), (2...4).contains(taps) else {
-        return ("⌃", "control", 3)
+    switch DictationShortcut.current() {
+    case let .taps(taps):
+        let keys: [ModifierTapHotkey.Modifier: (String, String)] = [
+            .ctrl: ("⌃", "control"), .cmd: ("⌘", "command"), .alt: ("⌥", "option"), .shift: ("⇧", "shift"),
+        ]
+        let key = keys[taps.modifier] ?? ("⌃", "control")
+        return (key.0, key.1, taps.taps)
+    case let .combo(combo):
+        let short: [Int64: String] = [49: "␣", 36: "↩", 76: "⌤", 53: "⎋", 48: "⇥", 51: "⌫"]
+        let label = KeyboardLayout.label(for: combo.keyCode).label
+        return (combo.modifiers.glyphs + (short[combo.keyCode] ?? label), label.lowercased(), 1)
+    case let .chord(modifiers):
+        return (modifiers.glyphs, "", 1)
     }
-    return (key.0, key.1, taps)
 }
 
 /// A keycap drawn with layers: face, accent glow for presses, label, optional key name, ripple.
@@ -2058,6 +1908,8 @@ private final class KeycapLayers {
 private final class ReadyIllustrationView: NSView {
     private let keycap = hotkeyKeycap()
     private let hotkey = hotkeyDescription()
+    private let verb = hotkeyVerb()
+    private let discardKey = "Esc"
     private let still: Bool
     private let modifier: KeycapLayers
     private let escape = KeycapLayers(symbol: "esc", name: nil, symbolSize: 13)
@@ -2086,8 +1938,8 @@ private final class ReadyIllustrationView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
-        setAccessibilityLabel("Animation: tap \(hotkey) to start, speak, tap \(hotkey) again to insert the text. "
-                              + "Esc discards the recording.")
+        setAccessibilityLabel("Animation: \(verb.lowercased()) \(hotkey) to start, speak, \(verb.lowercased()) \(hotkey) "
+                              + "again to insert the text. \(discardKey) discards the recording.")
         guard let root = layer else { return }
 
         badge.cornerRadius = 11
@@ -2096,7 +1948,7 @@ private final class ReadyIllustrationView: NSView {
         badgeText.fontSize = 12
         badgeText.alignmentMode = .center
         badge.addSublayer(badgeText)
-        badge.isHidden = !still
+        badge.isHidden = !still || keycap.taps < 2
 
         arrow.fillColor = nil
         arrow.lineWidth = 2
@@ -2132,9 +1984,9 @@ private final class ReadyIllustrationView: NSView {
         field.addSublayer(caret)
 
         let captionTexts = still
-            ? ["Tap \(hotkey) to start, again to insert. Esc discards."]
-            : ["Tap \(hotkey) to start", "Speak…", "Tap \(hotkey) again to insert",
-               "The text appears where you type", "Esc discards the recording"]
+            ? ["\(verb) \(hotkey) to start, again to insert. \(discardKey) discards."]
+            : ["\(verb) \(hotkey) to start", "Speak…", "\(verb) \(hotkey) again to insert",
+               "The text appears where you type", "\(discardKey) discards the recording"]
         for text in captionTexts {
             let caption = CATextLayer()
             caption.string = text
@@ -2444,8 +2296,13 @@ private final class ReadyWindowController: NSWindowController, NSWindowDelegate 
 
         let hotkey = hotkeyDescription()
         let steps = NSStackView(views: [
-            Self.step("keyboard", "Tap **\(hotkey)** in any app to start."),
-            Self.step("return", "Tap again or press **Return** to insert the text. **Esc** discards."),
+            Self.step("keyboard", DictationShortcut.mode() == .hold
+                      ? "Hold **\(hotkey)** in any app while you speak."
+                      : "\(hotkeyVerb()) **\(hotkey)** in any app to start."),
+            Self.step("return", (DictationShortcut.mode() == .hold
+                                 ? "Let go or press **Return** to insert the text. "
+                                 : "\(hotkeyVerb()) again or press **Return** to insert the text. ")
+                      + "**Esc** discards."),
             Self.step(menuBar ? localVoiceTemplateIcon() : Self.stepSymbol("gearshape"),
                       menuBar ? "Models and **Settings** are under this icon in the menu bar."
                               : "Open LocalVoice again to change models or **Settings**."),
@@ -2693,69 +2550,6 @@ private final class SettingsTile: NSView {
         let radius = bounds.width / 4
         let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
         NSGradient(starting: top, ending: base)?.draw(in: path, angle: -90)
-    }
-}
-
-/// The chosen gesture as keys: ⌘ ⌘ for Command twice. Right-aligned in a fixed width, so the
-/// pickers beside it stay put when the tap count changes.
-private final class SettingsKeycaps: NSView {
-    private static let cap: CGFloat = 24
-    private static let spacing: CGFloat = 4
-    private static let most = 4
-    private static let glyphs = ["ctrl": "⌃", "cmd": "⌘", "alt": "⌥", "shift": "⇧"]
-    private static let names = ["ctrl": "Control", "cmd": "Command", "alt": "Option", "shift": "Shift"]
-    private static let counts = [2: "twice", 3: "three times", 4: "four times"]
-    private var glyph = "⌃"
-    private var count = 3
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        translatesAutoresizingMaskIntoConstraints = false
-        setContentHuggingPriority(.required, for: .horizontal)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.image)
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    func show(modifier: String, count: Int) {
-        glyph = Self.glyphs[modifier] ?? "⌃"
-        self.count = min(max(count, 2), Self.most)
-        setAccessibilityLabel("Gesture: \(Self.names[modifier] ?? "Control") \(Self.counts[self.count] ?? "")")
-        needsDisplay = true
-    }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: CGFloat(Self.most) * Self.cap + CGFloat(Self.most - 1) * Self.spacing, height: Self.cap + 2)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let lip = dark ? NSColor(white: 0, alpha: 0.55) : NSColor(white: 0, alpha: 0.20)
-        let edge = dark ? NSColor(white: 1, alpha: 0.14) : NSColor(white: 0, alpha: 0.13)
-        let face = dark
-            ? NSGradient(starting: NSColor(white: 0.30, alpha: 1), ending: NSColor(white: 0.23, alpha: 1))
-            : NSGradient(starting: NSColor(white: 1, alpha: 1), ending: NSColor(white: 0.955, alpha: 1))
-        let text = NSAttributedString(string: glyph, attributes: [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.85),
-        ])
-        let textSize = text.size()
-        for index in 0..<count {
-            let fromRight = CGFloat(count - index)
-            let x = bounds.maxX - fromRight * Self.cap - (fromRight - 1) * Self.spacing
-            let key = NSRect(x: x, y: bounds.minY + 2, width: Self.cap, height: Self.cap)
-            // The darker lip under the key is what makes it read as a key and not a badge.
-            lip.setFill()
-            NSBezierPath(roundedRect: key.offsetBy(dx: 0, dy: -1.5), xRadius: 6, yRadius: 6).fill()
-            let path = NSBezierPath(roundedRect: key, xRadius: 6, yRadius: 6)
-            face?.draw(in: path, angle: -90)
-            edge.setStroke()
-            let outline = NSBezierPath(roundedRect: key.insetBy(dx: 0.5, dy: 0.5), xRadius: 5.5, yRadius: 5.5)
-            outline.lineWidth = 1
-            outline.stroke()
-            text.draw(at: NSPoint(x: key.midX - textSize.width / 2, y: key.midY - textSize.height / 2))
-        }
     }
 }
 
@@ -3146,9 +2940,9 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     var updates: SettingsUpdates?
     private(set) var page: SettingsPage = .dictation
 
-    private let modifier = NSPopUpButton()
-    private let taps = NSPopUpButton()
-    private let keycaps = SettingsKeycaps()
+    private let shortcutField = ShortcutRecorderField()
+    private let dictationMode = NSPopUpButton()
+    private var hotkeyRow: SettingsRow?
     private let microphone = NSPopUpButton()
     private let vocabulary = NSTokenField()
     private var vocabularyHeight: NSLayoutConstraint?
@@ -3156,6 +2950,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private let preview = NSSwitch()
     private let standby = NSSwitch()
     private let pauseMedia = NSSwitch()
+    private let sounds = NSSwitch()
     private let menuBar = NSSwitch()
     private let idleUnload = NSPopUpButton()
     private let login = NSSwitch()
@@ -3182,12 +2977,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     private static let vocabularyHelp = "Names and jargon to spell correctly, separated by commas."
 
     override func loadView() {
-        configure(modifier, label: "Hotkey Modifier", action: #selector(changeHotkey))
-        configure(taps, label: "Hotkey Tap Count", action: #selector(changeHotkey))
         configure(microphone, label: "Microphone", action: #selector(changeMicrophone))
         configure(idleUnload, label: "Unload Model When Idle", action: #selector(changeIdleUnload))
-        setItems([("Control", "ctrl"), ("Command", "cmd"), ("Option", "alt"), ("Shift", "shift")], on: modifier)
-        setItems((2...4).map { ("\($0) taps", "\($0)") }, on: taps)
         setItems([("Built-in Microphone", "built-in"), ("System Default", "system")], on: microphone)
         setItems([
             ("Never", "off"),
@@ -3197,12 +2988,11 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             ("After 60 min", "60"),
         ], on: idleUnload)
         microphone.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        // Sized for the longest title, so the row does not shift when the choice changes.
-        modifier.widthAnchor.constraint(equalToConstant: modifier.fittingSize.width).isActive = true
 
         let toggles: [(NSSwitch, String, String)] = [
             (preview, "live-preview", "Live Preview"), (standby, "mic-standby", "Microphone Standby"),
-            (pauseMedia, "pause-media", "Pause Media"), (menuBar, "menubar", "Show in Menu Bar"),
+            (pauseMedia, "pause-media", "Pause Media"), (sounds, "sounds", "Sounds"),
+            (menuBar, "menubar", "Show in Menu Bar"),
             (login, "", "Launch at Login"),
         ]
         for (control, key, label) in toggles {
@@ -3213,9 +3003,12 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             control.setAccessibilityLabel(label)
         }
 
-        let hotkey = NSStackView(views: [keycaps, modifier, taps])
-        hotkey.spacing = 6
-        hotkey.setCustomSpacing(12, after: keycaps)
+        shortcutField.onChange = { [weak self] shortcut in self?.saveShortcut(shortcut) }
+        configure(dictationMode, label: "Hotkey Mode", action: #selector(changeDictationMode))
+        setItems(DictationMode.allCases.map { ($0.title, $0.rawValue) }, on: dictationMode)
+        dictationMode.widthAnchor.constraint(equalToConstant: dictationMode.fittingSize.width).isActive = true
+        let hotkey = NSStackView(views: [shortcutField, dictationMode])
+        hotkey.spacing = 8
 
         vocabulary.delegate = self
         vocabulary.tokenStyle = .rounded
@@ -3265,9 +3058,10 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             reserve: 40)
         loginRow = loginItem
 
+        hotkeyRow = SettingsRow(symbol: "keyboard.fill", fallback: "keyboard", tint: .systemGray, title: "Hotkey",
+                                detail: Self.modeHelp(.hybrid), accessory: hotkey, separator: false)
         let dictation = card("Dictation", [
-            SettingsRow(symbol: "keyboard.fill", fallback: "keyboard", tint: .systemGray, title: "Hotkey",
-                        detail: "Starts and stops dictation in any app.", accessory: hotkey, separator: false),
+            hotkeyRow!,
             microphoneRow,
             vocabularyRow,
         ])
@@ -3279,6 +3073,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
                         detail: "Recording starts instantly. The microphone indicator stays on.",
                         accessory: standby),
             pause,
+            SettingsRow(symbol: "speaker.wave.2.fill", tint: .systemPurple, title: "Sounds",
+                        detail: "Plays a short sound when a recording starts and stops.", accessory: sounds),
         ])
         var generalRows = [
             SettingsRow(symbol: "menubar.rectangle", tint: .systemTeal, title: "Show in Menu Bar",
@@ -3453,8 +3249,12 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
     }
 
     private static func isOn(_ key: String, default fallback: Bool = false) -> Bool {
-        guard let value = readConfigValue(key)?.lowercased() else { return fallback }
-        return ["1", "on", "true", "yes"].contains(value)
+        // An unrecognised value keeps the default, as the service reads it.
+        switch readConfigValue(key)?.lowercased() {
+        case "1", "on", "true", "yes": return true
+        case "0", "off", "false", "no": return false
+        default: return fallback
+        }
     }
 
     private static func words(_ raw: String) -> [String] {
@@ -3465,11 +3265,8 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
 
     func refresh() {
         guard isViewLoaded else { return }
-        let key = (readConfigValue("hotkey") ?? "").lowercased().split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        select(key.count == 2 ? key[0] : "ctrl", fallback: "ctrl", on: modifier)
-        select(key.count == 2 ? key[1] : "3", fallback: "3", on: taps)
-        showGesture()
+        shortcutField.shortcut = DictationShortcut.current()
+        showDictationMode()
 
         let current = readConfigValue("microphone") ?? "built-in"
         var devices = [("Built-in Microphone", "built-in"), ("System Default", "system")]
@@ -3490,6 +3287,7 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         for button in [preview, standby, pauseMedia] { button.state = Self.isOn(button.identifier!.rawValue) ? .on : .off }
         // The menu bar icon is on unless the config says otherwise.
         menuBar.state = Self.isOn("menubar", default: true) ? .on : .off
+        sounds.state = Self.isOn("sounds", default: true) ? .on : .off
         select(readConfigValue("idle-unload") ?? "off", fallback: "off", on: idleUnload)
         refreshLive()
         updatePauseNote()
@@ -3509,11 +3307,6 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
             loginRow?.setDetail("Starts LocalVoice when you log in to your Mac.")
         }
         login.setAccessibilityHelp(loginRow?.detail.stringValue)
-    }
-
-    private func showGesture() {
-        keycaps.show(modifier: modifier.selectedItem?.representedObject as? String ?? "ctrl",
-                     count: Int(taps.selectedItem?.representedObject as? String ?? "") ?? 3)
     }
 
     // MARK: Vocabulary
@@ -3760,11 +3553,43 @@ private final class SettingsViewController: NSViewController, NSTokenFieldDelega
         onContentChange?()
     }
 
-    @objc private func changeHotkey() {
-        guard let key = modifier.selectedItem?.representedObject as? String,
-              let count = taps.selectedItem?.representedObject as? String else { return }
-        showGesture()
-        save("hotkey", "\(key),\(count)")
+    /// The mode menu follows the shortcut: a tap gesture has nothing to hold.
+    private func showDictationMode() {
+        let shortcut = shortcutField.shortcut
+        let mode = DictationShortcut.mode(for: shortcut)
+        select(mode.rawValue, fallback: DictationMode.toggle.rawValue, on: dictationMode)
+        if case .taps = shortcut {
+            dictationMode.isEnabled = false
+            dictationMode.toolTip = "Tap gestures always toggle. Pick a key combination or modifiers to hold."
+        } else {
+            dictationMode.isEnabled = true
+            dictationMode.toolTip = nil
+        }
+        hotkeyRow?.setDetail(Self.modeHelp(mode))
+    }
+
+    private static func modeHelp(_ mode: DictationMode) -> String {
+        switch mode {
+        case .toggle: "Starts and stops dictation in any app."
+        case .hold: "Hold while you speak; let go to insert."
+        case .hybrid: "Press to toggle, or hold while you speak."
+        }
+    }
+
+    @objc private func changeDictationMode() {
+        guard let value = dictationMode.selectedItem?.representedObject as? String else { return }
+        save(DictationShortcut.modeKey, value)
+        NotificationCenter.default.post(name: .localVoiceShortcutsChanged, object: nil)
+        showDictationMode()
+    }
+
+    private func saveShortcut(_ shortcut: Shortcut) {
+        showDictationMode()
+        let written = DictationShortcut.save(shortcut)
+        if !written { refresh() }
+        message.stringValue = written ? "" : "Could not save the shortcut."
+        message.isHidden = written
+        onContentChange?()
     }
 
     @objc private func changeMicrophone() {
@@ -3867,30 +3692,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        if showSettings != nil {
-            menu.addItem(actionItem(title: "Settings…", selector: #selector(openSettings), key: ","))
-        } else {
-            let microphoneItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
-            microphoneItem.submenu = microphoneMenu()
-            menu.addItem(microphoneItem)
-            let languageItem = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
-            languageItem.submenu = languageMenu()
-            menu.addItem(languageItem)
-            menu.addItem(toggleItem(
-                title: "Compact Pill", key: "compact", selector: #selector(toggleCompact)
-            ))
-            menu.addItem(toggleItem(
-                title: "Microphone Standby", key: "mic-standby", selector: #selector(toggleStandby)
-            ))
-            menu.addItem(toggleItem(
-                title: "Pause Media While Recording", key: "pause-media",
-                selector: #selector(togglePauseMedia)
-            ))
-            menu.addItem(toggleItem(
-                title: "Live Transcript Preview", key: "live-preview", selector: #selector(toggleLivePreview)
-            ))
-        }
-
+        menu.addItem(actionItem(title: "Settings…", selector: #selector(openSettings), key: ","))
         menu.addItem(.separator())
         if showModels != nil {
             menu.addItem(actionItem(title: "Models…", selector: #selector(openModels)))
@@ -3904,9 +3706,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             menu.addItem(login)
         }
-        if showSettings == nil {
-            menu.addItem(actionItem(title: "Open Config File", selector: #selector(openConfig), key: ","))
-        }
         if checkForUpdates != nil && availableUpdate?() == nil {
             menu.addItem(actionItem(title: "Check for Updates…", selector: #selector(openUpdate)))
         }
@@ -3915,201 +3714,23 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(actionItem(title: "Quit LocalVoice", selector: #selector(quitService), key: "q"))
     }
 
-    private func microphoneMenu() -> NSMenu {
-        let menu = NSMenu()
-        let setting = (readConfigValue("microphone") ?? "built-in").lowercased()
-
-        let builtIn = actionItem(title: "Built-in Microphone", selector: #selector(selectMicrophone(_:)))
-        builtIn.representedObject = "built-in"
-        builtIn.state = setting == "built-in" ? .on : .off
-        menu.addItem(builtIn)
-
-        let system = actionItem(title: "System Default", selector: #selector(selectMicrophone(_:)))
-        system.representedObject = "system"
-        system.state = setting == "system" ? .on : .off
-        menu.addItem(system)
-
-        let devices = audioInputDeviceNames()
-        if !devices.isEmpty {
-            menu.addItem(.separator())
-            for name in devices {
-                let item = actionItem(title: name, selector: #selector(selectMicrophone(_:)))
-                item.representedObject = name
-                if setting != "built-in" && setting != "system" {
-                    item.state = name.lowercased().contains(setting) ? .on : .off
-                }
-                menu.addItem(item)
-            }
-        }
-        return menu
-    }
-
-    private func languageMenu() -> NSMenu {
-        let menu = NSMenu()
-        let setting = (readConfigValue("language") ?? "de").lowercased()
-        for (code, title) in [("de", "German"), ("en", "English"), ("auto", "Automatic")] {
-            let item = actionItem(title: title, selector: #selector(selectLanguage(_:)))
-            item.representedObject = code
-            item.state = setting == code ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
-    }
-
-    private func toggleItem(
-        title: String, key: String, selector: Selector, defaultValue: String = "off"
-    ) -> NSMenuItem {
-        let item = actionItem(title: title, selector: selector)
-        let value = (readConfigValue(key) ?? defaultValue).lowercased()
-        item.state = ["on", "true", "1", "yes"].contains(value) ? .on : .off
-        return item
-    }
-
     private func actionItem(title: String, selector: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
         item.target = self
         return item
     }
 
-    @objc private func selectMicrophone(_ sender: NSMenuItem) {
-        if let value = sender.representedObject as? String {
-            writeConfigValue("microphone", value)
-        }
-    }
-
-    @objc private func selectLanguage(_ sender: NSMenuItem) {
-        if let value = sender.representedObject as? String {
-            writeConfigValue("language", value)
-        }
-    }
-
-    @objc private func toggleCompact(_ sender: NSMenuItem) {
-        writeConfigValue("compact", sender.state == .on ? "off" : "on")
-    }
-
-    @objc private func toggleStandby(_ sender: NSMenuItem) {
-        writeConfigValue("mic-standby", sender.state == .on ? "off" : "on")
-    }
-
-    @objc private func togglePauseMedia(_ sender: NSMenuItem) {
-        writeConfigValue("pause-media", sender.state == .on ? "off" : "on")
-    }
-
-    @objc private func toggleLivePreview(_ sender: NSMenuItem) {
-        writeConfigValue("live-preview", sender.state == .on ? "off" : "on")
-    }
-
     @objc private func openSettings() { showSettings?() }
 
-    @objc private func openConfig() { openConfigFile() }
+    @objc private func restartService() { restart?() }
 
-    @objc private func restartService() {
-        if let restart { restart(); return }
-        // kickstart -k kills the whole job — this launcher included — and
-        // launchd brings it straight back; the menu bar icon returns with it.
-        runLaunchctl(["kickstart", "-k", "gui/\(getuid())/\(serviceLabel)"])
-    }
-
-    @objc private func quitService() {
-        if let quit { quit(); return }
-        // bootout unloads the job, so KeepAlive does not resurrect it; the
-        // next login (or scripts/restart.sh) brings LocalVoice back.
-        runLaunchctl(["bootout", "gui/\(getuid())/\(serviceLabel)"])
-    }
+    @objc private func quitService() { quit?() }
 
     @objc private func openModels() { showModels?() }
     @objc private func openPermissions() { setupPermissions?() }
     @objc private func openUpdate() { checkForUpdates?() }
 
     @objc private func toggleLogin() { toggleLaunchAtLogin() }
-}
-
-// MARK: - Service mode
-
-@MainActor
-func runService(config: [String: String], arguments: [String]) -> Never {
-    guard let command = config["command"] else {
-        fail("launch.conf has no 'command' entry; re-run install.sh", code: 78)
-    }
-
-    guard FileManager.default.isExecutableFile(atPath: command) else {
-        fail("\(command) is missing or not executable; re-run install.sh", code: 72)
-    }
-
-    let child = Process()
-    child.executableURL = URL(fileURLWithPath: command)
-    child.arguments = arguments
-
-    var environment = ProcessInfo.processInfo.environment
-    if let path = config["path"] {
-        environment["PATH"] = path
-    }
-    if let overlay = config["overlay"] {
-        environment["CTRLSPEAK_OVERLAY_PATH"] = overlay
-    }
-    child.environment = environment
-
-    // launchctl bootout signals this process; the child has to come down with
-    // it or KeepAlive would restart into an orphaned transcription worker.
-    // The sources must outlive this setup, so they are kept alive in an array
-    // referenced by the termination handler's captured context.
-    let terminationSources = [SIGTERM, SIGINT, SIGHUP].map { terminationSignal in
-        signal(terminationSignal, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: terminationSignal, queue: .main)
-        source.setEventHandler {
-            if child.isRunning {
-                child.terminate()
-            }
-        }
-        source.resume()
-        return source
-    }
-
-    child.terminationHandler = { finished in
-        withExtendedLifetime(terminationSources) {}
-        exit(finished.terminationStatus)
-    }
-
-    do {
-        try child.run()
-    } catch {
-        fail("could not start \(command): \(error.localizedDescription)", code: 70)
-    }
-
-    // The launcher outlives the fork/exec dance anyway (it is the TCC
-    // identity root), which makes it the natural host for the menu bar icon:
-    // no extra process, no extra permissions. An AppKit run loop replaces
-    // dispatchMain(); the signal sources and termination handler above are
-    // main-queue based and keep working under it.
-    let application = NSApplication.shared
-    application.setActivationPolicy(.accessory)
-
-    let menuBar = MenuBarController()
-
-    func menuBarEnabled() -> Bool {
-        // Default on; only an explicit "off" (or falsy value) hides it.
-        guard let value = readConfigValue("menubar")?.lowercased() else { return true }
-        return ["on", "true", "1", "yes"].contains(value)
-    }
-
-    menuBar.setVisible(menuBarEnabled())
-
-    // Follow config edits, so `menubar = off` takes effect like every other
-    // key: within a couple of seconds, no restart.
-    let timer = DispatchSource.makeTimerSource(queue: .main)
-    timer.schedule(deadline: .now() + 2.0, repeating: 2.0)
-    timer.setEventHandler {
-        let enabled = menuBarEnabled()
-        if enabled != menuBar.isVisible {
-            menuBar.setVisible(enabled)
-        }
-    }
-    timer.resume()
-
-    withExtendedLifetime((menuBar, timer)) {
-        application.run()
-    }
-    exit(0)
 }
 
 // MARK: - Embedded overlay server
@@ -4211,20 +3832,9 @@ private final class EmbeddedOverlayServer {
 
     private func ensureOverlay() -> OverlayController {
         if let overlay { return overlay }
-        let created = OverlayController(embeddedLanguage: "de") { [weak self] language in
-            MainActor.assumeIsolated { self?.sendToClient("language \(language)\n") }
-        }
+        let created = OverlayController(embedded: true)
         overlay = created
         return created
-    }
-
-    private func sendToClient(_ line: String) {
-        guard clientFD >= 0 else { return }
-        let data = Array(line.utf8)
-        data.withUnsafeBufferPointer { ptr in
-            guard let base = ptr.baseAddress else { return }
-            _ = Darwin.write(clientFD, base, ptr.count)
-        }
     }
 
     private func readFromClient() {
@@ -4331,11 +3941,15 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
     // When the running child became ready, to re-arm crash recovery.
     private var readySince: TimeInterval?
     // Write end of the child's stdin. The child exits on EOF, so it cannot
-    // outlive the app even if the app crashes or is force-quit.
+    // outlive the app even if the app crashes or is force-quit. Only used when
+    // the shortcuts' event tap is unavailable; the command channel otherwise
+    // plays the same part.
     private var lifeline: FileHandle?
 #if OVERLAY_EMBEDDED
     private var overlayServer: EmbeddedOverlayServer?
 #endif
+    // Global shortcuts; they talk to the running child over its stdin.
+    private let shortcuts = ShortcutController()
 
     init(config: [String: String], arguments: [String]) throws {
         self.config = config
@@ -4462,7 +4076,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         let fd = open(dir, O_EVTONLY)
         guard fd >= 0 else {
             menuTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.applyMenuVisibility() }
+                Task { @MainActor [weak self] in
+                    self?.applyMenuVisibility()
+                    self?.shortcuts.reloadConfig()
+                }
             }
             return
         }
@@ -4472,7 +4089,10 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
             queue: .main
         )
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.applyMenuVisibility() }
+            MainActor.assumeIsolated {
+                self?.applyMenuVisibility()
+                self?.shortcuts.reloadConfig()
+            }
         }
         source.setCancelHandler {
             close(fd)
@@ -4540,7 +4160,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
                         // The ready screen says all this when it is up.
                         if self?.presentingReady == true { return nil }
                         let menuBar = ["on", "true", "1", "yes"].contains(readConfigValue("menubar")?.lowercased() ?? "on")
-                        return "Tap \(hotkeyDescription()) in any app to start, and again to insert the text. Esc discards."
+                        return dictationHowTo() + " Esc discards."
                             + (menuBar ? " Settings stay under the LocalVoice icon in the menu bar." : "")
                     },
                     embedded: true, top: SettingsMetrics.top
@@ -4595,7 +4215,6 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         waitingForPermissions = false
         setupCompletedThisRun = true
         startUpdater()
-        writeSetupStatus("granted", managed: true)
         if child == nil, let savedModel {
             start(savedModel)
         }
@@ -4703,9 +4322,15 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         environment["LOCALVOICE_STATE_DIR"] = selection.deletingLastPathComponent().path
         environment["LOCALVOICE_SESSION_LOCK"] = scratch.appendingPathComponent("session.lock").path
         environment["LOCALVOICE_LIFELINE"] = "stdin"
+        let channel = shortcuts.connectService()
+        let pipe = channel == nil ? Pipe() : nil
+        if let channel {
+            environment["LOCALVOICE_HOTKEYS"] = "app"
+            process.standardInput = channel.childEnd
+        } else {
+            process.standardInput = pipe?.fileHandleForReading
+        }
         process.environment = environment
-        let pipe = Pipe()
-        process.standardInput = pipe.fileHandleForReading
         process.terminationHandler = { [weak self] finished in
             DispatchQueue.main.async { [weak self] in
                 self?.ended(finished, model: model)
@@ -4714,12 +4339,14 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
         do {
             try process.run()
         } catch {
+            shortcuts.disconnectService()
             failedStart(model)
             return
         }
-        try? pipe.fileHandleForReading.close()
+        channel?.childStarted()
+        try? pipe?.fileHandleForReading.close()
         try? lifeline?.close()
-        lifeline = pipe.fileHandleForWriting
+        lifeline = pipe?.fileHandleForWriting
         child = process
         childModel = model
         permissionChecklist?.serviceDidChange()
@@ -4834,6 +4461,7 @@ private final class ManagedService: NSObject, NSApplicationDelegate {
 #if OVERLAY_EMBEDDED
         overlayServer?.hide()
 #endif
+        shortcuts.disconnectService()
         library?.setActiveModel(nil)
         if stopping {
             exitCleanly()
@@ -4935,14 +4563,9 @@ enum LocalVoiceLauncher {
         let config = loadConfig()
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.contains("--setup") {
-            if config["managed_models"] == "1" { runManagedSetup() }
-            exit(runSetup(config: config))
-        } else if arguments.contains("--setup-status") {
-            printSetupStatus(config: config)
-        } else if config["managed_models"] == "1" {
-            runManagedService(config: config, arguments: arguments)
+            runManagedSetup()
         } else {
-            runService(config: config, arguments: arguments)
+            runManagedService(config: config, arguments: arguments)
         }
     }
 }
@@ -5070,6 +4693,8 @@ private enum PermissionPreview {
 //   SETTINGS_PREVIEW_MODEL = <model id in use>   (e.g. parakeet-v3; the demo library's models)
 //   SETTINGS_PREVIEW_UPDATES = auto | off | available | none   (the Updates row; none hides it)
 //   SETTINGS_PREVIEW_ICON = <image for the header>    (the preview has no app bundle)
+//   SETTINGS_PREVIEW_RECORDER = 1   (renders the shortcut recorder popover instead of the window)
+//   SETTINGS_PREVIEW_PRESS = <shortcut, e.g. shift+d>  (what the recorder shows after that press)
 //   LOCALVOICE_CONFIG_DIR = <directory holding `config`>
 // Without LOCALVOICE_CONFIG_DIR the preview makes an empty temporary one, so it never
 // reads or writes ~/.config/localvoice/config.
@@ -5131,6 +4756,15 @@ private enum SettingsPreview {
                 started: { true }, available: { updates == "available" ? "1.4.1" : nil },
                 automatic: { updates != "off" }, setAutomatic: { _ in }, check: {})
         }
+        if environment["SETTINGS_PREVIEW_RECORDER"] != nil {
+            let recorder = ShortcutRecorderViewController(current: DictationShortcut.current())
+            if let press = Shortcut(config: environment["SETTINGS_PREVIEW_PRESS"]) { recorder.previewPress(press) }
+            let window = SettingsPreviewWindow(contentViewController: recorder)
+            window.claimsKey = true
+            snapshot(window, to: environment["SETTINGS_PREVIEW_SNAPSHOT"] ?? "recorder")
+            withExtendedLifetime((recorder, window)) { app.run() }
+            return
+        }
         let split = SettingsSplitViewController(settings: controller)
         let window = SettingsPreviewWindow(contentViewController: split)
         window.claimsKey = environment["SETTINGS_PREVIEW_SNAPSHOT"] != nil
@@ -5143,21 +4777,25 @@ private enum SettingsPreview {
         split.fitWindow()
         window.center()
         if let path = environment["SETTINGS_PREVIEW_SNAPSHOT"] {
-            // Offscreen: the window is never ordered in.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                guard let frameView = window.contentView?.superview else { exit(1) }
-                frameView.layoutSubtreeIfNeeded()
-                let bounds = frameView.bounds
-                guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { exit(1) }
-                frameView.cacheDisplay(in: bounds, to: rep)
-                let data = rep.representation(using: .png, properties: [:])
-                exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
-            }
+            snapshot(window, to: path)
         } else {
             window.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)
         }
         withExtendedLifetime((backend, split, window)) { app.run() }
+    }
+
+    /// Offscreen: the window is never ordered in.
+    private static func snapshot(_ window: NSWindow, to path: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard let frameView = window.contentView?.superview else { exit(1) }
+            frameView.layoutSubtreeIfNeeded()
+            let bounds = frameView.bounds
+            guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { exit(1) }
+            frameView.cacheDisplay(in: bounds, to: rep)
+            let data = rep.representation(using: .png, properties: [:])
+            exit((try? data?.write(to: URL(fileURLWithPath: "\(path).png"))) == nil ? 1 : 0)
+        }
     }
 }
 #endif

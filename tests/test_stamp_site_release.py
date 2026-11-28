@@ -24,7 +24,7 @@ class StampSiteReleaseTests(unittest.TestCase):
             'v9.8.7/LocalVoice-v9.8.7-arm64.dmg"',
             stamped,
         )
-        self.assertIn("Version <span data-release-version>9.8.7</span> ·", stamped)
+        self.assertIn("Version <span data-release-version>9.8.7</span><br>", stamped)
         # Nothing but the link and the label changes.
         self.assertEqual(len(stamped.splitlines()), len(html.splitlines()))
 

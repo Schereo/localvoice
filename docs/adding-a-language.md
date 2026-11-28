@@ -5,7 +5,7 @@ the choice to German and English on purpose, mainly to keep `AUTO` detection
 reliable (ranking all 100 languages readily mistakes German for Dutch; a small
 set of acoustically distinct languages does not have that problem).
 
-Adding one, say Spanish (`es`), touches four places. Languages are named by
+Adding one, say Spanish (`es`), touches three places. Languages are named by
 their ISO 639-1 code, the same codes Whisper uses.
 
 ## 1. The model gate — `patches/ctrlspeak-1.8.0/models/whisper_mlx.py`
@@ -17,44 +17,30 @@ SUPPORTED_LANGUAGES = {"de", "en", "es"}
 This single set gates transcription *and* defines the candidate pool for
 `AUTO`: `detect_language()` compares exactly these languages' probabilities.
 
-## 2. The badge — `src/ctrlspeak-overlay.swift`
+## 2. The runtime validation — `patches/ctrlspeak-1.8.0/utils/localvoice_config.py`
 
-```swift
-static let languageCycle = ["DE", "EN", "ES", "AUTO"]
-```
-
-Clicking the badge cycles this list. In `drawLanguageSelection`, add a display
-name for the preview mode (`case "ES": languageName = "Spanish"`). The badge
-chip fits labels up to four letters as-is.
-
-## 3. The runtime validation — `patches/ctrlspeak-1.8.0/utils/localvoice_config.py`
-
-Extend the one set every consumer (badge clicks, the config file, the
-installer's Python step) validates against:
+Extend the one set every consumer (the config file, the Settings window)
+validates against:
 
 ```python
 VALID_LANGUAGES = {"de", "en", "es", "auto"}
 ```
 
-## 4. The installer — `install.sh`
+## 3. The Models popup — `src/localvoice-model-library.swift`
 
-Two guards mention the codes: the `CTRLSPEAK_LANGUAGE` check near the top and
-the `SAVED_LANGUAGE` validation inside the generated wrapper script. Add the
-new code to both.
+The app's language menu lists its own enum; add the case and its title:
 
-## Deploying the change
-
-The full path is `./install.sh` — but that rebuilds the app bundle, and under
-ad-hoc signing a rebuild is a new identity, so macOS will ask for the three
-permissions again. The lighter path avoids that, because the pill binary and
-the Python patches live *outside* the app bundle:
-
-```bash
-xcrun swiftc src/ctrlspeak-overlay.swift -o /opt/homebrew/bin/ctrlspeak-overlay
-install -m 644 patches/ctrlspeak-1.8.0/models/whisper_mlx.py /opt/homebrew/opt/ctrlspeak/libexec/models/whisper_mlx.py
-install -m 644 patches/ctrlspeak-1.8.0/utils/localvoice_config.py /opt/homebrew/opt/ctrlspeak/libexec/utils/localvoice_config.py
-./scripts/restart.sh
+```swift
+enum DictationLanguage: String, CaseIterable {
+    case auto, de, en, es
+    ...
+        case .es: "Español"
 ```
+
+## Trying it
+
+Build a test app with `python3 -B scripts/build-dev-app.py` (see
+[setup](setup.md#local-test-app)).
 
 ## Notes
 

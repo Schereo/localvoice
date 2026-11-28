@@ -4,20 +4,20 @@
 
 | Key | Action |
 |---|---|
-| Hotkey tap (default: triple-tap **Ctrl**) | Start recording / stop and insert |
+| Your hotkey (default: triple-tap **Ctrl**) | Start recording / stop and insert |
 | **Enter** (while recording) | Stop and insert |
 | **Esc** (while recording) | Discard the recording |
 | **Cmd+,** (when LocalVoice is active) | Open LocalVoice Settings |
 
-Enter and Esc are only interpreted while a recording runs. macOS delivers them to the frontmost app as well — in fields where Enter submits, prefer the hotkey to stop.
+Enter and Esc belong to LocalVoice only while a recording runs: then they stop the recording and do not reach the app you are typing in, so Enter will not send a message in Slack. The rest of the time they are untouched. With a modifier (Shift-Enter) they end the recording too, but also reach the app. If another app already holds plain Enter or Esc, or LocalVoice cannot watch the keyboard itself (Input Monitoring), the keys end the recording and reach the app as before. Right at the start and end of a recording, a key pressed within a few milliseconds may still fall on the other side of that line.
 
 ## Insertion
 
-The transcript is pasted wherever the cursor is. Before pasting, the focused UI element is checked through the Accessibility API; if it clearly cannot take text, nothing is typed — the transcript stays on the clipboard and the pill says `Copied to clipboard`. Apps with incomplete accessibility trees (many Electron apps) keep the normal paste behaviour.
+The transcript is pasted wherever the cursor is. Before pasting, the focused UI element is checked through the Accessibility API; if it clearly cannot take text, nothing is typed — the transcript stays on the clipboard and the pill says `Copied`. Apps with incomplete accessibility trees (many Electron apps) keep the normal paste behaviour.
 
-## Hotkey
+## Shortcuts
 
-Choose a modifier and tap count in **Settings…**. The running service picks the change up within seconds; no restart needed. Full reference: [configuration.md](configuration.md).
+**Settings › Dictation › Hotkey**: click the field, press the new hotkey and hit Return; Esc closes without changing anything. It can be a key combination such as ⌥Space, modifiers pressed together such as ⌃⌘ (in Toggle it fires when you let go, unless another key or a click came in between; in Hold to Talk and Hybrid recording starts as you press them, and a key or click before you let go discards it), or a modifier tapped two to four times such as ⌃⌃⌃. The popover shows the keys as you press them and says when a combination cannot be used (no modifier, or Return/Esc). The menu beside the field picks the mode: **Toggle** (press to start, again to insert), **Hold to Talk** (hold while you speak, let go to insert) or **Hybrid** (a short press toggles, a long one is hold-to-talk); a tap gesture always toggles. The hotkey is paused while the popover is open, the arrow beside the field restores the default, and changes apply at once. Full reference: [configuration.md](configuration.md#dictate).
 
 Any other key pressed between taps voids the sequence, so `Cmd+C` quickly followed by `Cmd+V` never triggers a double-tap. If your gesture collides with a system shortcut (macOS binds *press Cmd twice* to Siri, for example), change either side — Siri's binding lives in System Settings → Apple Intelligence & Siri.
 
